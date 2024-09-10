@@ -147,3 +147,33 @@ Each example includes detailed instructions on how to set up and run the service
 ### Tips/Issues
 
 If you encounter issues with multiple accounts during Let's Encrypt certificate generation, consider removing the associated volume or deleting the `letsencrypt/accounts` directory.
+
+## fail2ban on host machine
+
+To enable Fail2ban for SSH connections on your host machine, use the `ssh-fail2ban.sh` script with the following steps:
+
+1. Install required packages:
+
+   ```bash
+   sudo apt install python-is-python3 python3-pip
+   ```
+
+2. Install `virtualenv` using `pip`:
+
+   ```bash
+   pip install virtualenv
+   ```
+
+3. Make the script executable:
+
+   ```bash
+   chmod +x ssh-fail2ban.sh
+   ```
+
+4. Run the script with elevated privileges:
+
+   ```bash
+   sudo ./ssh-fail2ban.sh
+   ```
+
+This script sets up Fail2ban specifically for SSH connections on your machine.

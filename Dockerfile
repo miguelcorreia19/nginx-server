@@ -43,7 +43,7 @@ RUN mkdir -p /etc/nginx/conf.d/80/
 RUN mkdir -p /etc/nginx/conf.d/443/
 # COPY ./nginx/sites/ /home/nginx/sites
 
-COPY ./nginx/nginx.vh.default.443.conf /etc/nginx/conf.d/443/nginx.vh.default.443.conf 
+COPY ./nginx/nginx.vh.default.443.conf /etc/nginx/conf.d/443/nginx.vh.default.443.conf
 COPY ./nginx/nginx.vh.default.80.conf /etc/nginx/conf.d/80/nginx.vh.default.80.conf
 
 # Removing nginx symbolic links
@@ -76,7 +76,11 @@ WORKDIR /home/scripts
 COPY . /home/scripts/
 
 RUN rm Dockerfile
-RUN rm /etc/nginx/conf.d/default.conf 
+RUN rm /etc/nginx/conf.d/default.conf
+
+
+RUN git clone https://github.com/fail2ban/fail2ban.git
+RUN cd fail2ban; python setup.py install
 
 ENTRYPOINT ["entrypoint.sh"]
 

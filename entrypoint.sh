@@ -17,5 +17,7 @@ touch /var/log/nginx/error.log
 # watch and reload conf files
 /usr/local/bin/reload.sh &
 
+fail2ban-client start
+
 echo "Entrypoint script ended!"
 exec "$@"
