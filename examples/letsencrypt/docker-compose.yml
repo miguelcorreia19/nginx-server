@@ -1,0 +1,26 @@
+version: "3"
+
+services:
+  nginx-server:
+    build: ./nginx-server
+    container_name: nginx-server
+    restart: always
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - ./nginx/sites/:/home/nginx/sites
+      - ./nginx/config.json:/home/config.json
+      - ./public:/var/www/html/
+      - nginx-server:/home/letsencrypt
+      # - ./_letsencrypt/:/home/letsencrypt # NOT RECOMMENDED
+
+    environment:
+      - ENVIRONMENT=production
+      - CERTBOT_BACKUP=true
+      - CERTBOT_EMAIL=admin@example.com
+
+volumes:
+  nginx-server:

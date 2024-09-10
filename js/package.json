@@ -1,0 +1,14 @@
+{
+  "name": "nginx-server",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "miguelcorreia19",
+  "license": "ISC",
+  "dependencies": {
+    "luxon": "^2.4.0"
+  }
+}

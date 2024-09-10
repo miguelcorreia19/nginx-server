@@ -1,0 +1,16 @@
+{
+  "main": {
+    "names": [
+      "mydomain.com",
+      "www.mydomain.com"
+    ],
+    "mode": "letsencrypt"
+  },
+  "scripts": {
+    "names": [
+      "scripts.mydomain.com"
+    ],
+    "email": "anotheradmin@mail.com",
+    "mode": "letsencrypt"
+  }
+}

@@ -1,0 +1,22 @@
+version: "3"
+
+services:
+  nginx-server:
+    build: ./nginx-server
+    container_name: nginx-server
+    restart: always
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - 81:80
+      - 444:443
+    volumes:
+      - ./nginx/sites/:/home/nginx/sites
+    environment:
+      - ENVIRONMENT=development
+
+  example:
+    image: example
+    container_name: example
+    ports:
+      - 12345:12345
