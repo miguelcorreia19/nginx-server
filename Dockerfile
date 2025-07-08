@@ -3,14 +3,14 @@ FROM nginx:alpine
 
 LABEL maintainer="Miguel Correia <miguelcorreia19@hotmail.com>"
 
-ENV ENVIRONMENT development
-ENV DOMAIN []
-ENV ORGANIZATION []
-ENV COUNTRY []
+ENV ENVIRONMENT=development
+ENV DOMAIN=[]
+ENV ORGANIZATION=[]
+ENV COUNTRY=[]
 
-ENV CERTBOT_BACKUP_PATH /home/letsencrypt
-ENV CUSTOM_CERTS_PATH /home/custom-certificates
-ENV CUSTOM_NGINX_CONFIG_FILES_PATH /home/nginx/configs
+ENV CERTBOT_BACKUP_PATH=/home/letsencrypt
+ENV CUSTOM_CERTS_PATH=/home/custom-certificates
+ENV CUSTOM_NGINX_CONFIG_FILES_PATH=/home/nginx/configs
 
 RUN apk update
 

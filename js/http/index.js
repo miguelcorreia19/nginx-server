@@ -16,6 +16,13 @@ module.exports = async () => {
       await command(`cp ./http/templates/http-certificate.conf /etc/nginx/conf/${id}.conf`);
       await command(`cp /home/nginx/sites/${id}.conf /etc/nginx/conf.d/80`);
     }
+
+    if(Object.keys(certs).length === 0) {
+      console.log("No HTTP certificates found in config.json!");
+      await command('cp /home/scripts/nginx/nginx.vh.default.80.conf /etc/nginx/conf.d/80/nginx.vh.default.80.conf');
+    }
+
+
   } catch (err) {
     console.error("ERROR http!", err)
   }

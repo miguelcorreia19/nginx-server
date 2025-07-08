@@ -6,7 +6,7 @@ const custom = require('./custom');
 const http = require('./http');
 const { command, mapCustomNginxConf } = require("./utils.js");
 
-// Base nginx config files 
+// Base nginx config files
 const NGINX_CONF_FILES = [
   "nginx.conf",
   "proxy.conf",
@@ -24,9 +24,7 @@ const start = async () => {
         await letsencrypt();
         await custom();
         await http();
-         
-        await command('cp /home/scripts/nginx/nginx.vh.default.443.conf /etc/nginx/conf.d/443/nginx.vh.default.443.conf');
-        await command('cp /home/scripts/nginx/nginx.vh.default.80.conf /etc/nginx/conf.d/80/nginx.vh.default.80.conf');
+
         break;
       default:
         console.log("Fatal: you need to set the ENVIRONMENT variable to 'development' or 'production'");

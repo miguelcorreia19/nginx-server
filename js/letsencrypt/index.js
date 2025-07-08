@@ -170,6 +170,11 @@ module.exports = async () => {
       await configFiles(id, status, certs[id].http_redirect, cert_domains);
     }
 
+    if(Object.keys(certs).length === 0) {
+      console.log("No certificates found in config.json!");
+      await command('cp /home/scripts/nginx/nginx.vh.default.443.conf /etc/nginx/conf.d/443/nginx.vh.default.443.conf');
+    }
+
     console.log("NodeJS letsencrypt terminated!")
   } catch (err) {
     console.error("ERROR letsencrypt!", err)
