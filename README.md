@@ -1,15 +1,17 @@
-## Dockerized nginx MultiDomain Management
+# Dockerized nginx MultiDomain Management
 
 This Docker image facilitates managing multiple domains with Nginx server configurations, enabling seamless deployment for both development and production environments. It incorporates features such as HTTPS support via Let's Encrypt or custom SSL certificates, automated certificate renewal, and flexible domain mapping.
 
-### Features
+**GitHub: https://github.com/miguelcorreia19/nginx-server**
+
+## Features
 
 - **Domain Management**: Easily configure and manage multiple domains within Nginx server configurations.
 - **HTTPS Support**: Facilitates HTTPS connections with Let's Encrypt SSL certificates or custom SSL certificates.
 - **Automated Certificate Renewal**: Enables automatic renewal of SSL certificates to ensure continuous security.
 - **Flexible Deployment**: Supports both development (dev) and production (prod) environments, with customizable settings for different deployment scenarios.
 
-### Environment Variables
+## Environment Variables
 
 - `ENVIRONMENT`: Specify the environment type (`dev` or `prod`).
 - `CERTBOT_BACKUP`: (optional) Enable certificate backup (`true` or `false`, default is `false`).
@@ -21,7 +23,7 @@ This Docker image facilitates managing multiple domains with Nginx server config
 **TIP:** Let's Encrypt imposes limits on certificate generation, which can be reached quickly if there are configuration errors that force Certbot to repeatedly recreate certificates. Utilizing Certbot's backup feature can mitigate this issue. Certbot backups locally store Let's Encrypt configurations, preventing unnecessary certificate recreation.
 Before starting the service, Certbot checks the backup path. If a backup exists, Certbot loads the oldest configuration and certificates from the backup. This approach helps manage Let's Encrypt limits effectively, ensuring smoother certificate management and reducing the risk of hitting generation limits due to configuration errors. **This last feature just works with `CERTBOT_BACKUP` to true (default false)**
 
-### Supported Deployment Modes
+## Supported Deployment Modes
 
 1. **Development (dev)**:
 
@@ -38,7 +40,7 @@ Before starting the service, Certbot checks the backup path. If a backup exists,
   - `letsencrypt-staging`: Uses Let's Encrypt staging server for testing.
 - If you don't want to redirect http to https, you can add `http_redirect` to false.
 
-### Docker Compose Example
+## Docker Compose Example
 
 ```yaml
 services:
@@ -63,7 +65,7 @@ volumes:
   nginx-server:
 ```
 
-### Configuration JSON Example (`config.json`)
+## Configuration JSON Example (`config.json`)
 
 ```json
 {
@@ -100,7 +102,7 @@ volumes:
 }
 ```
 
-### Nginx Configuration File Example
+## Nginx Configuration File Example
 
 ```nginx
 server {
@@ -121,12 +123,12 @@ server {
 }
 ```
 
-### Customization
+## Customization
 
 - Replace default Nginx configuration files (`proxy.conf` and `nginx.conf`) by mounting volumes.
 - Customize SSL certificates and Nginx configurations as per specific requirements.
 
-### Notes
+## Notes
 
 - Nginx reloads its service automatically upon modification of `.conf` files.
 
@@ -138,12 +140,12 @@ This repository includes several examples to demonstrate different configuration
 - **Dev**: Illustrates setting up a development environment for the service using Nginx.
 - **Letsencrypt**: Shows how to configure the service to use Let's Encrypt for SSL certificates.
 
-### Combination
+## Combination
 
 It's also possible to combine custom and Let's Encrypt configurations within the same service instance. This allows for flexibility in managing SSL certificates and Nginx configurations according to your requirements.
 
 Each example includes detailed instructions on how to set up and run the service with the specified configuration. Refer to the individual README files in each example directory for more information.
 
-### Tips/Issues
+## Tips/Issues
 
 If you encounter issues with multiple accounts during Let's Encrypt certificate generation, consider removing the associated volume or deleting the `letsencrypt/accounts` directory.
