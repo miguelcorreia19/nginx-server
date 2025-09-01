@@ -166,6 +166,7 @@ module.exports = async () => {
     await command('rm -f /etc/nginx/conf.d/443/*');
 
     for (let id in certs) {
+      if (!final_certificates[id]) continue;
       const { status, cert_domains } = final_certificates[id];
       await configFiles(id, status, certs[id].http_redirect, cert_domains);
     }
