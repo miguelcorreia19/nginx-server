@@ -165,11 +165,12 @@ module.exports = async () => {
     await command('rm -f /etc/nginx/conf.d/80/*-http-redirect.conf');
     await command('rm -f /etc/nginx/conf.d/443/*');
 
-    for (let id in certs) {
-      if (!final_certificates[id]) continue;
-      const { status, cert_domains } = final_certificates[id];
-      await configFiles(id, status, certs[id].http_redirect, cert_domains);
-    }
+    if(final_certificates.length > 0)
+      for (let id in certs) {
+        if (!final_certificates[id]) continue;
+        const { status, cert_domains } = final_certificates[id];
+        await configFiles(id, status, certs[id].http_redirect, cert_domains);
+      }
 
     if(Object.keys(certs).length === 0) {
       console.log("No certificates found in config.json!");
