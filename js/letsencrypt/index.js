@@ -3,6 +3,7 @@ const { command, configFiles } = require("../utils.js");
 const { createCert, deleteCert, createConf } = require("./manage_certs.js");
 
 module.exports = async () => {
+  await command(`mkdir -p ${process.env.CERTBOT_BACKUP_PATH}`);
   const _certs = require("../config.json");
 
   const certs = { ..._certs };
@@ -165,7 +166,7 @@ module.exports = async () => {
     await command('rm -f /etc/nginx/conf.d/80/*-http-redirect.conf');
     await command('rm -f /etc/nginx/conf.d/443/*');
 
-    if(final_certificates.length > 0)
+    if(Object.keys(final_certificates).length > 0)
       for (let id in certs) {
         if (!final_certificates[id]) continue;
         const { status, cert_domains } = final_certificates[id];

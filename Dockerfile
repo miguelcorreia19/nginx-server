@@ -1,4 +1,4 @@
-# 1.25-alpine
+# 1.29.3-alpine
 FROM nginx:alpine
 
 LABEL maintainer="Miguel Correia <miguelcorreia19@hotmail.com>"
@@ -69,8 +69,6 @@ EXPOSE 80
 EXPOSE 443
 
 RUN mkdir -p /home/scripts/
-RUN mkdir -p /home/letsencrypt/
-
 
 WORKDIR /home/scripts
 
