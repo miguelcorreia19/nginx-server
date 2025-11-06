@@ -14,6 +14,11 @@ const NGINX_CONF_FILES = [
 
 const start = async () => {
   try {
+
+    if ( !process.env.ENVIRONMENT ) {
+      process.env.ENVIRONMENT = 'production';
+    }
+
     switch (process.env.ENVIRONMENT) {
       case 'dev':
       case 'development':

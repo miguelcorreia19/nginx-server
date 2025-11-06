@@ -1,10 +1,21 @@
-# Dockerized nginx MultiDomain Management
+# Dockerized Multi-Domain Nginx Server with HTTP/HTTPS Modes
 
-This Docker image facilitates managing multiple domains with Nginx server configurations, enabling seamless deployment for both development and production environments. It incorporates features such as HTTPS support via Let's Encrypt or custom SSL certificates, automated certificate renewal, and flexible domain mapping.
+This Docker image provides a flexible Nginx setup for managing multiple domains with full HTTP and HTTPS support. It includes automated SSL certificate management (via Let's Encrypt or custom certificates), seamless environment configuration, and automatic Nginx reloads on changes.
 
-**GitHub: https://github.com/miguelcorreia19/nginx-server**
+### Key features:
 
-**Docker Hub: https://hub.docker.com/r/miguelcorreia19/nginx-server**
+- HTTPS support
+  - via Let's Encrypt (automatic certificate generation and renewal)
+  - via custom SSL certificates (can use your own certificates)
+- Automatic HTTP → HTTPS redirection
+- HTTP only mode
+- Development and production modes
+- Flexible domain mapping
+- Automatic configuration reload on updates
+
+**GitHub: <https://github.com/miguelcorreia19/nginx-server>**
+
+**Docker Hub: <https://hub.docker.com/r/miguelcorreia19/nginx-server>**
 
 ## Features
 
@@ -15,32 +26,32 @@ This Docker image facilitates managing multiple domains with Nginx server config
 
 ## Environment Variables
 
-- `ENVIRONMENT`: Specify the environment type (`dev` or `prod`).
-- `CERTBOT_BACKUP`: (optional) Enable certificate backup (`true` or `false`, default is `false`).
-- `CERTBOT_EMAIL`: (optional) Email address for Let's Encrypt certificate expiration warnings.
-- `CERTBOT_BACKUP_PATH`: (optional) Path for storing certificate backups (default is `/home/letsencrypt`).
-- `CERTBOT_RENEW_CRONJOB`: (optional) Cronjob schedule for certificate renewal (default is `0 5 * * *`).
-- `CUSTOM_NGINX_CONFIG_FILES_PATH`: (optional) Path for custom Nginx `.conf` files (default is `/home/custom-certificates`).
+| Variable | Description | Default |
+|---|---|---|
+| ENVIRONMENT | Specify the environment type (`dev` or `prod`). | prod |
+| CERTBOT_BACKUP | (optional) Enable certificate backup (`true` or `false`). | false |
+| CERTBOT_EMAIL | (optional) Email address for Let's Encrypt notifications (like expiration warnings). | N/A |
+| CERTBOT_BACKUP_PATH | (optional) Path for storing certificate backups. | /home/letsencrypt |
+| CERTBOT_RENEW_CRONJOB | (optional) Cronjob schedule for certificate renewal. | 0 5 ** * |
+| CUSTOM_CERTS_PATH | (optional) Path for custom SSL certificates. | /home/custom-certificates |
+| CUSTOM_NGINX_CONFIG_FILES_PATH | (optional) Path for custom Nginx `.conf` files. | /home/nginx/configs |
 
-**TIP:** Let's Encrypt imposes limits on certificate generation, which can be reached quickly if there are configuration errors that force Certbot to repeatedly recreate certificates. Utilizing Certbot's backup feature can mitigate this issue. Certbot backups locally store Let's Encrypt configurations, preventing unnecessary certificate recreation.
-Before starting the service, Certbot checks the backup path. If a backup exists, Certbot loads the oldest configuration and certificates from the backup. This approach helps manage Let's Encrypt limits effectively, ensuring smoother certificate management and reducing the risk of hitting generation limits due to configuration errors. **This last feature just works with `CERTBOT_BACKUP` to true (default false)**
+## Supported Environment Modes
 
-## Supported Deployment Modes
+1. **Production (default)**:
 
-1. **Development (dev)**:
+    - Supports multiple modes:
+      - `http`: HTTP only.
+      - `letsencrypt`: Uses Let's Encrypt for generating and renewing certificates.
+      - `custom`: Uses custom SSL certificates.
+      - `letsencrypt-staging`: Uses Let's Encrypt staging server for testing.
+    - If you don't want to redirect http to https, you can add `http_redirect` to false.
 
-- Uses self-signed certificates.
-- Default domain is `localhost` or `127.0.0.1`.
-- Redirects http to https.
+2. **Development**:
 
-2. **Production (prod)**:
-
-- Supports multiple modes:
-  - `http`: HTTP only.
-  - `letsencrypt`: Uses Let's Encrypt for generating and renewing certificates.
-  - `custom`: Uses custom SSL certificates.
-  - `letsencrypt-staging`: Uses Let's Encrypt staging server for testing.
-- If you don't want to redirect http to https, you can add `http_redirect` to false.
+    - Uses self-signed certificates.
+    - Default domain is `localhost` or `127.0.0.1`.
+    - Redirects http to https.
 
 ## Docker Compose Example
 
@@ -64,11 +75,26 @@ services:
       - ./services/s1/data.txt:/var/www/html/scripts/s1.txt
       - ./services/s2/static:/var/www/html/s2/static
       - nginx-server:/home/letsencrypt # backup
+    environment:
+      - ENVIRONMENT=production
 volumes:
   nginx-server:
 ```
 
-## Configuration JSON Example (`config.json`)
+## Domain Configuration
+
+The service uses a JSON configuration file (`config.json`) to define domain settings. Each domain can be configured with specific parameters for the desired deployment mode:
+
+| Field | Description | Mode | Default |
+|---|---|---|---|
+| `names` | List of domain names for the server block | ALL | N/A |
+| `mode` | Deployment mode (`http`, `letsencrypt`, `letsencrypt-staging`, `custom`) | ALL | letsencrypt |
+| `email` | Email for Let's Encrypt notifications | letsencrypt | value defined on ENV VAR `CERTBOT_EMAIL` |
+| `http_redirect` | Enable/disable HTTP to HTTPS redirection | letsencrypt & custom | true |
+| `cert_file` | Custom SSL certificate file name | custom | N/A |
+| `privkey_file` | Custom SSL private key file name | custom | N/A |
+
+### Configuration JSON Example (`config.json`)
 
 ```json
 {
@@ -134,6 +160,8 @@ server {
 ## Notes
 
 - Nginx reloads its service automatically upon modification of `.conf` files.
+- **TIP:** Let's Encrypt imposes limits on certificate generation, which can be reached quickly if there are configuration errors that force Certbot to repeatedly recreate certificates. Utilizing Certbot's backup feature can mitigate this issue. Certbot backups locally store Let's Encrypt configurations, preventing unnecessary certificate recreation.
+Before starting the service, Certbot checks the backup path. If a backup exists, Certbot loads the oldest configuration and certificates from the backup. This approach helps manage Let's Encrypt limits effectively, ensuring smoother certificate management and reducing the risk of hitting generation limits due to configuration errors. **This last feature just works with `CERTBOT_BACKUP` to true (default false)**
 
 ## Examples
 

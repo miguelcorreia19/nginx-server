@@ -9,6 +9,9 @@ module.exports = async () => {
   const certs = { ..._certs };
 
   for (let id in certs) {
+    if (!certs[id].mode) {
+      certs[id].mode = 'letsencrypt';
+    }
     if (certs[id].mode !== 'letsencrypt-staging' && certs[id].mode !== 'letsencrypt') {
       delete certs[id];
     }
