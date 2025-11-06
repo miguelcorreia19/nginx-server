@@ -3,6 +3,7 @@
 This Docker image facilitates managing multiple domains with Nginx server configurations, enabling seamless deployment for both development and production environments. It incorporates features such as HTTPS support via Let's Encrypt or custom SSL certificates, automated certificate renewal, and flexible domain mapping.
 
 **GitHub: https://github.com/miguelcorreia19/nginx-server**
+
 **Docker Hub: https://hub.docker.com/r/miguelcorreia19/nginx-server**
 
 ## Features
