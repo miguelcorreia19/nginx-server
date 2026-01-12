@@ -1,0 +1,8 @@
+{
+  "someid": {
+    "names": [
+      "mydomain.com"
+    ],
+    "mode": "letsencrypt"
+  }
+}

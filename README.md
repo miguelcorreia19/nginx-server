@@ -164,6 +164,7 @@ server {
 
 - Replace default Nginx configuration files (`proxy.conf` and `nginx.conf`) by mounting volumes.
 - Customize SSL certificates and Nginx configurations as per specific requirements.
+- See the below [examples](#examples) for more details.
 
 ## Development Mode
 
@@ -179,9 +180,10 @@ Before starting the service, Certbot checks the backup path. If a backup exists,
 
 This repository includes several examples to demonstrate different configurations of the service. You can find these examples in the `examples` directory:
 
-- [**Custom**](examples/custom): Demonstrates how to run the service with custom SSL certificates and Nginx configurations.
+- [**Custom-certs**](examples/custom-certs): Demonstrates how to run the service with custom SSL certificates and Nginx configurations.
 - [**Dev**](examples/dev): Illustrates setting up a development environment for the service using Nginx.
 - [**Letsencrypt**](examples/letsencrypt): Shows how to configure the service to use Let's Encrypt for SSL certificates.
+- [**Custom-configs**](examples/custom-configs): Demonstrates how to replace default Nginx configurations ([`nginx.conf`](nginx/nginx.conf) and [`proxy.conf`](nginx/proxy.conf)).
 
 ## Combination
 

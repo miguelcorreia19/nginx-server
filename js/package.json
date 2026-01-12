@@ -9,6 +9,6 @@
   "author": "miguelcorreia19",
   "license": "ISC",
   "dependencies": {
-    "luxon": "^2.4.0"
+    "luxon": "^3.7.2"
   }
 }

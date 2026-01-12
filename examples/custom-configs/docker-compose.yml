@@ -13,11 +13,9 @@ services:
     volumes:
       - ./nginx/sites/:/home/nginx/sites
       - ./nginx/config.json:/home/config.json
-      - ./nginx/custom-certificates:/home/custom-certificates
-      - ./server/nginx/configs/:/home/nginx/configs
+      - ./nginx/configs/:/home/nginx/configs
     environment:
       - ENVIRONMENT=production
-
 
   service1:
     image: service1

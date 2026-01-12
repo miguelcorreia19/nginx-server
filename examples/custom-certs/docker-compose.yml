@@ -1,0 +1,24 @@
+version: "3"
+
+services:
+  nginx-server:
+    image: miguelcorreia19/nginx-server:latest
+    container_name: nginx-server
+    restart: always
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - ./nginx/sites/:/home/nginx/sites
+      - ./nginx/config.json:/home/config.json
+      - ./nginx/custom-certificates:/home/custom-certificates
+    environment:
+      - ENVIRONMENT=production
+
+  service1:
+    image: service1
+    container_name: service1
+    ports:
+      - 12345:12345
