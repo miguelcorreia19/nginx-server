@@ -1,6 +1,6 @@
-# Example with Custom Certificates
+# Example with Custom Configurations
 
-This example demonstrates how to run the service with custom SSL certificates using Nginx. By replacing the default `proxy.conf` file, you can customize Nginx configurations according to your needs.
+This example demonstrates how to run the service with custom configurations using Nginx, and SSL certificates using `letsencrypt` functionality. By replacing the default `proxy.conf` file, you can customize Nginx configurations according to your needs.
 
 ## Directory Structure
 
@@ -8,7 +8,6 @@ In the `docker-compose.yml` file, the following directory is mapped:
 
 - **nginx**: Contains necessary Nginx configurations.
   - **config**: This directory replaces some Nginx config files, specifically `proxy.conf`.
-  - **custom-certificates**: Holds the SSL certificates.
   - **sites**: Nginx domain configuration files.
   - **config.json**: Configuration file that sets up the Nginx service.
 
@@ -16,11 +15,9 @@ In the `docker-compose.yml` file, the following directory is mapped:
 
 1. **Replace Default Configurations**: Customize Nginx configurations by replacing files in the `config` directory. For this example, focus on modifying `proxy.conf`.
 
-2. **Custom SSL Certificates**: Store your custom SSL certificates in the `custom-certificates` directory.
+2. **Domain Configuration**: Adjust Nginx domain configurations in the `sites` directory as required.
 
-3. **Domain Configuration**: Adjust Nginx domain configurations in the `sites` directory as required.
-
-4. **Configuration Setup**: Modify `config.json` to configure the Nginx service according to your setup.
+3. **Configuration Setup**: Modify `config.json` to configure the Nginx service according to your setup.
 
 ## Docker Compose Configuration
 
@@ -40,7 +37,6 @@ services:
     volumes:
       - ./nginx/sites/:/home/nginx/sites
       - ./nginx/config.json:/home/config.json
-      - ./nginx/custom-certificates:/home/custom-certificates
       - ./server/nginx/configs/:/home/nginx/configs
     environment:
       - ENVIRONMENT=production
@@ -54,6 +50,5 @@ Feel free to customize Nginx configurations, SSL certificates, domain settings, 
 
 ## Notes
 
-- Make sure SSL certificates are correctly configured and match the domain settings.
 - Test the Nginx configurations to ensure proper functioning of the service.
 - Refer to Nginx documentation for advanced configurations and troubleshooting.
