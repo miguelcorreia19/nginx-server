@@ -32,9 +32,12 @@ RUN apk upgrade --available
 # Copying Nginx Files
 COPY ./nginx/proxy.conf /etc/nginx/proxy.conf
 COPY ./nginx/nginx.conf /etc/nginx/nginx.conf
+COPY ./nginx/http-common.conf /etc/nginx/http-common.conf
 # COPY ./nginx/nginx.vh.default.conf /etc/nginx/nginx.80_redirect.conf
 # COPY ./nginx/nginx.vh.default.conf /etc/nginx/or_nginx.80_redirect.conf
 RUN mkdir /etc/nginx/conf
+
+# TODO: check if is needed
 COPY ./nginx/ /etc/nginx/conf/
 
 # Copying nginx sites conf files

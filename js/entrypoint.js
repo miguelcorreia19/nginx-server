@@ -10,6 +10,7 @@ const { command, mapCustomNginxConf } = require("./utils.js");
 const NGINX_CONF_FILES = [
   "nginx.conf",
   "proxy.conf",
+  "http-common.conf",
 ];
 
 const start = async () => {

@@ -1,19 +1,19 @@
 # Example with Custom Configurations
 
-This example demonstrates how to run the service with custom configurations using Nginx, and SSL certificates using `letsencrypt` functionality. By replacing the default `proxy.conf` file, you can customize Nginx configurations according to your needs.
+This example demonstrates how to run the service with custom configurations using Nginx, and SSL certificates using `letsencrypt` functionality. By replacing the default `proxy.conf` and `http-common.conf` files, you can customize Nginx configurations according to your needs.
 
 ## Directory Structure
 
 In the `docker-compose.yml` file, the following directory is mapped:
 
 - **nginx**: Contains necessary Nginx configurations.
-  - **config**: This directory replaces some Nginx config files, specifically `proxy.conf`.
+  - **config**: This directory replaces some Nginx config files, specifically `proxy.conf` and `http-common.conf`.
   - **sites**: Nginx domain configuration files.
   - **config.json**: Configuration file that sets up the Nginx service.
 
 ## Usage
 
-1. **Replace Default Configurations**: Customize Nginx configurations by replacing files in the `config` directory. For this example, focus on modifying `proxy.conf`.
+1. **Replace Default Configurations**: Customize Nginx configurations by replacing files in the `config` directory. For this example, focus on modifying `proxy.conf` and `http-common.conf`.
 
 2. **Domain Configuration**: Adjust Nginx domain configurations in the `sites` directory as required.
 
