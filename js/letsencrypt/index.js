@@ -49,7 +49,7 @@ module.exports = async () => {
 
           const deleted = await deleteCert(id);
           if (deleted) console.log(`Certificate ${id} deleted!`);
-          else console.log(`error: Certificate ${id} not deleted!`);
+          else console.error(`Certificate ${id} deletion failed`);
 
           await command("certbot certificates");
 
@@ -58,7 +58,7 @@ module.exports = async () => {
           const created = await createCert(id);
 
           if (created) console.log(`Certificate ${id} created!`);
-          else console.log(`error: Certificate ${id} not created!`);
+          else console.error(`Certificate ${id} creation failed`);
 
         }
       } else { // not exists
@@ -68,7 +68,7 @@ module.exports = async () => {
         const created = await createCert(id);
 
         if (created) console.log(`Certificate ${id} created!`)
-        else console.log(`error: Certificate ${id} not created!`)
+        else console.error(`Certificate ${id} creation failed`)
       }
 
       console.log('');
@@ -83,7 +83,7 @@ module.exports = async () => {
 
         const deleted = await deleteCert(id);
         if (deleted) console.log(`Certificate ${id} deleted!`);
-        else console.log(`error: Certificate ${id} not deleted!`);
+        else console.error(`Certificate ${id} deletion failed`);
       }
     }
 

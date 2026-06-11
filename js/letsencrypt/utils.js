@@ -37,7 +37,7 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
         new_line = output.indexOf('\n', index);
         new_cert.cert_path = output.substring(index + CERT_PATH.length + 1/* white space */, new_line);
       } else {
-        console.error("ERROR 1.1");
+        console.error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_PATH}"`);
       }
 
       // Get cert private key path
@@ -45,7 +45,7 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
         new_line = output.indexOf('\n', index);
         new_cert.cert_key_path = output.substring(index + CERT_KEY_PATH.length + 1/* white space */, new_line);
       } else {
-        console.error("ERROR 1.2");
+        console.error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_KEY_PATH}"`);
       }
 
       // Get cert domains
@@ -54,10 +54,10 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
         new_cert.cert_domains = output.substring(index + CERT_DOMAINS.length + 1/* white space */, new_line);
         new_cert.cert_domains = new_cert.cert_domains.split(' ').filter(c => c.length > 0);
       } else {
-        console.error("ERROR 1.3");
+        console.error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_DOMAINS}"`);
       }
 
-      // Get cert validation
+      // Get cert status
       if ((index = output.indexOf(CERT_VALID, last_index)) !== -1) {
         new_line = output.indexOf('\n', index);
         const expiry = output.substring(index + CERT_VALID.length + 1/* white space */, new_line);
@@ -65,7 +65,7 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
 
         new_cert.status = expiry.includes('INVALID') ? expiry.includes('TEST_CERT') ? 'staging' : 'invalid' : 'valid';
       } else {
-        console.error("ERROR 1.4");
+        console.error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_VALID}" (status)`);
       }
 
       // Get cert validity
@@ -74,7 +74,7 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
         new_cert.validity = DateTime.fromJSDate(new Date(output.substring(index + CERT_VALID.length + 1/* white space */, new_line - 1)));
         // valid | invalid | staging
       } else {
-        console.error("ERROR 1.5");
+        console.error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_VALID}" (validity)`);
       }
 
       found_certs[cert_id] = new_cert;

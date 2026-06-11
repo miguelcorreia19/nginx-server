@@ -70,6 +70,15 @@ RUN rm -f /var/log/nginx/*
 COPY entrypoint.sh /usr/local/bin/
 COPY certbot_renew.sh /usr/local/bin/
 COPY reload.sh /usr/local/bin/
+# certbot_renew.log is appended to directly by cron (`>> .../certbot_renew.log`
+# in the crontab line built by js/letsencrypt/index.js) — its content bypasses
+# Docker's stdout/stderr log pipeline entirely, unlike every other script's
+# output. At the default daily schedule it grows by only a few KB per run, so
+# in-container rotation isn't currently necessary. It's also not safe to add:
+# rotating/truncating this file from within certbot_renew.sh would race the
+# cron shell's already-open append handle on the same path and risk corrupting
+# the log. If long-term retention ever becomes a concern, mount /var/log/certbot
+# as a volume and rotate it at the host/orchestration level instead.
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reload.sh \
     && chmod 777 /usr/local/bin/certbot_renew.sh \
     && mkdir /var/log/certbot \

@@ -1,5 +1,7 @@
 #!/bin/bash
 
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [reload] $*"; }
+
 mkdir -p $CUSTOM_NGINX_CONFIG_FILES_PATH
 
 # Exit cleanly and visibly on SIGTERM/SIGINT (e.g. `docker exec ... kill <pid>`,
@@ -21,20 +23,24 @@ mkdir -p $CUSTOM_NGINX_CONFIG_FILES_PATH
 # the container, including nginx). `inotifywait` is therefore reaped by name —
 # this script is the only thing that ever spawns it — so the upstream half of
 # the pipe doesn't linger as an orphan after the reader exits.
-trap 'echo "Reload watcher stopping (signal received)"; kill "$WATCH_PID" 2>/dev/null; pkill inotifywait 2>/dev/null; exit 0' TERM INT
+trap 'log "Reload watcher stopping (signal received)"; kill "$WATCH_PID" 2>/dev/null; pkill inotifywait 2>/dev/null; exit 0' TERM INT
 
 inotifywait -m -e close_write /home/nginx/sites/ -e close_write $CUSTOM_NGINX_CONFIG_FILES_PATH |
 	while read path action file; do
-		echo "File '$file' was changed"
-		echo "Realoading Nginx"
+		log "File '$file' was changed — reloading nginx"
 		sleep 1
 		nginx -s reload
+		RELOAD_RC=$?
 		sleep 2
-		echo "Nginx realoaded"
+		if [ "$RELOAD_RC" -eq 0 ]; then
+			log "Nginx reloaded successfully"
+		else
+			log "ERROR: nginx reload failed (exit $RELOAD_RC) — configuration may be invalid; nginx continues running with its previous configuration"
+		fi
 	done &
 WATCH_PID=$!
 
 wait "$WATCH_PID"
 
-echo "Reload script ended!"
+log "Reload script ended"
 exec "$@"

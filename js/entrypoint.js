@@ -1,4 +1,4 @@
-console.log("ENVIRONMENT", process.env.ENVIRONMENT, '\n')
+console.log(`Starting in ENVIRONMENT="${process.env.ENVIRONMENT || ''}" (defaults to "production" if unset)\n`);
 
 const letsencrypt = require('./letsencrypt');
 const dev = require('./dev');
