@@ -1,196 +1,637 @@
-# Dockerized Multi-Domain Nginx Server with HTTP/HTTPS Modes
+# nginx-server
 
-This Docker image provides a flexible Nginx setup for managing multiple domains with full HTTP and HTTPS support. It includes automated SSL certificate management (via Let's Encrypt or custom certificates), seamless environment configuration, and automatic Nginx reloads on changes.
-
-## Key features:
-
-- HTTPS support
-  - via Let's Encrypt (automatic certificate generation and renewal)
-  - via custom SSL certificates (can use your own certificates)
-- Automatic HTTP → HTTPS redirection
-- HTTP only mode
-- Development and production modes
-- Flexible domain mapping
-- Automatic configuration reload on updates
+A Docker image providing a flexible, production-ready Nginx setup for managing multiple domains with full HTTP and HTTPS support. Includes automated SSL certificate management via Let's Encrypt or custom certificates, safe certbot renewal with locking and port-80 restore, automatic nginx config reload on file changes, and a built-in healthcheck.
 
 ## Links
 
-**GitHub: <https://github.com/miguelcorreia19/nginx-server>**
+- **GitHub**: <https://github.com/miguelcorreia19/nginx-server>
+- **Docker Hub**: <https://hub.docker.com/r/miguelcorreia19/nginx-server>
 
-**Docker Hub: <https://hub.docker.com/r/miguelcorreia19/nginx-server>**
+---
 
-## Details
+## Table of Contents
 
-- **Domain Management**: Easily configure and manage multiple domains within Nginx server configurations.
-- **HTTPS Support**: Facilitates HTTPS connections with Let's Encrypt SSL certificates or custom SSL certificates.
-- **Automated Certificate Renewal**: Enables automatic renewal of SSL certificates to ensure continuous security.
-- **Flexible Deployment**: Supports both development (dev) and production (prod) environments, with customizable settings for different deployment scenarios.
+1. [Overview](#overview)
+2. [Features](#features)
+3. [Requirements](#requirements)
+4. [Quick Start](#quick-start)
+5. [Configuration](#configuration)
+6. [Supported Modes](#supported-modes)
+7. [Environment Variables](#environment-variables)
+8. [SSL Certificate Modes](#ssl-certificate-modes)
+9. [Certbot Renewal](#certbot-renewal)
+10. [Healthcheck](#healthcheck)
+11. [Logs](#logs)
+12. [Troubleshooting](#troubleshooting)
+13. [Security Notes](#security-notes)
+14. [Development](#development)
+15. [Testing](#testing)
+16. [Changelog](#changelog)
+
+---
+
+## Overview
+
+`nginx-server` wraps Nginx inside an Alpine-based Docker image with a Node.js startup layer that reads a `config.json` file, generates the appropriate nginx server blocks and SSL configuration for each domain, then hands off to nginx. A file watcher reloads nginx automatically when any site config file changes.
+
+The image supports four SSL/TLS modes per domain — Let's Encrypt, Let's Encrypt staging, custom certificates, and HTTP-only — all configurable from a single JSON file. A development mode generates self-signed certificates locally without contacting any CA.
+
+---
+
+## Features
+
+- **Multiple SSL modes per domain**: Let's Encrypt, Let's Encrypt staging, custom certificates, HTTP-only
+- **Automatic HTTP → HTTPS redirection** (configurable per domain)
+- **Development mode** with self-signed certificates (no CA contact)
+- **Automatic nginx reload** on config file changes via inotifywait
+- **Safe certbot renewal** with atomic lock, port-80 restore, and failure detection
+- **Startup validation**: nginx config is validated with `nginx -t` before nginx starts; startup aborts with a clear error if invalid
+- **Healthcheck**: pidfile liveness + `nginx -t` config validity on every check interval
+- **Multi-domain support** from a single `config.json`
+- **Custom nginx config override**: replace `nginx.conf`, `proxy.conf`, `http-common.conf` by mounting a directory
+- **Certbot backup/restore**: optional backup of Let's Encrypt state to a named volume, loaded on next startup
+
+---
+
+## Requirements
+
+- Docker 20.10+ (or compatible container runtime)
+- Ports 80 and 443 available on the host (Let's Encrypt and custom SSL modes)
+- A valid `config.json` mounted at `/home/config.json`
+- For Let's Encrypt: publicly reachable domain(s) pointing at the host
+
+---
+
+## Quick Start
+
+### HTTP-only (simplest setup)
+
+```json
+// config.json
+{
+  "mysite": {
+    "names": ["mysite.example.com"],
+    "mode": "http"
+  }
+}
+```
+
+```yaml
+# docker-compose.yml
+services:
+  nginx-server:
+    image: miguelcorreia19/nginx-server:latest
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/sites/:/home/nginx/sites
+      - ./config.json:/home/config.json
+    environment:
+      - ENVIRONMENT=production
+```
+
+Create a site config at `nginx/sites/mysite.conf`:
+
+```nginx
+server {
+  include /etc/nginx/conf/mysite.conf;
+  server_name mysite.example.com;
+
+  location / {
+    root /var/www/html;
+  }
+}
+```
+
+```bash
+docker compose up -d
+docker compose logs -f
+```
+
+---
+
+## Configuration
+
+The service reads a JSON file mounted at `/home/config.json`. Each top-level key is a **certificate/site ID** (used as the name for generated nginx include files). The value is a configuration object for that site.
+
+### `config.json` fields
+
+| Field | Description | Required for | Default |
+|---|---|---|---|
+| `names` | List of domain names for the server block | all modes | — |
+| `mode` | `http`, `letsencrypt`, `letsencrypt-staging`, or `custom` | all | `letsencrypt` |
+| `email` | Email for Let's Encrypt notifications | `letsencrypt`, `letsencrypt-staging` | value of `CERTBOT_EMAIL` env var |
+| `http_redirect` | Redirect HTTP → HTTPS | `letsencrypt`, `custom` | `true` |
+| `cert_file` | Certificate filename in `CUSTOM_CERTS_PATH` | `custom` | — |
+| `privkey_file` | Private key filename in `CUSTOM_CERTS_PATH` | `custom` | — |
+
+### Full `config.json` example
+
+```json
+{
+  "main": {
+    "names": ["example.com", "www.example.com"],
+    "mode": "letsencrypt",
+    "email": "admin@example.com"
+  },
+  "api": {
+    "names": ["api.example.com"],
+    "mode": "letsencrypt",
+    "email": "admin@example.com",
+    "http_redirect": false
+  },
+  "staging-test": {
+    "names": ["test.example.com"],
+    "mode": "letsencrypt-staging",
+    "email": "admin@example.com"
+  },
+  "legacy": {
+    "names": ["old.example.com"],
+    "mode": "custom",
+    "cert_file": "old_example_com.pem",
+    "privkey_file": "old_example_com.key"
+  },
+  "static": {
+    "names": ["static.example.com"],
+    "mode": "http"
+  }
+}
+```
+
+### Site nginx config files
+
+Each site ID in `config.json` requires a corresponding nginx server block file in the mounted `sites/` directory. The file **must** include the generated SSL config for that ID:
+
+```nginx
+# nginx/sites/main.conf
+server {
+  # This line is required — it injects the SSL/TLS directives generated for this site.
+  include /etc/nginx/conf/main.conf;
+
+  server_name example.com www.example.com;
+
+  location / {
+    proxy_pass http://backend:8080/;
+  }
+
+  error_page 500 502 503 504 /50x.html;
+  location = /50x.html {
+    root /usr/share/nginx/html;
+  }
+}
+```
+
+The site config filename must match the key in `config.json` (e.g., key `"main"` → file `main.conf`).
+
+---
+
+## Supported Modes
+
+### Production (`ENVIRONMENT=production` or `prod`)
+
+The default. Supports multiple SSL modes per domain, controlled by `config.json`.
+
+#### HTTP-only mode (`"mode": "http"`)
+
+Serves plain HTTP on port 80. No certificates are generated or required.
+
+```json
+{
+  "mysite": {
+    "names": ["mysite.example.com"],
+    "mode": "http"
+  }
+}
+```
+
+#### Let's Encrypt (`"mode": "letsencrypt"`)
+
+Obtains a real certificate from Let's Encrypt. Requires the domain to be publicly reachable on port 80 for the ACME http-01 challenge.
+
+```json
+{
+  "mysite": {
+    "names": ["mysite.example.com"],
+    "mode": "letsencrypt",
+    "email": "admin@example.com"
+  }
+}
+```
+
+#### Let's Encrypt staging (`"mode": "letsencrypt-staging"`)
+
+Uses the Let's Encrypt staging server. Certificates are not trusted by browsers but the rate limits are much higher — use this to validate your setup before switching to `letsencrypt`.
+
+```json
+{
+  "mysite": {
+    "names": ["mysite.example.com"],
+    "mode": "letsencrypt-staging",
+    "email": "admin@example.com"
+  }
+}
+```
+
+#### Custom certificates (`"mode": "custom"`)
+
+Uses certificates you supply. Mount your certificate files at `CUSTOM_CERTS_PATH` (default `/home/custom-certificates`).
+
+```json
+{
+  "mysite": {
+    "names": ["mysite.example.com"],
+    "mode": "custom",
+    "cert_file": "mysite.pem",
+    "privkey_file": "mysite.key"
+  }
+}
+```
+
+```yaml
+volumes:
+  - ./certs/:/home/custom-certificates
+```
+
+### Development (`ENVIRONMENT=development` or `dev`)
+
+Generates a self-signed certificate locally. No CA contact, no public domain required. Intended for local development.
+
+**Requires** a `dev.conf` site file that includes the development SSL config:
+
+```nginx
+# nginx/sites/dev.conf
+server {
+  include /etc/nginx/conf/dev.conf;
+  server_name localhost;
+
+  location / {
+    proxy_pass http://myapp:3000/;
+  }
+}
+```
+
+```yaml
+environment:
+  - ENVIRONMENT=development
+volumes:
+  - ./nginx/sites/:/home/nginx/sites
+  - ./config.json:/home/config.json  # mount an empty {} if no domains are configured
+```
+
+See [`examples/dev/`](examples/dev/) for a complete Docker Compose example.
+
+---
 
 ## Environment Variables
 
 | Variable | Description | Default |
 |---|---|---|
-| ENVIRONMENT | Specify the environment type (`dev` or `prod`). | prod |
-| CERTBOT_BACKUP | (optional) Enable certificate backup (`true` or `false`). | false |
-| CERTBOT_EMAIL | (optional) Email address for Let's Encrypt notifications (like expiration warnings). | N/A |
-| CERTBOT_BACKUP_PATH | (optional) Path for storing certificate backups. | /home/letsencrypt |
-| CERTBOT_RENEW_CRONJOB | (optional) Cronjob schedule for certificate renewal. | 0 5 ** * |
-| CUSTOM_CERTS_PATH | (optional) Path for custom SSL certificates. | /home/custom-certificates |
-| CUSTOM_NGINX_CONFIG_FILES_PATH | (optional) Path for custom Nginx `.conf` files. | /home/nginx/configs |
+| `ENVIRONMENT` | Runtime mode: `production`/`prod` or `development`/`dev` | `production` |
+| `CERTBOT_EMAIL` | Fallback email for Let's Encrypt notifications | — |
+| `CERTBOT_BACKUP` | Enable certificate backup to `CERTBOT_BACKUP_PATH` (`true`/`false`) | `false` |
+| `CERTBOT_BACKUP_PATH` | Path for Let's Encrypt backup | `/home/letsencrypt` |
+| `CERTBOT_RENEW_CRONJOB` | Cron expression for renewal schedule | `0 5 * * *` (05:00 daily) |
+| `CUSTOM_CERTS_PATH` | Path where custom SSL certificate files are mounted | `/home/custom-certificates` |
+| `CUSTOM_NGINX_CONFIG_FILES_PATH` | Path for custom nginx config overrides (`nginx.conf`, `proxy.conf`, `http-common.conf`) | `/home/nginx/configs` |
 
-## Supported Environment Modes
+**Note**: `ENVIRONMENT` accepts both the short form (`prod`/`dev`) and the long form (`production`/`development`). Any other value causes the container to exit with a clear fatal error.
 
-1. **Production (default)**:
+---
 
-    - Supports multiple modes:
-      - `http`: HTTP only.
-      - `letsencrypt`: Uses Let's Encrypt for generating and renewing certificates.
-      - `custom`: Uses custom SSL certificates.
-      - `letsencrypt-staging`: Uses Let's Encrypt staging server for testing.
-    - If you don't want to redirect http to https, you can add `http_redirect` to false.
+## SSL Certificate Modes
 
-2. **Development**:
+### Combining modes
 
-    - Uses self-signed certificates.
-    - Default domain is `localhost` or `127.0.0.1`.
-    - Redirects http to https.
+Multiple modes can be active simultaneously in the same container. For example, you can have one domain use Let's Encrypt, another use a custom certificate, and a third serve HTTP-only — all from a single `config.json`.
 
-    See [below](#development-mode) for an example of how to run in development mode.
+### Overriding nginx config files
 
-## Docker Compose Example
+Mount a directory at `CUSTOM_NGINX_CONFIG_FILES_PATH` (default `/home/nginx/configs`) containing any of `nginx.conf`, `proxy.conf`, or `http-common.conf` to override the built-in defaults:
+
+```yaml
+volumes:
+  - ./my-nginx-overrides/:/home/nginx/configs
+```
+
+Only the files present in the mounted directory are replaced; the others continue using built-in defaults.
+
+### Custom certificate setup example
 
 ```yaml
 services:
   nginx-server:
-    # build: ./nginx-server
     image: miguelcorreia19/nginx-server:latest
-    container_name: nginx-server
     restart: always
-    cap_add:
-      - NET_ADMIN
     ports:
-      - 80:80
-      - 443:443
+      - "80:80"
+      - "443:443"
     volumes:
-      - ./nginx/sites/:/home/nginx/sites # map domain nginx conf files
-      - ./nginx/logs/:/var/log/nginx/ # map logs
-      - ./nginx/config.json:/home/config.json # map config
-      - ./public:/var/www/html/
-      - ./services/s1/data.txt:/var/www/html/scripts/s1.txt
-      - ./services/s2/static:/var/www/html/s2/static
-      - nginx-server:/home/letsencrypt # backup
+      - ./nginx/sites/:/home/nginx/sites
+      - ./config.json:/home/config.json
+      - ./certs/:/home/custom-certificates
     environment:
       - ENVIRONMENT=production
-volumes:
-  nginx-server:
 ```
-
-## Domain Configuration
-
-The service uses a JSON configuration file (`config.json`) to define domain settings. Each domain can be configured with specific parameters for the desired deployment mode:
-
-| Field | Description | Mode | Default |
-|---|---|---|---|
-| `names` | List of domain names for the server block | ALL | N/A |
-| `mode` | Deployment mode (`http`, `letsencrypt`, `letsencrypt-staging`, `custom`) | ALL | letsencrypt |
-| `email` | Email for Let's Encrypt notifications | letsencrypt | value defined on ENV VAR `CERTBOT_EMAIL` |
-| `http_redirect` | Enable/disable HTTP to HTTPS redirection | letsencrypt & custom | true |
-| `cert_file` | Custom SSL certificate file name | custom | N/A |
-| `privkey_file` | Custom SSL private key file name | custom | N/A |
-
-### Configuration JSON Example (`config.json`)
 
 ```json
 {
-  "foo": {
-    "names": ["foo.mydomain.com"],
-    "email": "admin@email.com",
-    "mode": "letsencrypt"
-  },
-  "bar": {
-    "names": ["bar.myotherdomain.com"],
-    "email": "miguelcorreia19@hotmail.com",
-    "mode": "letsencrypt-staging"
-  },
-  "custom": {
-    "names": ["custom.mydomain.com"],
-    "email": "admin2@email.com",
-    "mode": "custom"
-  },
-  "main": {
-    "names": ["mydomain.com"],
-    "mode": "letsencrypt",
-    "http_redirect": false
-  },
-  "old": {
-    "names": ["somehttp.mydomain.com"],
-    "mode": "http"
-  },
-  "secondbar": {
-    "names": ["bar.mydomain.com"],
+  "mysite": {
+    "names": ["mysite.example.com"],
     "mode": "custom",
-    "cert_file": "bar_mydomain_com.pem",
-    "privkey_file": "bar.mydomain.com.key"
+    "cert_file": "mysite_fullchain.pem",
+    "privkey_file": "mysite.key",
+    "http_redirect": true
   }
 }
 ```
 
-## Nginx Configuration File Example
+---
 
-Here is an example of a custom Nginx configuration file (`secondbar.conf`) for the domain `bar.mydomain.com`:
+## Certbot Renewal
 
-**It's important to include the line that imports the SSL configurations generated by the service `include /etc/nginx/conf/${NAME}.conf`, which is done with the same name as the domain configuration in the JSON and config files.**
+Certificate renewal runs automatically via a cron job set up at container startup (default schedule: `0 5 * * *`, i.e. 05:00 daily).
+
+### What happens during renewal
+
+1. An atomic lock (`mkdir`) prevents concurrent renewal runs. If a renewal is already in progress, the new cron invocation logs "already in progress" and exits cleanly.
+2. The port-80 nginx config is backed up and port 80 is taken offline so certbot can complete the http-01 ACME challenge.
+3. `certbot renew` is invoked non-interactively.
+4. Port 80 is restored and nginx is reloaded, regardless of whether renewal succeeded or failed (EXIT trap).
+
+### Renewal logs
+
+Renewal output is written to `/var/log/certbot/certbot_renew.log` inside the container (bypasses Docker's log pipeline — this is a cron-driven file log):
+
+```bash
+docker exec <container> cat /var/log/certbot/certbot_renew.log
+```
+
+A successful renewal run looks like:
+
+```
+2026-06-08 05:00:01 [certbot_renew] certbot renew started
+2026-06-08 05:00:01 [certbot_renew] Port 80 disabled; nginx reloaded
+[certbot_renew.js] Starting certificate renewal — 2026-06-08T05:00:01.000Z
+... certbot renewal output per certificate ...
+[certbot_renew.js] certbot renew finished — 2026-06-08T05:00:03.000Z
+2026-06-08 05:00:03 [certbot_renew] certbot renew succeeded
+2026-06-08 05:00:03 [certbot_renew] Restoring port-80 config...
+2026-06-08 05:00:03 [certbot_renew] nginx reloaded after port-80 restore
+```
+
+### Let's Encrypt rate limits
+
+Let's Encrypt imposes certificate issuance rate limits. To avoid hitting them during configuration iteration, use `letsencrypt-staging` mode first to verify your setup, then switch to `letsencrypt`.
+
+Enable `CERTBOT_BACKUP=true` to persist Let's Encrypt state across container restarts. On next startup, if a backup exists, certbot loads certificates from the backup instead of re-issuing.
+
+### Known limitation: SIGKILL during renewal
+
+A `SIGKILL` during an active renewal cannot be trapped by the shell. It leaves port 80 disabled and the lock directory behind until the next scheduled renewal run, which detects the stale lock (dead PID), clears it, and restores port 80. At the default daily schedule, this means port 80 could be offline for up to 24 hours in the SIGKILL case. Use `SIGTERM` (Docker's `docker stop` default) for clean shutdowns.
+
+---
+
+## Healthcheck
+
+The container includes a built-in Docker healthcheck that runs every 30 seconds:
+
+1. Reads `/var/run/nginx.pid` and verifies the nginx master process is alive (`kill -0 <pid>`).
+2. Runs `nginx -t` to confirm the on-disk configuration is valid.
+
+Both checks must pass for the container to report `healthy`. The check does not send any HTTP requests, so it works correctly in all modes (including development mode before a `dev.conf` is mounted).
+
+```bash
+# Check container health status
+docker inspect --format='{{.State.Health.Status}}' <container>
+
+# View recent health check output
+docker inspect --format='{{range .State.Health.Log}}{{.Output}}{{end}}' <container>
+```
+
+**Healthcheck parameters**: `--interval=30s --timeout=5s --start-period=15s --retries=3`
+
+---
+
+## Logs
+
+### Container logs (Docker stdout/stderr)
+
+All startup, reload, and fatal error messages appear in `docker logs`:
+
+```bash
+docker logs <container>
+docker logs -f <container>      # follow
+docker logs -t <container>      # with Docker-added timestamps
+```
+
+**Startup sequence** (normal):
+```
+2026-06-08 11:27:52 [entrypoint] Starting up (ENVIRONMENT=production)
+Starting in ENVIRONMENT="production" (defaults to "production" if unset)
+...
+2026-06-08 11:27:55 [entrypoint] Entrypoint script ended — starting nginx
+```
+
+**Startup failure** (invalid nginx config):
+```
+2026-06-08 11:27:52 [entrypoint] Starting up (ENVIRONMENT=production)
+Fatal: generated nginx configuration is invalid (nginx -t failed): ...
+2026-06-08 11:27:53 [entrypoint] Fatal: entrypoint.js failed — refusing to start nginx with an incomplete/invalid configuration
+```
+
+**Nginx reload** (on config file change):
+```
+2026-06-08 12:00:01 [reload] File 'main.conf' was changed — reloading nginx
+2026-06-08 12:00:04 [reload] Nginx reloaded successfully
+```
+
+**Nginx reload failure** (invalid config pushed):
+```
+2026-06-08 12:00:01 [reload] File 'main.conf' was changed — reloading nginx
+2026-06-08 12:00:04 [reload] ERROR: nginx reload failed (exit 1) — configuration may be invalid; nginx continues running with its previous configuration
+```
+
+### Nginx access/error logs
+
+```bash
+docker exec <container> cat /var/log/nginx/access.log
+docker exec <container> cat /var/log/nginx/error.log
+```
+
+Or mount the log directory as a volume:
+```yaml
+volumes:
+  - ./nginx/logs/:/var/log/nginx/
+```
+
+### Certbot renewal log
+
+```bash
+docker exec <container> cat /var/log/certbot/certbot_renew.log
+```
+
+This file is written directly by cron (not via Docker's log pipeline). It persists for the lifetime of the container unless the container is removed.
+
+---
+
+## Troubleshooting
+
+### Container exits immediately at startup
+
+**Invalid ENVIRONMENT value**:
+```
+Fatal: invalid ENVIRONMENT value "staging" — must be 'development'/'dev' or 'production'/'prod'
+[entrypoint] Fatal: entrypoint.js failed — refusing to start nginx...
+```
+Fix: set `ENVIRONMENT` to `production`, `prod`, `development`, or `dev`.
+
+**Missing or invalid `config.json`**:
+```
+Fatal: config.json not found. Mount your configuration file at /home/config.json
+```
+Fix: ensure `config.json` is mounted at `/home/config.json`.
+
+**Invalid nginx configuration**:
+```
+Fatal: generated nginx configuration is invalid (nginx -t failed):
+nginx: [emerg] unknown directive "foo" in /etc/nginx/proxy.conf:1
+```
+Fix: check your custom nginx config files for syntax errors. Run `nginx -t` locally if possible.
+
+### Container starts but healthcheck stays `unhealthy`
+
+- Check `docker logs <container>` for errors during startup.
+- Run `docker exec <container> nginx -t` to check nginx config validity.
+- Check `docker exec <container> cat /var/run/nginx.pid` — if empty, nginx may have crashed.
+
+### Let's Encrypt certificate not issued
+
+- Ensure port 80 is publicly reachable from the internet before startup.
+- Check that `names` in `config.json` match your actual public DNS records.
+- Use `letsencrypt-staging` mode first to validate your setup without consuming rate-limit quota.
+- Check `docker logs <container>` for certbot error output.
+
+### Nginx not reloading after config change
+
+- Ensure you are modifying files inside the mounted `sites/` directory, not inside the container.
+- Check `docker logs <container>` for `[reload]` messages — if you see `inotifywait` errors, the watch may not have started.
+
+### Renewal not running
+
+- Check `docker exec <container> crontab -l` to confirm the cron job was registered.
+- Check `/var/log/certbot/certbot_renew.log` for the most recent run output.
+- A stale lock from a previous `SIGKILL` is cleared automatically on the next scheduled run.
+
+### Checking container health manually
+
+```bash
+# Quick status
+docker inspect --format='{{.State.Health.Status}}' <container>
+
+# Full health log
+docker inspect <container> | grep -A 20 '"Health"'
+
+# Manual check inside container
+docker exec <container> nginx -t
+docker exec <container> sh -c 'pid=$(cat /var/run/nginx.pid 2>/dev/null) && [ -n "$pid" ] && kill -0 "$pid" && echo "nginx alive" || echo "nginx down"'
+```
+
+---
+
+## Security Notes
+
+- **Command injection protection**: all shell-out calls in the Node startup scripts use `execFile` (not `exec`/`shell: true`), preventing injection via domain names or environment variables.
+- **Input validation**: `config.json` entries are validated at startup before any mode handler runs. Invalid entries abort with a clear error rather than generating broken nginx config.
+- **Certificates never exposed**: certificate paths and private key paths are passed as array arguments to `execFile`; they are never interpolated into shell strings.
+- **Self-signed certs in dev only**: self-signed certificate generation runs only in `development` mode. Production modes require a real CA or your own certificates.
+- **cap_add: NET_ADMIN**: shown in examples for environments that need it; remove if your deployment does not require it.
+
+---
+
+## Development
+
+### Running locally (dev mode)
+
+```yaml
+# docker-compose.yml
+services:
+  nginx-server:
+    image: miguelcorreia19/nginx-server:latest
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/sites/:/home/nginx/sites
+    environment:
+      - ENVIRONMENT=development
+```
+
+Create `nginx/sites/dev.conf`:
 
 ```nginx
 server {
- # Please don't remove this line, it helps to apply the necessary SSL configurations for each running mode
- include /etc/nginx/conf/secondbar.conf;
+  include /etc/nginx/conf/dev.conf;
+  server_name localhost;
 
- server_name bar.mydomain.com;
-
- location / {
-  root   /var/www/html/bar;
- }
-
- # redirect server error pages to the static page /50x.html
- error_page   500 502 503 504  /50x.html;
- location = /50x.html {
-  root   /var/www/html/error;
- }
+  location / {
+    return 200 "hello from dev\n";
+  }
 }
 ```
 
-## Customization
+```bash
+docker compose up
+# Access at https://localhost (self-signed cert warning is expected)
+```
 
-- Replace default Nginx configuration files (`proxy.conf`, `http-common.conf`, `nginx.conf`) by mounting volumes.
-- Customize SSL certificates and Nginx configurations as per specific requirements.
-- See the below [examples](#examples) for more details.
+### Building from source
 
-## Development Mode
+```bash
+docker build -t nginx-server .
+```
 
-To run the service in development mode, you need to create a `dev.conf` file with the `include /etc/nginx/conf/dev.conf;` line and mount it to the container. Below is an [example](#examples) of how to set up the service in development mode using Docker Compose.
+### Examples
 
-## Notes
+| Directory | What it shows |
+|---|---|
+| [`examples/dev/`](examples/dev/) | Development mode with self-signed certs |
+| [`examples/letsencrypt/`](examples/letsencrypt/) | Production Let's Encrypt setup |
+| [`examples/custom-certs/`](examples/custom-certs/) | Custom SSL certificate setup |
+| [`examples/custom-configs/`](examples/custom-configs/) | Overriding built-in nginx config files |
 
-- Nginx reloads its service automatically upon modification of `.conf` files.
-- **TIP:** Let's Encrypt imposes limits on certificate generation, which can be reached quickly if there are configuration errors that force Certbot to repeatedly recreate certificates. Utilizing Certbot's backup feature can mitigate this issue. Certbot backups locally store Let's Encrypt configurations, preventing unnecessary certificate recreation.
-Before starting the service, Certbot checks the backup path. If a backup exists, Certbot loads the oldest configuration and certificates from the backup. This approach helps manage Let's Encrypt limits effectively, ensuring smoother certificate management and reducing the risk of hitting generation limits due to configuration errors. **This last feature just works with `CERTBOT_BACKUP` to true (default false)**
+---
 
-## Examples
+## Testing
 
-This repository includes several examples to demonstrate different configurations of the service. You can find these examples in the `examples` directory:
+The test suite runs inside the `js/` directory using Jest. It does not require Docker or an internet connection.
 
-- [**Custom-certs**](examples/custom-certs): Demonstrates how to run the service with custom SSL certificates and Nginx configurations.
-- [**Dev**](examples/dev): Illustrates setting up a development environment for the service using Nginx.
-- [**Letsencrypt**](examples/letsencrypt): Shows how to configure the service to use Let's Encrypt for SSL certificates.
-- [**Custom-configs**](examples/custom-configs): Demonstrates how to replace default Nginx configurations ([`nginx.conf`](nginx/nginx.conf), [`proxy.conf`](nginx/proxy.conf) and [`http-common.conf`](nginx/http-common.conf)).
+```bash
+cd js
+npm install
+npm test
+```
 
-## Combination
+Shell script syntax checks:
 
-It's also possible to combine custom and Let's Encrypt configurations within the same service instance. This allows for flexibility in managing SSL certificates and Nginx configurations according to your requirements.
+```bash
+bash -n entrypoint.sh
+bash -n reload.sh
+bash -n certbot_renew.sh
+```
 
-Each example includes detailed instructions on how to set up and run the service with the specified configuration. Refer to the individual README files in each example directory for more information.
+The test suite covers:
+- Config generation for all four SSL modes
+- Environment variable validation
+- Nginx config validation behavior
+- Certbot renewal locking, restore, and failure paths
+- Healthcheck behavior
+- Logging format and severity correctness
+- Build-time and startup-time assertions
 
-## Tips/Issues
+---
 
-If you encounter issues with multiple accounts during Let's Encrypt certificate generation, consider removing the associated volume or deleting the `letsencrypt/accounts` directory.
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for the full version history.
