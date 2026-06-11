@@ -71,7 +71,14 @@ RUN chmod +x /usr/local/bin/reload.sh
 EXPOSE 80
 EXPOSE 443
 
-RUN mkdir -p /home/scripts/
+RUN mkdir -p /home/scripts/js/
+
+# Copy package files first so the dependency layer is cached independently of
+# application source. This layer only re-runs when package.json or
+# package-lock.json changes — source-only edits leave it fully cached.
+# --omit=dev keeps Jest and other dev-only packages out of the production image.
+COPY js/package*.json /home/scripts/js/
+RUN cd /home/scripts/js && npm ci --omit=dev
 
 WORKDIR /home/scripts
 

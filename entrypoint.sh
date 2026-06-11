@@ -5,8 +5,6 @@ cp /home/config.json /home/scripts/js/
 
 pushd /home/scripts/js/ > /dev/null 2>&1
 
-npm i
-
 if ! node entrypoint.js; then
 	echo "Fatal: entrypoint.js failed — refusing to start nginx with an incomplete/invalid configuration"
 	exit 1
