@@ -58,9 +58,8 @@ const start = async () => {
 
         break;
       default:
-        console.log("Fatal: you need to set the ENVIRONMENT variable to 'development' or 'production'");
-        // exit(1);
-        process.exit(0);
+        console.error(`Fatal: invalid ENVIRONMENT value "${process.env.ENVIRONMENT}" — must be 'development'/'dev' or 'production'/'prod'`);
+        process.exit(1);
     }
 
     await mapCustomNginxConf(NGINX_CONF_FILES, process.env.CUSTOM_NGINX_CONFIG_FILES_PATH);

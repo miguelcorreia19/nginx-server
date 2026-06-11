@@ -80,6 +80,21 @@ COPY . /home/scripts/
 RUN rm Dockerfile
 RUN rm /etc/nginx/conf.d/default.conf
 
+# Lightweight, no-load, no-network healthcheck: confirms the nginx master
+# process recorded in its pidfile is alive AND that the on-disk config it
+# would (re)load is currently valid. Both checks are mode-agnostic — they
+# don't depend on which vhosts/certs are configured, so they don't produce
+# false negatives in modes where port 80/443 may have no server blocks
+# (e.g. dev mode awaiting a user-supplied dev.conf).
+#
+# The PID is read into a variable and explicitly checked for non-emptiness
+# before being passed to `kill -0`: in this image's /bin/sh, `kill -0 ""`
+# (an empty/missing pidfile — e.g. nginx crashed mid-write, or got signaled
+# during the brief pre-pidfile startup window) returns exit 0, which would
+# otherwise be a false "healthy" report despite nginx being down.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+	CMD pid="$(cat /var/run/nginx.pid 2>/dev/null)" && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && nginx -t >/dev/null 2>&1 || exit 1
+
 ENTRYPOINT ["entrypoint.sh"]
 
 CMD ["nginx", "-g", "daemon off;"]
