@@ -1,5 +1,7 @@
 const { parseCerts, checkCertFiles } = require("./utils.js");
-const { command, configFiles } = require("../utils.js");
+const fs = require("fs");
+const { command, commandSafe, configFiles } = require("../utils.js");
+const { validateCronExpression } = require("../validate.js");
 const { createCert, deleteCert, createConf } = require("./manage_certs.js");
 
 module.exports = async () => {
@@ -47,7 +49,7 @@ module.exports = async () => {
 
           const deleted = await deleteCert(id);
           if (deleted) console.log(`Certificate ${id} deleted!`);
-          else console.log(`error: Certificate ${id} not deleted!`);
+          else console.error(`Certificate ${id} deletion failed`);
 
           await command("certbot certificates");
 
@@ -56,7 +58,7 @@ module.exports = async () => {
           const created = await createCert(id);
 
           if (created) console.log(`Certificate ${id} created!`);
-          else console.log(`error: Certificate ${id} not created!`);
+          else console.error(`Certificate ${id} creation failed`);
 
         }
       } else { // not exists
@@ -66,7 +68,7 @@ module.exports = async () => {
         const created = await createCert(id);
 
         if (created) console.log(`Certificate ${id} created!`)
-        else console.log(`error: Certificate ${id} not created!`)
+        else console.error(`Certificate ${id} creation failed`)
       }
 
       console.log('');
@@ -81,7 +83,7 @@ module.exports = async () => {
 
         const deleted = await deleteCert(id);
         if (deleted) console.log(`Certificate ${id} deleted!`);
-        else console.log(`error: Certificate ${id} not deleted!`);
+        else console.error(`Certificate ${id} deletion failed`);
       }
     }
 
@@ -98,9 +100,9 @@ module.exports = async () => {
       if (final_certificates[id]) {
         const { status, cert_path, cert_key_path } = final_certificates[id];
         if (status !== 'invalid') {
-          await command(`cp ${cert_path} /etc/ssl/certs/${id}_fullchain.pem`);
-          await command(`cp ${cert_key_path} /etc/ssl/certs/${id}_privkey.pem`);
-          await command(`cp ${cert_key_path.replace('privkey', 'chain')} /etc/ssl/certs/${id}_chain.pem`);
+          await commandSafe('cp', [cert_path, `/etc/ssl/certs/${id}_fullchain.pem`]);
+          await commandSafe('cp', [cert_key_path, `/etc/ssl/certs/${id}_privkey.pem`]);
+          await commandSafe('cp', [cert_key_path.replace('privkey', 'chain'), `/etc/ssl/certs/${id}_chain.pem`]);
         }
         await createConf(id, final_certificates[id]);
       } else {
@@ -149,12 +151,17 @@ module.exports = async () => {
     // ################################## //
     console.log(`Setting up renewal...`);
     await command(`crontab -l | grep -v '/usr/local/bin/certbot_renew.sh'  | crontab -`)
-    const cronjob_regex = /^(\*|([0-9]|1[0-9]|2[0-9]|3[0-9]|4[0-9]|5[0-9])|\*\/([0-9]|1[0-9]|2[0-9]|3[0-9]|4[0-9]|5[0-9])) (\*|([0-9]|1[0-9]|2[0-3])|\*\/([0-9]|1[0-9]|2[0-3])) (\*|([1-9]|1[0-9]|2[0-9]|3[0-1])|\*\/([1-9]|1[0-9]|2[0-9]|3[0-1])) (\*|([1-9]|1[0-2])|\*\/([1-9]|1[0-2])) (\*|([0-6])|\*\/([0-6]))$/;
     let cronjob = "0 5 * * *";
-    if (process.env.CERTBOT_RENEW_CRONJOB && cronjob_regex.test(process.env.CERTBOT_RENEW_CRONJOB)) {
-      cronjob = process.env.CERTBOT_RENEW_CRONJOB;
+    if (process.env.CERTBOT_RENEW_CRONJOB) {
+      try {
+        validateCronExpression(process.env.CERTBOT_RENEW_CRONJOB);
+        cronjob = process.env.CERTBOT_RENEW_CRONJOB;
+      } catch (err) {
+        console.warn(`Invalid CERTBOT_RENEW_CRONJOB: ${err.message}. Using default: ${cronjob}`);
+      }
     }
-    await command(`echo "${cronjob} /bin/bash /usr/local/bin/certbot_renew.sh >> /var/log/certbot/certbot_renew.log" >>/etc/crontabs/root`)
+    const cronLine = `${cronjob} /bin/bash /usr/local/bin/certbot_renew.sh >> /var/log/certbot/certbot_renew.log\n`;
+    fs.appendFileSync('/etc/crontabs/root', cronLine);
 
     // ACTIVATE CRONTAB
     await command(`crond -bS -c /var/spool/cron/crontabs`);
@@ -183,6 +190,7 @@ module.exports = async () => {
 
     console.log("NodeJS letsencrypt terminated!")
   } catch (err) {
-    console.error("ERROR letsencrypt!", err)
+    console.error("Fatal: letsencrypt mode setup failed —", err);
+    throw err;
   }
 }

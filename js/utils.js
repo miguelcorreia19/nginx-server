@@ -1,5 +1,7 @@
-const { exec } = require("child_process");
+const { exec, execFile, spawn } = require("child_process");
 const fs = require("fs");
+const os = require("os");
+const path = require("path");
 
 exports.command = command = (cmd) => {
   return new Promise((resolve, reject) => {
@@ -22,27 +24,102 @@ exports.command = command = (cmd) => {
   })
 };
 
-exports.mapCustomNginxConf = mapCustomNginxConf = async (files, path) => {
-  files.forEach(async file => {
-    const conf_file = `${path}/${file}`;
+// Shell-injection-safe alternative: spawns the binary directly without a shell.
+// Use this wherever user-controlled values (cert IDs, domains, filenames) are passed as args.
+exports.commandSafe = commandSafe = (bin, args) => {
+  return new Promise((resolve, reject) => {
+    execFile(bin, args, { maxBuffer: 5 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) {
+        reject({ error: error.message });
+        return;
+      }
+      if (stdout) {
+        resolve(stdout);
+        return;
+      }
+      if (stderr) {
+        reject({ error: stderr });
+        return;
+      }
+      resolve();
+    });
+  });
+};
+
+// Runs `nginx -t` to validate the assembled configuration without reloading.
+// nginx writes all output (including the success message) to stderr, so
+// success/failure is decided purely by exit code; diagnostics come from the
+// captured output.
+//
+// Uses spawn() with stdio mapped to a real temp file rather than anonymous
+// pipes (as execFile/exec use). The repository's nginx.conf contains
+// `error_log /dev/stderr warn;` — nginx resolves that to /proc/self/fd/2
+// and reopens it via open(2) during config-test initialisation. open(2) on
+// an anonymous pipe fails with ENXIO ("No such device or address"), which
+// would falsely report any valid config as broken. A regular file is always
+// re-openable by path, so this approach is reliable regardless of Docker
+// log driver or stdio setup.
+exports.validateNginxConfig = validateNginxConfig = () => {
+  return new Promise((resolve, reject) => {
+    const tmpPath = path.join(os.tmpdir(), `nginx-validate-${process.pid}.log`);
+    let outFd;
+    try {
+      outFd = fs.openSync(tmpPath, 'w');
+    } catch (err) {
+      reject({ error: `validateNginxConfig: cannot open temp file: ${err.message}` });
+      return;
+    }
+
+    const child = spawn('nginx', ['-t'], {
+      stdio: ['ignore', outFd, outFd],
+    });
+
+    let settled = false;
+    const finish = (code, spawnErr) => {
+      if (settled) return;
+      settled = true;
+      try { fs.closeSync(outFd); } catch (_) {}
+      let output = '';
+      try { output = fs.readFileSync(tmpPath, 'utf8'); } catch (_) {}
+      try { fs.unlinkSync(tmpPath); } catch (_) {}
+
+      if (spawnErr) {
+        reject({ error: spawnErr.message });
+        return;
+      }
+      if (code !== 0) {
+        reject({ error: output || `nginx -t exited with code ${code}` });
+        return;
+      }
+      resolve(output);
+    };
+
+    child.on('error', (err) => finish(null, err));
+    child.on('close', (code) => finish(code, null));
+  });
+};
+
+exports.mapCustomNginxConf = mapCustomNginxConf = async (files, dirPath) => {
+  for (const file of files) {
+    const conf_file = `${dirPath}/${file}`;
     if (fs.existsSync(conf_file)) {
       await command(`ln -sf ${conf_file} /etc/nginx/${file}`);
     }
-  });
+  }
 }
 
 const httpRedirect = async (id, names) => {
   let data = '';
 
-  data = fs.readFileSync('./templates/http_redirect.conf', 'utf8');
+  data = fs.readFileSync(path.join(__dirname, 'templates/http_redirect.conf'), 'utf8');
   data = data.replace('${SERVER_NAMES}', `${names}`);
 
-  await command(`echo "${data}" > /etc/nginx/conf.d/80/${id}-http-redirect.conf`);
+  fs.writeFileSync(`/etc/nginx/conf.d/80/${id}-http-redirect.conf`, data);
 }
 
 exports.configFiles = async (id, status, http_redirect, cert_domains) => {
   if (status !== 'invalid' && fs.existsSync(`/home/nginx/sites/${id}.conf`)) {
-    await command(`ln -sf /home/nginx/sites/${id}.conf /etc/nginx/conf.d/443/${id}.conf`);
+    await commandSafe('ln', ['-sf', `/home/nginx/sites/${id}.conf`, `/etc/nginx/conf.d/443/${id}.conf`]);
     
     // create redirect files from http to https
     if (http_redirect !== false) {

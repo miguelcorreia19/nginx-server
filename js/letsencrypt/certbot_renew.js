@@ -1,17 +1,22 @@
 const { parseCerts } = require("./utils.js");
-const { command } = require("../utils.js");
+const { command, commandSafe } = require("../utils.js");
 
-console.log("NODEJS START RENEWAL");
-console.log(new Date().toTimeString())
+// Logged with explicit timestamps (rather than relying on Docker's log
+// timestamps): this script's stdout is captured by certbot_renew.sh, whose
+// own output is redirected by cron straight into a file
+// (/var/log/certbot/certbot_renew.log) — outside Docker's logging pipeline.
+console.log(`[certbot_renew.js] Starting certificate renewal — ${new Date().toISOString()}`);
 
 const start = async () => {
   try {
-    console.log(new Date().toTimeString())
     // The challenge will run on port 80
     // await command('certbot renew --noninteractive --quiet --preferred-challenges http');
-    await command('certbot renew --noninteractive --preferred-challenges http');
+    const renewOutput = await command('certbot renew --noninteractive --preferred-challenges http');
+    // certbot's own renewal report (which certs were due, skipped, renewed,
+    // or failed) was previously discarded — surface it for troubleshooting.
+    if (renewOutput) console.log(renewOutput);
 
-    console.log(new Date().toTimeString())
+    console.log(`[certbot_renew.js] certbot renew finished — ${new Date().toISOString()}`);
 
     const final_certificates = await parseCerts();
 
@@ -26,14 +31,13 @@ const start = async () => {
 
       // TODO: ? status ?
 
-      await command(`cp ${cert_path} /etc/ssl/certs/${id}_fullchain.pem`);
-      await command(`cp ${cert_key_path} /etc/ssl/certs/${id}_privkey.pem`);
-      await command(`cp ${cert_key_path.replace('privkey', 'chain')} /etc/ssl/certs/${id}_chain.pem`);
+      await commandSafe('cp', [cert_path, `/etc/ssl/certs/${id}_fullchain.pem`]);
+      await commandSafe('cp', [cert_key_path, `/etc/ssl/certs/${id}_privkey.pem`]);
+      await commandSafe('cp', [cert_key_path.replace('privkey', 'chain'), `/etc/ssl/certs/${id}_chain.pem`]);
 
       console.log(` Certificate ${id} - ${status}`);
       console.log(` Domains ${cert_domains.join(', ')}`);
       console.log(` Validity ${validity}\n`);
-      console.log(` Status ${status}\n`);
 
       if (count !== size) console.log(`#######################################\n`);
     }
@@ -51,7 +55,8 @@ const start = async () => {
       await command(`cp -rf /etc/letsencrypt/* ${process.env.CERTBOT_BACKUP_PATH}`);
     }
   } catch (err) {
-    console.log("ERROR certbot_renew!", err)
+    console.error("Fatal: certbot renewal failed —", err);
+    process.exit(1);
   }
 }
 

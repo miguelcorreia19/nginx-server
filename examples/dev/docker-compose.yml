@@ -12,6 +12,7 @@ services:
       - 444:443
     volumes:
       - ./nginx/sites/:/home/nginx/sites
+      - ./nginx/config.json:/home/config.json
     environment:
       - ENVIRONMENT=development
 

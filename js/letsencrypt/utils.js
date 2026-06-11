@@ -9,9 +9,8 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
   let output = undefined;
   try {
     output = await command('certbot certificates');
-  } catch (err) {    
-    console.error("ERROR 1.0");
-    return { error: true, msg: err };
+  } catch (err) {
+    throw new Error(`Failed to query certbot certificates: ${err.error || err.message || err}`);
   }
   
   const found_certs = {};
@@ -38,7 +37,7 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
         new_line = output.indexOf('\n', index);
         new_cert.cert_path = output.substring(index + CERT_PATH.length + 1/* white space */, new_line);
       } else {
-        console.error("ERROR 1.1");
+        console.error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_PATH}"`);
       }
 
       // Get cert private key path
@@ -46,7 +45,7 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
         new_line = output.indexOf('\n', index);
         new_cert.cert_key_path = output.substring(index + CERT_KEY_PATH.length + 1/* white space */, new_line);
       } else {
-        console.error("ERROR 1.2");
+        console.error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_KEY_PATH}"`);
       }
 
       // Get cert domains
@@ -55,10 +54,10 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
         new_cert.cert_domains = output.substring(index + CERT_DOMAINS.length + 1/* white space */, new_line);
         new_cert.cert_domains = new_cert.cert_domains.split(' ').filter(c => c.length > 0);
       } else {
-        console.error("ERROR 1.3");
+        console.error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_DOMAINS}"`);
       }
 
-      // Get cert validation
+      // Get cert status
       if ((index = output.indexOf(CERT_VALID, last_index)) !== -1) {
         new_line = output.indexOf('\n', index);
         const expiry = output.substring(index + CERT_VALID.length + 1/* white space */, new_line);
@@ -66,7 +65,7 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
 
         new_cert.status = expiry.includes('INVALID') ? expiry.includes('TEST_CERT') ? 'staging' : 'invalid' : 'valid';
       } else {
-        console.error("ERROR 1.4");
+        console.error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_VALID}" (status)`);
       }
 
       // Get cert validity
@@ -75,7 +74,7 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
         new_cert.validity = DateTime.fromJSDate(new Date(output.substring(index + CERT_VALID.length + 1/* white space */, new_line - 1)));
         // valid | invalid | staging
       } else {
-        console.error("ERROR 1.5");
+        console.error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_VALID}" (validity)`);
       }
 
       found_certs[cert_id] = new_cert;
@@ -88,13 +87,18 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
     if (fs.existsSync(process.env.CERTBOT_BACKUP_PATH) &&
       fs.existsSync(`${process.env.CERTBOT_BACKUP_PATH}/live`)
     ) {
-      const dir = fs.readdirSync(`${process.env.CERTBOT_BACKUP_PATH}/live`);
-      if (!dir || dir.length > 1) {
+      const entries = fs.readdirSync(`${process.env.CERTBOT_BACKUP_PATH}/live`);
+      // certbot's `live` directory always contains a README alongside one
+      // subdirectory per certificate lineage — filter it out so a backup
+      // holding exactly one certificate is still detected as non-empty.
+      const certDirs = entries.filter((name) => name !== 'README');
+      if (certDirs.length > 0) {
         console.log("Found some certificates on backup path...");
         await command(`cp -rf ${process.env.CERTBOT_BACKUP_PATH}/* /etc/letsencrypt`);
         return await parseCerts();
+      } else {
+        console.log(`Backup path is empty...\nDiscarding backup!`);
       }
-      else console.log(`Backup path is empty...\nDiscarding backup!`);
     } else console.log(`Backup path is empty...\nDiscarding backup!`);
   }
 

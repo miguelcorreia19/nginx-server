@@ -1,4 +1,5 @@
 const fs = require("fs");
+const path = require("path");
 
 exports.checkCertFiles = (id, { cert_file, privkey_file }) => {
   if (
@@ -13,12 +14,12 @@ exports.checkCertFiles = (id, { cert_file, privkey_file }) => {
 }
 
 exports.createConf = async (id, { cert_file, privkey_file }) => {
-  // ${CERT}
-  // ${PRIVKEY}
-
-  let data = fs.readFileSync('./custom/templates/ssl-custom-certificate.conf', 'utf8');
-  data = data.replace('${CERT}', `/etc/ssl/certs/${cert_file}`)
+  const templatePath = path.join(__dirname, 'templates/ssl-custom-certificate.conf');
+  let data = fs.readFileSync(templatePath, 'utf8');
+  data = data
+    .replace(/\$\{COMMENT\}/g, '')
+    .replace('${CERT}', `/etc/ssl/certs/${cert_file}`)
     .replace('${PRIVKEY}', `/etc/ssl/certs/${privkey_file}`);
 
-  await command(`echo "${data}" > /etc/nginx/conf/${id}.conf`);
+  fs.writeFileSync(`/etc/nginx/conf/${id}.conf`, data);
 }
