@@ -1,21 +1,22 @@
 const fs = require("fs");
 const path = require("path");
-const { command } = require("../utils.js");
+const { command, commandSafe } = require("../utils.js");
 
 exports.createCert = async (id) => {
   const certs = require("../config.json");
 
   const { names, email, mode } = certs[id];
-  const domains = names.length > 1 ? names.reduce((a, b, index) => {
-    return index === 1 ?
-      `-d ${a} -d ${b}` :
-      `${a} -d ${b}`
-  }) : `-d ${names[0]}`;
-
-  let cmd = `certbot certonly ${mode === "letsencrypt-staging" ? '--staging ' : ''} --expand --verbose --noninteractive --standalone --agree-tos --cert-name=${id} --email=${email ? email : process.env.CERTBOT_EMAIL} ${domains}`;
+  const args = [
+    'certonly',
+    ...(mode === 'letsencrypt-staging' ? ['--staging'] : []),
+    '--expand', '--verbose', '--noninteractive', '--standalone', '--agree-tos',
+    '--cert-name', id,
+    '--email', email || process.env.CERTBOT_EMAIL,
+    ...names.flatMap(name => ['-d', name]),
+  ];
 
   try {
-    await command(cmd);
+    await commandSafe('certbot', args);
     return true;
   } catch (err) {
     console.error("manage_certs creation error!", err)
@@ -24,10 +25,8 @@ exports.createCert = async (id) => {
 }
 
 exports.deleteCert = async (id) => {
-  let cmd = `certbot delete --cert-name=${id}`;
-
   try {
-    await command(cmd);
+    await commandSafe('certbot', ['delete', '--cert-name', id]);
     return true;
   } catch (err) {
     console.error("manage_certs delete error!", err)
@@ -61,5 +60,5 @@ exports.createConf = async (id, { cert_path, cert_key_path, status }) => {
     console.log(`${id} certificate is invalid. Probably this will fail... (FLAG "FORCE_INVALID_ON_FAIL" ACTIVATED)`);
   }
 
-  await command(`echo "${data}" > /etc/nginx/conf/${id}.conf`);
+  fs.writeFileSync(`/etc/nginx/conf/${id}.conf`, data);
 }

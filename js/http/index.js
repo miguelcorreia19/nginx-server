@@ -1,4 +1,4 @@
-const { command } = require("../utils.js");
+const { command, commandSafe } = require("../utils.js");
 const path = require("path");
 
 module.exports = async () => {
@@ -14,8 +14,8 @@ module.exports = async () => {
 
   try {
     for (let id in certs) {
-      await command(`cp ${path.join(__dirname, 'templates/http-certificate.conf')} /etc/nginx/conf/${id}.conf`);
-      await command(`cp /home/nginx/sites/${id}.conf /etc/nginx/conf.d/80`);
+      await commandSafe('cp', [path.join(__dirname, 'templates/http-certificate.conf'), `/etc/nginx/conf/${id}.conf`]);
+      await commandSafe('cp', [`/home/nginx/sites/${id}.conf`, '/etc/nginx/conf.d/80']);
     }
 
     if(Object.keys(certs).length === 0) {

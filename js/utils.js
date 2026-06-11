@@ -1,4 +1,4 @@
-const { exec } = require("child_process");
+const { exec, execFile } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
@@ -23,6 +23,28 @@ exports.command = command = (cmd) => {
   })
 };
 
+// Shell-injection-safe alternative: spawns the binary directly without a shell.
+// Use this wherever user-controlled values (cert IDs, domains, filenames) are passed as args.
+exports.commandSafe = commandSafe = (bin, args) => {
+  return new Promise((resolve, reject) => {
+    execFile(bin, args, { maxBuffer: 5 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) {
+        reject({ error: error.message });
+        return;
+      }
+      if (stdout) {
+        resolve(stdout);
+        return;
+      }
+      if (stderr) {
+        reject({ error: stderr });
+        return;
+      }
+      resolve();
+    });
+  });
+};
+
 exports.mapCustomNginxConf = mapCustomNginxConf = async (files, dirPath) => {
   for (const file of files) {
     const conf_file = `${dirPath}/${file}`;
@@ -38,12 +60,12 @@ const httpRedirect = async (id, names) => {
   data = fs.readFileSync(path.join(__dirname, 'templates/http_redirect.conf'), 'utf8');
   data = data.replace('${SERVER_NAMES}', `${names}`);
 
-  await command(`echo "${data}" > /etc/nginx/conf.d/80/${id}-http-redirect.conf`);
+  fs.writeFileSync(`/etc/nginx/conf.d/80/${id}-http-redirect.conf`, data);
 }
 
 exports.configFiles = async (id, status, http_redirect, cert_domains) => {
   if (status !== 'invalid' && fs.existsSync(`/home/nginx/sites/${id}.conf`)) {
-    await command(`ln -sf /home/nginx/sites/${id}.conf /etc/nginx/conf.d/443/${id}.conf`);
+    await commandSafe('ln', ['-sf', `/home/nginx/sites/${id}.conf`, `/etc/nginx/conf.d/443/${id}.conf`]);
     
     // create redirect files from http to https
     if (http_redirect !== false) {

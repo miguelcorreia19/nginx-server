@@ -1,5 +1,5 @@
 const { parseCerts } = require("./utils.js");
-const { command } = require("../utils.js");
+const { command, commandSafe } = require("../utils.js");
 
 console.log("NODEJS START RENEWAL");
 console.log(new Date().toTimeString())
@@ -26,9 +26,9 @@ const start = async () => {
 
       // TODO: ? status ?
 
-      await command(`cp ${cert_path} /etc/ssl/certs/${id}_fullchain.pem`);
-      await command(`cp ${cert_key_path} /etc/ssl/certs/${id}_privkey.pem`);
-      await command(`cp ${cert_key_path.replace('privkey', 'chain')} /etc/ssl/certs/${id}_chain.pem`);
+      await commandSafe('cp', [cert_path, `/etc/ssl/certs/${id}_fullchain.pem`]);
+      await commandSafe('cp', [cert_key_path, `/etc/ssl/certs/${id}_privkey.pem`]);
+      await commandSafe('cp', [cert_key_path.replace('privkey', 'chain'), `/etc/ssl/certs/${id}_chain.pem`]);
 
       console.log(` Certificate ${id} - ${status}`);
       console.log(` Domains ${cert_domains.join(', ')}`);

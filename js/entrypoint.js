@@ -5,6 +5,7 @@ const dev = require('./dev');
 const custom = require('./custom');
 const http = require('./http');
 const { command, mapCustomNginxConf } = require("./utils.js");
+const { validateConfigEntry } = require("./validate.js");
 
 // Base nginx config files
 const NGINX_CONF_FILES = [
@@ -22,10 +23,18 @@ const start = async () => {
 
     // Validate config.json before any mode handler runs so failures are clear.
     try {
-      const _config = require("../config.json");
+      const _config = require("./config.json");
       if (typeof _config !== 'object' || _config === null || Array.isArray(_config)) {
         console.error("Fatal: config.json must be a JSON object, got:", typeof _config);
         process.exit(1);
+      }
+      for (const [id, entry] of Object.entries(_config)) {
+        try {
+          validateConfigEntry(id, entry);
+        } catch (err) {
+          console.error(`Fatal: config.json entry "${id}" failed validation: ${err.message}`);
+          process.exit(1);
+        }
       }
     } catch (err) {
       if (err.code === 'MODULE_NOT_FOUND') {

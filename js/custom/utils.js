@@ -1,6 +1,5 @@
 const fs = require("fs");
 const path = require("path");
-const { command } = require("../utils.js");
 
 exports.checkCertFiles = (id, { cert_file, privkey_file }) => {
   if (
@@ -22,5 +21,5 @@ exports.createConf = async (id, { cert_file, privkey_file }) => {
     .replace('${CERT}', `/etc/ssl/certs/${cert_file}`)
     .replace('${PRIVKEY}', `/etc/ssl/certs/${privkey_file}`);
 
-  await command(`echo "${data}" > /etc/nginx/conf/${id}.conf`);
+  fs.writeFileSync(`/etc/nginx/conf/${id}.conf`, data);
 }
