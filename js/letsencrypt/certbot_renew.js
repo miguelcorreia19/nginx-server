@@ -51,7 +51,8 @@ const start = async () => {
       await command(`cp -rf /etc/letsencrypt/* ${process.env.CERTBOT_BACKUP_PATH}`);
     }
   } catch (err) {
-    console.log("ERROR certbot_renew!", err)
+    console.error("Fatal: certbot renewal failed —", err);
+    process.exit(1);
   }
 }
 

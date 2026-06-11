@@ -25,6 +25,7 @@ module.exports = async () => {
 
 
   } catch (err) {
-    console.error("ERROR http!", err)
+    console.error("Fatal: http mode setup failed —", err);
+    throw err;
   }
 }

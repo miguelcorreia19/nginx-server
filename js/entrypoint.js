@@ -4,7 +4,7 @@ const letsencrypt = require('./letsencrypt');
 const dev = require('./dev');
 const custom = require('./custom');
 const http = require('./http');
-const { command, mapCustomNginxConf } = require("./utils.js");
+const { command, mapCustomNginxConf, validateNginxConfig } = require("./utils.js");
 const { validateConfigEntry } = require("./validate.js");
 
 // Base nginx config files
@@ -65,8 +65,20 @@ const start = async () => {
 
     await mapCustomNginxConf(NGINX_CONF_FILES, process.env.CUSTOM_NGINX_CONFIG_FILES_PATH);
 
+    // Validate the fully assembled nginx configuration before nginx starts
+    // (entrypoint.sh launches nginx right after this script exits). Catching
+    // a broken config here — rather than letting nginx fail at startup — lets
+    // us fail with a clear, actionable message instead of a crash-looping container.
+    try {
+      await validateNginxConfig();
+    } catch (err) {
+      console.error(`Fatal: generated nginx configuration is invalid (nginx -t failed):\n${err.error || err.message || err}`);
+      process.exit(1);
+    }
+
   } catch (err) {
-    console.error("ERROR entrypoint!", err)
+    console.error("Fatal: entrypoint failed —", err);
+    process.exit(1);
   }
 }
 

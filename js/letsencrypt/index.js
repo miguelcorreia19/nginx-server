@@ -190,6 +190,7 @@ module.exports = async () => {
 
     console.log("NodeJS letsencrypt terminated!")
   } catch (err) {
-    console.error("ERROR letsencrypt!", err)
+    console.error("Fatal: letsencrypt mode setup failed —", err);
+    throw err;
   }
 }

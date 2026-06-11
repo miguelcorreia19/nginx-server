@@ -7,7 +7,10 @@ pushd /home/scripts/js/ > /dev/null 2>&1
 
 npm i
 
-node entrypoint.js
+if ! node entrypoint.js; then
+	echo "Fatal: entrypoint.js failed — refusing to start nginx with an incomplete/invalid configuration"
+	exit 1
+fi
 
 popd > /dev/null 2>&1
 

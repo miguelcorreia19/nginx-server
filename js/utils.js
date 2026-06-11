@@ -45,6 +45,22 @@ exports.commandSafe = commandSafe = (bin, args) => {
   });
 };
 
+// Runs `nginx -t` to validate the assembled configuration without reloading.
+// nginx writes its "test is successful" message to stderr even on success
+// (like openssl), so — unlike commandSafe — success/failure here is decided
+// purely by exit code; the rejection carries nginx's actual diagnostic text.
+exports.validateNginxConfig = validateNginxConfig = () => {
+  return new Promise((resolve, reject) => {
+    execFile('nginx', ['-t'], { maxBuffer: 5 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) {
+        reject({ error: stderr || error.message });
+        return;
+      }
+      resolve(stdout || stderr);
+    });
+  });
+};
+
 exports.mapCustomNginxConf = mapCustomNginxConf = async (files, dirPath) => {
   for (const file of files) {
     const conf_file = `${dirPath}/${file}`;

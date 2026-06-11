@@ -19,7 +19,7 @@ exports.createCert = async (id) => {
     await commandSafe('certbot', args);
     return true;
   } catch (err) {
-    console.error("manage_certs creation error!", err)
+    console.error(`Certificate creation failed for "${id}" (domains: ${names.join(', ')}):`, err.error || err.message || err);
     return false;
   }
 }
@@ -29,7 +29,7 @@ exports.deleteCert = async (id) => {
     await commandSafe('certbot', ['delete', '--cert-name', id]);
     return true;
   } catch (err) {
-    console.error("manage_certs delete error!", err)
+    console.error(`Certificate deletion failed for "${id}":`, err.error || err.message || err);
     return false;
   }
 }

@@ -19,7 +19,8 @@ module.exports = async () => {
     await configFiles("dev", "valid", true, ["localhost", "127.0.0.1"]);
 
   } catch (err) {
-    console.error("ERROR dev", err)
+    console.error("Fatal: dev mode setup failed —", err);
+    throw err;
   }
 }
 

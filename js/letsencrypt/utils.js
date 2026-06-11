@@ -9,9 +9,8 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
   let output = undefined;
   try {
     output = await command('certbot certificates');
-  } catch (err) {    
-    console.error("ERROR 1.0");
-    return { error: true, msg: err };
+  } catch (err) {
+    throw new Error(`Failed to query certbot certificates: ${err.error || err.message || err}`);
   }
   
   const found_certs = {};
@@ -88,13 +87,18 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
     if (fs.existsSync(process.env.CERTBOT_BACKUP_PATH) &&
       fs.existsSync(`${process.env.CERTBOT_BACKUP_PATH}/live`)
     ) {
-      const dir = fs.readdirSync(`${process.env.CERTBOT_BACKUP_PATH}/live`);
-      if (!dir || dir.length > 1) {
+      const entries = fs.readdirSync(`${process.env.CERTBOT_BACKUP_PATH}/live`);
+      // certbot's `live` directory always contains a README alongside one
+      // subdirectory per certificate lineage — filter it out so a backup
+      // holding exactly one certificate is still detected as non-empty.
+      const certDirs = entries.filter((name) => name !== 'README');
+      if (certDirs.length > 0) {
         console.log("Found some certificates on backup path...");
         await command(`cp -rf ${process.env.CERTBOT_BACKUP_PATH}/* /etc/letsencrypt`);
         return await parseCerts();
+      } else {
+        console.log(`Backup path is empty...\nDiscarding backup!`);
       }
-      else console.log(`Backup path is empty...\nDiscarding backup!`);
     } else console.log(`Backup path is empty...\nDiscarding backup!`);
   }
 
