@@ -1,5 +1,6 @@
-const { exec, execFile } = require("child_process");
+const { exec, execFile, spawn } = require("child_process");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
 exports.command = command = (cmd) => {
@@ -46,18 +47,55 @@ exports.commandSafe = commandSafe = (bin, args) => {
 };
 
 // Runs `nginx -t` to validate the assembled configuration without reloading.
-// nginx writes its "test is successful" message to stderr even on success
-// (like openssl), so — unlike commandSafe — success/failure here is decided
-// purely by exit code; the rejection carries nginx's actual diagnostic text.
+// nginx writes all output (including the success message) to stderr, so
+// success/failure is decided purely by exit code; diagnostics come from the
+// captured output.
+//
+// Uses spawn() with stdio mapped to a real temp file rather than anonymous
+// pipes (as execFile/exec use). The repository's nginx.conf contains
+// `error_log /dev/stderr warn;` — nginx resolves that to /proc/self/fd/2
+// and reopens it via open(2) during config-test initialisation. open(2) on
+// an anonymous pipe fails with ENXIO ("No such device or address"), which
+// would falsely report any valid config as broken. A regular file is always
+// re-openable by path, so this approach is reliable regardless of Docker
+// log driver or stdio setup.
 exports.validateNginxConfig = validateNginxConfig = () => {
   return new Promise((resolve, reject) => {
-    execFile('nginx', ['-t'], { maxBuffer: 5 * 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error) {
-        reject({ error: stderr || error.message });
+    const tmpPath = path.join(os.tmpdir(), `nginx-validate-${process.pid}.log`);
+    let outFd;
+    try {
+      outFd = fs.openSync(tmpPath, 'w');
+    } catch (err) {
+      reject({ error: `validateNginxConfig: cannot open temp file: ${err.message}` });
+      return;
+    }
+
+    const child = spawn('nginx', ['-t'], {
+      stdio: ['ignore', outFd, outFd],
+    });
+
+    let settled = false;
+    const finish = (code, spawnErr) => {
+      if (settled) return;
+      settled = true;
+      try { fs.closeSync(outFd); } catch (_) {}
+      let output = '';
+      try { output = fs.readFileSync(tmpPath, 'utf8'); } catch (_) {}
+      try { fs.unlinkSync(tmpPath); } catch (_) {}
+
+      if (spawnErr) {
+        reject({ error: spawnErr.message });
         return;
       }
-      resolve(stdout || stderr);
-    });
+      if (code !== 0) {
+        reject({ error: output || `nginx -t exited with code ${code}` });
+        return;
+      }
+      resolve(output);
+    };
+
+    child.on('error', (err) => finish(null, err));
+    child.on('close', (code) => finish(code, null));
   });
 };
 
