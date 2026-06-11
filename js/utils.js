@@ -1,5 +1,6 @@
 const { exec } = require("child_process");
 const fs = require("fs");
+const path = require("path");
 
 exports.command = command = (cmd) => {
   return new Promise((resolve, reject) => {
@@ -22,19 +23,19 @@ exports.command = command = (cmd) => {
   })
 };
 
-exports.mapCustomNginxConf = mapCustomNginxConf = async (files, path) => {
-  files.forEach(async file => {
-    const conf_file = `${path}/${file}`;
+exports.mapCustomNginxConf = mapCustomNginxConf = async (files, dirPath) => {
+  for (const file of files) {
+    const conf_file = `${dirPath}/${file}`;
     if (fs.existsSync(conf_file)) {
       await command(`ln -sf ${conf_file} /etc/nginx/${file}`);
     }
-  });
+  }
 }
 
 const httpRedirect = async (id, names) => {
   let data = '';
 
-  data = fs.readFileSync('./templates/http_redirect.conf', 'utf8');
+  data = fs.readFileSync(path.join(__dirname, 'templates/http_redirect.conf'), 'utf8');
   data = data.replace('${SERVER_NAMES}', `${names}`);
 
   await command(`echo "${data}" > /etc/nginx/conf.d/80/${id}-http-redirect.conf`);

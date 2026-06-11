@@ -1,5 +1,5 @@
 const fs = require("fs");
-
+const path = require("path");
 const { command } = require("../utils.js");
 
 exports.createCert = async (id) => {
@@ -36,23 +36,25 @@ exports.deleteCert = async (id) => {
 }
 
 exports.createConf = async (id, { cert_path, cert_key_path, status }) => {
-  // ${FULLCHAIN}
-  // ${PRIVKEY}
-  // ${CHAIN}
+  const templatePath = path.join(__dirname, 'templates/ssl-letsencrypt-certificate.conf');
 
   let data = '';
   if (status === 'invalid' && !process.env.FORCE_INVALID_ON_FAIL) {
     console.log(`${id} certificate is invalid... Generating openssl\nYOU CAN DISABLE THIS WITH THE FLAG "FORCE_INVALID_ON_FAIL"`);
     await command(`openssl req -x509 -newkey rsa:2048 -keyout /etc/ssl/certs/${id}_privkey.pem -out /etc/ssl/certs/${id}_cert.pem -days 365 -nodes -subj \"/C=UA\" 2>&1`);
 
-    data = fs.readFileSync('./letsencrypt/templates/ssl-letsencrypt-certificate.conf', 'utf8');
-    data = data.replace('${FULLCHAIN}', `/etc/ssl/certs/${id}_cert.pem`)
+    data = fs.readFileSync(templatePath, 'utf8');
+    data = data
+      .replace('${FULLCHAIN}', `/etc/ssl/certs/${id}_cert.pem`)
       .replace('${PRIVKEY}', `/etc/ssl/certs/${id}_privkey.pem`)
-      .replace('${SSL}', '# ');
+      .replace('${SSL}', '# ')
+      .replace('${CHAIN}', '');
 
   } else if (status !== 'invalid') {
-    data = fs.readFileSync('./letsencrypt/templates/ssl-letsencrypt-certificate.conf', 'utf8');
-    data = data.replace('${FULLCHAIN}', `/etc/ssl/certs/${id}_fullchain.pem`)
+    data = fs.readFileSync(templatePath, 'utf8');
+    data = data
+      .replace('${SSL}', '')
+      .replace('${FULLCHAIN}', `/etc/ssl/certs/${id}_fullchain.pem`)
       .replace('${PRIVKEY}', `/etc/ssl/certs/${id}_privkey.pem`)
       .replace('${CHAIN}', `/etc/ssl/certs/${id}_chain.pem`);
   } else {

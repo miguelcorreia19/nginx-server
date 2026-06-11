@@ -1,4 +1,5 @@
 const { command } = require("../utils.js");
+const path = require("path");
 
 module.exports = async () => {
   const _certs = require("../config.json");
@@ -13,7 +14,7 @@ module.exports = async () => {
 
   try {
     for (let id in certs) {
-      await command(`cp ./http/templates/http-certificate.conf /etc/nginx/conf/${id}.conf`);
+      await command(`cp ${path.join(__dirname, 'templates/http-certificate.conf')} /etc/nginx/conf/${id}.conf`);
       await command(`cp /home/nginx/sites/${id}.conf /etc/nginx/conf.d/80`);
     }
 

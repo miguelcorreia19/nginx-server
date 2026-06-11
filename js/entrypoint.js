@@ -20,6 +20,22 @@ const start = async () => {
       process.env.ENVIRONMENT = 'production';
     }
 
+    // Validate config.json before any mode handler runs so failures are clear.
+    try {
+      const _config = require("../config.json");
+      if (typeof _config !== 'object' || _config === null || Array.isArray(_config)) {
+        console.error("Fatal: config.json must be a JSON object, got:", typeof _config);
+        process.exit(1);
+      }
+    } catch (err) {
+      if (err.code === 'MODULE_NOT_FOUND') {
+        console.error("Fatal: config.json not found. Mount your configuration file at /home/config.json");
+      } else {
+        console.error("Fatal: config.json could not be parsed:", err.message);
+      }
+      process.exit(1);
+    }
+
     switch (process.env.ENVIRONMENT) {
       case 'dev':
       case 'development':
