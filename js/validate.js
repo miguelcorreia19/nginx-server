@@ -16,6 +16,11 @@ const EMAIL_RE = /^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$/;
 // 5-field cron expression (matches the existing inline regex in letsencrypt/index.js).
 const CRON_RE = /^(\*|([0-9]|1[0-9]|2[0-9]|3[0-9]|4[0-9]|5[0-9])|\*\/([0-9]|1[0-9]|2[0-9]|3[0-9]|4[0-9]|5[0-9])) (\*|([0-9]|1[0-9]|2[0-3])|\*\/([0-9]|1[0-9]|2[0-3])) (\*|([1-9]|1[0-9]|2[0-9]|3[0-1])|\*\/([1-9]|1[0-9]|2[0-9]|3[0-1])) (\*|([1-9]|1[0-2])|\*\/([1-9]|1[0-2])) (\*|([0-6])|\*\/([0-6]))$/;
 
+// Positive integer with no leading zeros, sign, decimals, or surrounding
+// whitespace. Used for the Fail2ban numeric tunables (bantime/findtime/maxretry),
+// which are interpolated into the generated jail.local.
+const POSITIVE_INT_RE = /^[1-9][0-9]*$/;
+
 const validateCertId = (id) => {
   if (typeof id !== 'string' || !CERT_ID_RE.test(id)) {
     throw new Error(
@@ -64,6 +69,62 @@ const validateCronExpression = (cron) => {
   }
 };
 
+// Positive integer used for Fail2ban tunables (seconds or counts). Accepts a
+// string or number; rejects zero, negatives, decimals, and any stray characters
+// (whitespace, signs, injection metacharacters) — the value is written verbatim
+// into jail.local, so it must be a clean integer literal.
+const validatePositiveInt = (value, fieldName = 'value') => {
+  if (typeof value !== 'string' && typeof value !== 'number') {
+    throw new Error(`${fieldName} must be a string or number`);
+  }
+  if (!POSITIVE_INT_RE.test(String(value))) {
+    throw new Error(`${fieldName} "${value}" is invalid: must be a positive integer`);
+  }
+};
+
+// A single IPv4 address or CIDR, with each octet 0–255 and an optional /0–32.
+const isIpv4OrCidr = (token) => {
+  const m = token.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\/(\d{1,2}))?$/);
+  if (!m) return false;
+  for (let i = 1; i <= 4; i++) {
+    if (Number(m[i]) > 255) return false;
+  }
+  if (m[5] !== undefined && Number(m[5]) > 32) return false;
+  return true;
+};
+
+// A single IPv6 address or CIDR. Permissive on internal structure (hex groups
+// and "::"), but constrained to the hex/colon alphabet plus an optional /0–128
+// prefix. Injection-bearing characters are already blocked by validateIgnoreIp.
+const isIpv6OrCidr = (token) => {
+  const m = token.match(/^([0-9a-fA-F:]+)(?:\/(\d{1,3}))?$/);
+  if (!m || !m[1].includes(':')) return false;
+  if (m[2] !== undefined && Number(m[2]) > 128) return false;
+  return true;
+};
+
+// Validates FAIL2BAN_IGNOREIP: a space- and/or comma-separated allowlist of
+// IPs, CIDRs, or hostnames written into jail.local's `ignoreip` directive.
+// Rejects characters that could break out of that line and inject arbitrary
+// Fail2ban configuration, then validates every token.
+const validateIgnoreIp = (value) => {
+  if (typeof value !== 'string') {
+    throw new Error('FAIL2BAN_IGNOREIP must be a string');
+  }
+  if (/[\n\r;`$\\|&<>]/.test(value)) {
+    throw new Error(`FAIL2BAN_IGNOREIP "${value}" contains invalid characters`);
+  }
+  const tokens = value.split(/[\s,]+/).filter(Boolean);
+  if (tokens.length === 0) {
+    throw new Error('FAIL2BAN_IGNOREIP must contain at least one IP, CIDR, or hostname');
+  }
+  for (const token of tokens) {
+    if (!isIpv4OrCidr(token) && !isIpv6OrCidr(token) && !DOMAIN_RE.test(token)) {
+      throw new Error(`FAIL2BAN_IGNOREIP entry "${token}" is not a valid IP, CIDR, or hostname`);
+    }
+  }
+};
+
 // Validates all security-relevant fields of a single config.json entry.
 // Called at startup for every entry before any mode handler runs.
 const validateConfigEntry = (id, entry) => {
@@ -96,5 +157,7 @@ module.exports = {
   validateCertFilename,
   validateEmail,
   validateCronExpression,
+  validatePositiveInt,
+  validateIgnoreIp,
   validateConfigEntry,
 };

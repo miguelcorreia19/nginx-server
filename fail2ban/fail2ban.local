@@ -1,0 +1,12 @@
+# Static Fail2ban server settings (copied to /etc/fail2ban/fail2ban.local).
+# Per-jail tuning lives in the generated jail.local; this file only configures
+# the daemon itself.
+#
+# Comments: use '#' for comment lines and ';' (following a space) for inline comments
+
+[Definition]
+
+# Log to stdout so Fail2ban output is visible via `docker logs`, consistent with
+# the rest of this image's logging. Avoids a hidden in-container log file.
+logtarget = STDOUT
+loglevel = INFO

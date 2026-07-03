@@ -22,5 +22,10 @@ touch /var/log/nginx/error.log
 # watch and reload conf files
 /usr/local/bin/reload.sh &
 
+# Optional Fail2ban (no-op unless FAIL2BAN_ENABLED=true). Launched as a
+# backgrounded helper like reload.sh; it never blocks or replaces nginx, and any
+# failure inside it is non-fatal — nginx still starts below.
+/usr/local/bin/fail2ban.sh &
+
 log "Entrypoint script ended — starting nginx"
 exec "$@"

@@ -4,6 +4,7 @@ const letsencrypt = require('./letsencrypt');
 const dev = require('./dev');
 const custom = require('./custom');
 const http = require('./http');
+const fail2ban = require('./fail2ban');
 const { command, mapCustomNginxConf, validateNginxConfig } = require("./utils.js");
 const { validateConfigEntry } = require("./validate.js");
 
@@ -73,6 +74,16 @@ const start = async () => {
     } catch (err) {
       console.error(`Fatal: generated nginx configuration is invalid (nginx -t failed):\n${err.error || err.message || err}`);
       process.exit(1);
+    }
+
+    // Optional Fail2ban config generation (no-op unless FAIL2BAN_ENABLED=true).
+    // Runs after nginx config is validated and is isolated in its own
+    // try/catch: Fail2ban is protective and must never prevent nginx from
+    // starting, so any failure here is logged and swallowed.
+    try {
+      await fail2ban();
+    } catch (err) {
+      console.error(`WARNING: Fail2ban setup failed — continuing without it: ${err.message || err}`);
     }
 
   } catch (err) {

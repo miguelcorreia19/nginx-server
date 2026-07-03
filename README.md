@@ -23,10 +23,11 @@ A Docker image providing a flexible, production-ready Nginx setup for managing m
 10. [Healthcheck](#healthcheck)
 11. [Logs](#logs)
 12. [Troubleshooting](#troubleshooting)
-13. [Security Notes](#security-notes)
-14. [Development](#development)
-15. [Testing](#testing)
-16. [Changelog](#changelog)
+13. [Fail2ban (optional)](#fail2ban-optional)
+14. [Security Notes](#security-notes)
+15. [Development](#development)
+16. [Testing](#testing)
+17. [Changelog](#changelog)
 
 ---
 
@@ -295,8 +296,15 @@ See [`examples/dev/`](examples/dev/) for a complete Docker Compose example.
 | `CERTBOT_RENEW_CRONJOB` | Cron expression for renewal schedule | `0 5 * * *` (05:00 daily) |
 | `CUSTOM_CERTS_PATH` | Path where custom SSL certificate files are mounted | `/home/custom-certificates` |
 | `CUSTOM_NGINX_CONFIG_FILES_PATH` | Path for custom nginx config overrides (`nginx.conf`, `proxy.conf`, `http-common.conf`) | `/home/nginx/configs` |
+| `FAIL2BAN_ENABLED` | Enable optional Fail2ban brute-force protection (`true`/`false`) | `false` |
+| `FAIL2BAN_BANTIME` | Seconds an offending IP stays banned | `3600` |
+| `FAIL2BAN_FINDTIME` | Sliding window (seconds) over which failures are counted | `3600` |
+| `FAIL2BAN_MAXRETRY` | Failures within `FAIL2BAN_FINDTIME` before an IP is banned | `6` |
+| `FAIL2BAN_IGNOREIP` | Space/comma-separated allowlist of IPs, CIDRs, or hosts never banned | `127.0.0.1/8 ::1` |
 
 **Note**: `ENVIRONMENT` accepts both the short form (`prod`/`dev`) and the long form (`production`/`development`). Any other value causes the container to exit with a clear fatal error.
+
+**Note**: An invalid `FAIL2BAN_*` tuning value (e.g. a non-numeric `FAIL2BAN_BANTIME`) is **not** fatal — it is rejected with a warning and the documented default is used instead, so nginx always starts.
 
 ---
 
@@ -540,13 +548,66 @@ docker exec <container> sh -c 'pid=$(cat /var/run/nginx.pid 2>/dev/null) && [ -n
 
 ---
 
+## Fail2ban (optional)
+
+Fail2ban is an **optional, disabled-by-default** layer that watches nginx's logs and bans abusive IPs at the firewall. It changes nothing unless you set `FAIL2BAN_ENABLED=true`.
+
+For a complete, runnable setup (including a basic-auth endpoint to trigger the `nginx-http-auth` jail), see [`examples/fail2ban/`](examples/fail2ban/).
+
+### Enabling
+
+```yaml
+services:
+  nginx-server:
+    image: miguelcorreia19/nginx-server:latest
+    cap_add:
+      - NET_ADMIN            # required for bans to take effect (see below)
+    environment:
+      - FAIL2BAN_ENABLED=true
+      # optional tuning (defaults shown):
+      - FAIL2BAN_BANTIME=3600
+      - FAIL2BAN_FINDTIME=3600
+      - FAIL2BAN_MAXRETRY=6
+      - FAIL2BAN_IGNOREIP=127.0.0.1/8 ::1
+```
+
+### What it does
+
+- Two jails are enabled, both reading nginx's **error log** (whose format is fixed by nginx and unaffected by this image's custom access-log format):
+  - **`nginx-http-auth`** — bans IPs that repeatedly fail HTTP Basic Auth.
+  - **`nginx-botsearch`** — bans IPs probing for scripts/exploits.
+- Backend: **polling** (the inotify backend is not packaged on Alpine).
+- Ban action: **`iptables-multiport`** (installs rules in the container's own network namespace).
+- Fail2ban logs to **stdout**, so its output is visible via `docker logs`.
+
+It runs as a backgrounded helper alongside the config-reload watcher; nginx remains the foreground process. **If Fail2ban fails to start for any reason, a clear warning is logged and nginx keeps running** — the container healthcheck only ever reflects nginx, never Fail2ban.
+
+### `NET_ADMIN` requirement
+
+The `iptables-multiport` action needs the **`NET_ADMIN`** capability to install ban rules. Add `cap_add: [NET_ADMIN]` (already present in the `examples/` compose files). Without it, Fail2ban detects that iptables is unusable, logs a warning, and skips startup — nginx still runs, but no bans are applied.
+
+### Reverse proxy / real IP
+
+Fail2ban bans the client IP that nginx records (`$remote_addr`). **If this container sits behind another reverse proxy or load balancer, `$remote_addr` is the proxy's IP**, and Fail2ban could ban the proxy — cutting off all traffic.
+
+When fronted by a trusted proxy you must:
+
+1. Configure nginx real-IP recovery so `$remote_addr` becomes the true client IP, e.g. (in a mounted config) `set_real_ip_from <trusted-proxy-cidr>;` and `real_ip_header X-Forwarded-For;`. The trusted ranges are deployment-specific and are intentionally **not** hardcoded by this image.
+2. As a safety net, add the proxy/network to `FAIL2BAN_IGNOREIP` so it can never be banned.
+
+### Tuning validation
+
+`FAIL2BAN_BANTIME`, `FAIL2BAN_FINDTIME` and `FAIL2BAN_MAXRETRY` must be positive integers; `FAIL2BAN_IGNOREIP` must be a space/comma-separated list of valid IPs, CIDRs, or hostnames. An invalid value is rejected with a warning and the default is used — it never blocks startup.
+
+---
+
 ## Security Notes
 
 - **Command injection protection**: all shell-out calls in the Node startup scripts use `execFile` (not `exec`/`shell: true`), preventing injection via domain names or environment variables.
 - **Input validation**: `config.json` entries are validated at startup before any mode handler runs. Invalid entries abort with a clear error rather than generating broken nginx config.
 - **Certificates never exposed**: certificate paths and private key paths are passed as array arguments to `execFile`; they are never interpolated into shell strings.
 - **Self-signed certs in dev only**: self-signed certificate generation runs only in `development` mode. Production modes require a real CA or your own certificates.
-- **cap_add: NET_ADMIN**: shown in examples for environments that need it; remove if your deployment does not require it.
+- **cap_add: NET_ADMIN**: required only when `FAIL2BAN_ENABLED=true`, so Fail2ban can install iptables ban rules (see [Fail2ban](#fail2ban-optional)). Shown in the `examples/` compose files; remove it if you do not enable Fail2ban.
 
 ---
 
@@ -600,6 +661,7 @@ docker build -t nginx-server .
 | [`examples/letsencrypt/`](examples/letsencrypt/) | Production Let's Encrypt setup |
 | [`examples/custom-certs/`](examples/custom-certs/) | Custom SSL certificate setup |
 | [`examples/custom-configs/`](examples/custom-configs/) | Overriding built-in nginx config files |
+| [`examples/fail2ban/`](examples/fail2ban/) | Optional Fail2ban brute-force protection |
 
 ---
 
@@ -619,6 +681,7 @@ Shell script syntax checks:
 bash -n entrypoint.sh
 bash -n reload.sh
 bash -n certbot_renew.sh
+bash -n fail2ban.sh
 ```
 
 The test suite covers:
@@ -627,6 +690,7 @@ The test suite covers:
 - Nginx config validation behavior
 - Certbot renewal locking, restore, and failure paths
 - Healthcheck behavior
+- Fail2ban config generation, gating, and tuning validation
 - Logging format and severity correctness
 - Build-time and startup-time assertions
 

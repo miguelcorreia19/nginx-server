@@ -4,6 +4,8 @@ const {
   validateCertFilename,
   validateEmail,
   validateCronExpression,
+  validatePositiveInt,
+  validateIgnoreIp,
   validateConfigEntry,
 } = require('../validate.js');
 
@@ -151,6 +153,76 @@ describe('validateCronExpression', () => {
 
   test.each(invalid)('%s is rejected', (_label, cron) => {
     expect(() => validateCronExpression(cron)).toThrow();
+  });
+});
+
+// ──────────────────────────────────────────────
+//  validatePositiveInt  (FAIL2BAN_BANTIME / FINDTIME / MAXRETRY)
+// ──────────────────────────────────────────────
+describe('validatePositiveInt', () => {
+  const valid = ['1', '6', '3600', '604800', 60, 6];
+  const invalid = [
+    ['zero', '0'],
+    ['negative', '-1'],
+    ['decimal', '1.5'],
+    ['non-numeric', 'abc'],
+    ['empty string', ''],
+    ['leading zero', '01'],
+    ['trailing space', '60 '],
+    ['leading space', ' 60'],
+    ['shell injection', '60; rm -rf /'],
+    ['newline', '60\n0'],
+    ['plus sign', '+60'],
+    ['boolean', true],
+    ['null', null],
+  ];
+
+  test.each(valid)('accepts %p', (value) => {
+    expect(() => validatePositiveInt(value)).not.toThrow();
+  });
+
+  test.each(invalid)('%s is rejected', (_label, value) => {
+    expect(() => validatePositiveInt(value)).toThrow();
+  });
+});
+
+// ──────────────────────────────────────────────
+//  validateIgnoreIp  (FAIL2BAN_IGNOREIP)
+// ──────────────────────────────────────────────
+describe('validateIgnoreIp', () => {
+  const valid = [
+    '127.0.0.1/8 ::1',
+    '127.0.0.1',
+    '10.0.0.0/8',
+    '192.168.1.1, 10.0.0.1',
+    '::1',
+    'fe80::/10',
+    'trusted.example.com',
+    '192.168.0.0/16 172.16.0.0/12 10.0.0.0/8',
+  ];
+  const invalid = [
+    ['empty string', ''],
+    ['whitespace only', '   '],
+    ['newline injection', '1.2.3.4\nmaxretry = 0'],
+    ['carriage return', '1.2.3.4\rmaxretry = 0'],
+    ['semicolon', '1.2.3.4; rm -rf /'],
+    ['backtick', '1.2.3.4`whoami`'],
+    ['dollar', '1.2.3.4$HOME'],
+    ['pipe', '1.2.3.4|whoami'],
+    ['cidr prefix too large', '10.0.0.0/33'],
+    ['ipv6 cidr prefix too large', '::1/129'],
+    ['underscore in host', 'bad_host'],
+    ['leading-hyphen label', '-badhost'],
+    ['trailing dot', '192.168.1.1.'],
+    ['non-string', 12345],
+  ];
+
+  test.each(valid)('accepts "%s"', (value) => {
+    expect(() => validateIgnoreIp(value)).not.toThrow();
+  });
+
+  test.each(invalid)('%s is rejected', (_label, value) => {
+    expect(() => validateIgnoreIp(value)).toThrow();
   });
 });
 

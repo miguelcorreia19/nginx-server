@@ -27,21 +27,33 @@ ENV CUSTOM_NGINX_CONFIG_FILES_PATH=/home/nginx/configs
 # - openssl: self-signed cert generation in dev mode and certbot letsencrypt fallback
 # - nodejs: runs entrypoint.js and all mode-handler scripts
 # - inotify-tools: inotifywait used by reload.sh to watch config-file changes
-# - bash: entrypoint.sh, reload.sh, certbot_renew.sh all require bash (pushd/popd, trap)
+# - bash: entrypoint.sh, reload.sh, certbot_renew.sh, fail2ban.sh all require bash (pushd/popd, trap)
+# - fail2ban: optional brute-force protection (gated by FAIL2BAN_ENABLED; no-op when unset)
+# - iptables: ban backend for Fail2ban's iptables-multiport action; the package
+#             also provides the ip6tables binary Fail2ban uses for IPv6 bans
 #
 # Intentionally absent (confirmed unused at runtime):
 #   npm       — only needed at build time (npm ci runs above, not at container startup)
 #   git       — no usage in any runtime script or JS source file
-#   ip6tables — no usage in any runtime script or JS source file
 #   rsync     — only referenced in a commented-out line; not called at runtime
-#   python3   — pulled in transitively by certbot; no need to list explicitly
+#   python3   — pulled in transitively by certbot/fail2ban; no need to list explicitly
 RUN apk upgrade --no-cache --available \
     && apk add --no-cache \
         certbot \
         openssl \
         nodejs \
         inotify-tools \
-        bash
+        bash \
+        fail2ban \
+        iptables
+
+# Fail2ban prep (the feature itself stays off unless FAIL2BAN_ENABLED=true at
+# runtime). Pre-create the runtime dirs Fail2ban needs (socket/pid + database),
+# remove the Alpine ssh jail drop-in that would otherwise abort startup in this
+# SSH-less image, and install the static server config (Docker-visible logging).
+RUN mkdir -p /var/run/fail2ban /var/lib/fail2ban \
+    && rm -f /etc/fail2ban/jail.d/alpine-ssh.conf
+COPY ./fail2ban/fail2ban.local /etc/fail2ban/fail2ban.local
 
 # Copying Nginx Files
 COPY ./nginx/proxy.conf /etc/nginx/proxy.conf
@@ -70,6 +82,7 @@ RUN rm -f /var/log/nginx/*
 COPY entrypoint.sh /usr/local/bin/
 COPY certbot_renew.sh /usr/local/bin/
 COPY reload.sh /usr/local/bin/
+COPY fail2ban.sh /usr/local/bin/
 # certbot_renew.log is appended to directly by cron (`>> .../certbot_renew.log`
 # in the crontab line built by js/letsencrypt/index.js) — its content bypasses
 # Docker's stdout/stderr log pipeline entirely, unlike every other script's
@@ -79,7 +92,7 @@ COPY reload.sh /usr/local/bin/
 # cron shell's already-open append handle on the same path and risk corrupting
 # the log. If long-term retention ever becomes a concern, mount /var/log/certbot
 # as a volume and rotate it at the host/orchestration level instead.
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reload.sh \
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reload.sh /usr/local/bin/fail2ban.sh \
     && chmod 777 /usr/local/bin/certbot_renew.sh \
     && mkdir /var/log/certbot \
     && touch /var/log/certbot/certbot_renew.log \

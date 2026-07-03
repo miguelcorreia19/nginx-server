@@ -1,0 +1,46 @@
+# Docker build-context excludes.
+#
+# Anything listed here is NOT sent to the Docker daemon, so it is not picked up
+# by `COPY . /home/scripts/`. This keeps the runtime image small and the build
+# deterministic. It does not change build behaviour: every path the build/runtime
+# actually needs is kept.
+#
+# Intentionally NOT excluded (the build/runtime depend on them):
+#   Dockerfile          — the build runs `RUN rm Dockerfile`, which needs it present
+#   nginx/              — runtime scripts copy from /home/scripts/nginx/
+#   fail2ban/           — `COPY ./fail2ban/fail2ban.local` reads it
+#   js/ (except below)  — application source + package manifests
+
+# Version control & local tooling metadata
+.git
+.gitignore
+.gitattributes
+.dockerignore
+.claude
+
+# Unrelated reference project (Apache image used only for analysis)
+apache-with-certificate/
+
+# Design / discussion transcripts (markdown, not part of the product)
+initial-chat.md
+second-chat.md
+
+# Usage examples — documentation only, never used at build or runtime
+examples/
+
+# Test sources and coverage artifacts — never executed inside the image
+js/tests/
+coverage/
+
+# Dependencies: the runtime node_modules is produced by the builder stage
+# (`npm ci --omit=dev`) and copied via `COPY --from=node-builder`. Excluding any
+# host-side node_modules stops it from overwriting that clean, prod-only copy.
+**/node_modules/
+
+# Dev-only helper script (release notes generation)
+generate-release-notes.sh
+
+# OS / editor / log cruft
+.DS_Store
+*.log
+*.swp
