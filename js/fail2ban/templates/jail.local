@@ -17,10 +17,15 @@ ignoreip = ${IGNOREIP}
 banaction = iptables-multiport
 
 # --- nginx jails -------------------------------------------------------------
-# Both read nginx's error_log. nginx's error_log format is fixed by nginx and is
+# These read nginx's error_log. nginx's error_log format is fixed by nginx and is
 # therefore unaffected by this project's custom access log_format, so these
 # filters work without any custom regex. Access-log-based jails are intentionally
 # not used (the project's custom access format would require brittle custom regex).
+#
+# This is a deliberately conservative, low-false-positive default set. To enable
+# additional jails or custom filters, mount your own files into
+# /etc/fail2ban/jail.d/ and /etc/fail2ban/filter.d/ — see the "Advanced Fail2ban
+# customization" section of the README.
 
 [nginx-http-auth]
 enabled = true
@@ -28,6 +33,11 @@ port    = http,https
 logpath = /var/log/nginx/error.log
 
 [nginx-botsearch]
+enabled = true
+port    = http,https
+logpath = /var/log/nginx/error.log
+
+[nginx-forbidden]
 enabled = true
 port    = http,https
 logpath = /var/log/nginx/error.log

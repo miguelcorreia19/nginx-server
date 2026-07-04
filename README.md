@@ -573,9 +573,11 @@ services:
 
 ### What it does
 
-- Two jails are enabled, both reading nginx's **error log** (whose format is fixed by nginx and unaffected by this image's custom access-log format):
+- Three jails are enabled, all reading nginx's **error log** (whose format is fixed by nginx and unaffected by this image's custom access-log format):
   - **`nginx-http-auth`** — bans IPs that repeatedly fail HTTP Basic Auth.
   - **`nginx-botsearch`** — bans IPs probing for scripts/exploits.
+  - **`nginx-forbidden`** — bans IPs that repeatedly hit URLs blocked by nginx `deny`/`return 403` rules (inert if you have no such rules).
+- These are a deliberately **conservative, low-false-positive** default set. To go further, see [Advanced Fail2ban customization](#advanced-fail2ban-customization) below.
 - Backend: **polling** (the inotify backend is not packaged on Alpine).
 - Ban action: **`iptables-multiport`** (installs rules in the container's own network namespace).
 - Fail2ban logs to **stdout**, so its output is visible via `docker logs`.
@@ -598,6 +600,45 @@ When fronted by a trusted proxy you must:
 ### Tuning validation
 
 `FAIL2BAN_BANTIME`, `FAIL2BAN_FINDTIME` and `FAIL2BAN_MAXRETRY` must be positive integers; `FAIL2BAN_IGNOREIP` must be a space/comma-separated list of valid IPs, CIDRs, or hostnames. An invalid value is rejected with a warning and the default is used — it never blocks startup.
+
+### False-positive considerations
+
+The default jails are chosen for **low false-positive risk**:
+
+- `nginx-http-auth` only counts genuine Basic-Auth failures (a user mistyping a password `FAIL2BAN_MAXRETRY` times within `FAIL2BAN_FINDTIME` will be banned for `FAIL2BAN_BANTIME` — tune those, or add their IP to `FAIL2BAN_IGNOREIP`).
+- `nginx-botsearch` matches script/exploit probing recorded in the error log.
+- `nginx-forbidden` only fires on requests blocked by your own `deny`/`return 403` rules; it does nothing if you have none.
+
+The biggest real-world false-positive risk is **banning a reverse proxy** when real-IP recovery is not configured — see [Reverse proxy / real IP](#reverse-proxy--real-ip) above. The more jails you enable (see below), the more important correct real-IP handling and `FAIL2BAN_IGNOREIP` become.
+
+### Advanced Fail2ban customization
+
+nginx-server intentionally ships a **conservative default configuration** — only the low-false-positive, error-log jails listed above are enabled. It does **not** bake in stronger or access-log-based jails, because the right trade-off is deployment-specific.
+
+If you need more, extend Fail2ban using its **native override directories**, which Fail2ban reads automatically — no special support in this image is required. Mount your own files into:
+
+- **`/etc/fail2ban/jail.d/`** — drop-in `*.local` (or `*.conf`) files to enable additional jails or override settings. This is the **preferred mechanism for enabling extra jails**. Fail2ban's read order is `jail.conf → jail.d/*.conf → jail.local → jail.d/*.local`, so a `jail.d/*.local` file overrides the generated `jail.local`.
+- **`/etc/fail2ban/filter.d/`** — drop-in filter definitions for **custom filters** (your own `failregex`).
+
+These configurations are **user-managed**: you own their content, correctness, and false-positive profile. Advanced users can use this to enable, for example, `nginx-limit-req` (requires nginx `limit_req` to be configured), `nginx-bad-request`, `recidive` (note: `recidive` parses Fail2ban's own log file, so it needs `logtarget` switched to a file — the default is stdout), or entirely custom jails and filters.
+
+Example — enable `nginx-limit-req` via a mounted override (no image change needed):
+
+```yaml
+# docker-compose.yml (excerpt)
+volumes:
+  - ./fail2ban/jail.d/:/etc/fail2ban/jail.d/
+```
+
+```ini
+# ./fail2ban/jail.d/nginx-limit-req.local
+[nginx-limit-req]
+enabled = true
+port    = http,https
+logpath = /var/log/nginx/error.log
+```
+
+Everything else is unchanged: Fail2ban stays disabled unless `FAIL2BAN_ENABLED=true`, the **`NET_ADMIN`** requirement is the same, and the reverse-proxy / real-IP and false-positive considerations above apply to any jail you add.
 
 ---
 

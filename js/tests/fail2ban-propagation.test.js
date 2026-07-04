@@ -75,19 +75,24 @@ describe('buildConfig — default values', () => {
     expect(c).toMatch(/^maxretry = 6$/m);
     expect(c).toMatch(/^ignoreip = 127\.0\.0\.1\/8 ::1$/m);
   });
-  it('enables exactly the two error-log nginx jails', () => {
+  it('enables exactly the three error-log nginx jails', () => {
     const c = config();
     expect(c).toMatch(/\[nginx-http-auth\]/);
     expect(c).toMatch(/\[nginx-botsearch\]/);
+    expect(c).toMatch(/\[nginx-forbidden\]/);
+    // Exactly three jail sections — guards against any extra jail being added.
+    expect((c.match(/^\[nginx-[a-z-]+\]$/gm) || []).length).toBe(3);
   });
   it('does not include any access-log-based jail', () => {
     const c = config();
-    expect(c).not.toMatch(/nginx-bad-request/);
-    expect(c).not.toMatch(/nginx-limit-req/);
+    // Assert on jail section headers (not bare substrings), so the absence is
+    // checked regardless of any prose comments.
+    expect(c).not.toMatch(/^\[nginx-bad-request\]$/m);
+    expect(c).not.toMatch(/^\[nginx-limit-req\]$/m);
   });
-  it('both jails read the nginx error log only', () => {
+  it('all default jails read the nginx error log only', () => {
     const logpaths = config().match(/^logpath = .*$/gm) || [];
-    expect(logpaths.length).toBe(2);
+    expect(logpaths.length).toBe(3);
     for (const lp of logpaths) expect(lp).toBe('logpath = /var/log/nginx/error.log');
   });
   it('leaves no unsubstituted ${...} placeholders', () => {
@@ -185,6 +190,7 @@ describe('module() — write behaviour respects the gate', () => {
     const written = fs.readFileSync(jailPath(), 'utf8');
     expect(written).toMatch(/\[nginx-http-auth\]/);
     expect(written).toMatch(/\[nginx-botsearch\]/);
+    expect(written).toMatch(/\[nginx-forbidden\]/);
     expect(written).toMatch(/^backend = polling$/m);
   });
   it('never throws even if the output path is unwritable (nginx must continue)', async () => {

@@ -2,10 +2,13 @@
 
 This example shows how to enable the **optional** Fail2ban protection and demonstrate it with a basic-auth protected endpoint.
 
-Fail2ban is **disabled by default**. This example turns it on with `FAIL2BAN_ENABLED=true`. With it enabled, two jails watch nginx's **error log**:
+Fail2ban is **disabled by default**. This example turns it on with `FAIL2BAN_ENABLED=true`. With it enabled, three jails watch nginx's **error log**:
 
 - **`nginx-http-auth`** — bans IPs that repeatedly fail HTTP Basic Auth.
 - **`nginx-botsearch`** — bans IPs probing for scripts/exploits.
+- **`nginx-forbidden`** — bans IPs repeatedly hitting `deny`/`return 403`-blocked URLs.
+
+These are a conservative, low-false-positive default set. To enable additional jails or custom filters, mount your own files into `/etc/fail2ban/jail.d/` and `/etc/fail2ban/filter.d/` — see [Advanced Fail2ban customization](../../README.md#advanced-fail2ban-customization).
 
 Bans are installed with `iptables-multiport`, which needs the **`NET_ADMIN`** capability (already set in `docker-compose.yml`). Without `NET_ADMIN`, the container still runs — Fail2ban logs a warning and skips startup.
 
