@@ -8,11 +8,11 @@ Fail2ban is **disabled by default**. This example turns it on with `FAIL2BAN_ENA
 - **`nginx-botsearch`** — bans IPs probing for scripts/exploits.
 - **`nginx-forbidden`** — bans IPs repeatedly hitting `deny`/`return 403`-blocked URLs.
 
-These are a conservative, low-false-positive default set. To enable additional jails or custom filters, mount your own files into `/etc/fail2ban/jail.d/` and `/etc/fail2ban/filter.d/` — see [Advanced Fail2ban customization](../../README.md#advanced-fail2ban-customization).
+These are a conservative, low-false-positive default set. To enable additional jails or custom filters, mount your own files into `/etc/fail2ban/jail.d/` and `/etc/fail2ban/filter.d/` — see [Advanced Customization](../../docs/fail2ban.md#advanced-customization).
 
 Bans are installed with `iptables-multiport`, which needs the **`NET_ADMIN`** capability (already set in `docker-compose.yml`). Without `NET_ADMIN`, the container still runs — Fail2ban logs a warning and skips startup.
 
-> **Behind a reverse proxy / load balancer:** Fail2ban bans the client IP nginx records (`$remote_addr`). If another proxy sits in front, that is the *proxy's* IP — so you must configure nginx real-IP recovery (`set_real_ip_from <trusted-cidr>; real_ip_header X-Forwarded-For;`) and/or add the proxy to `FAIL2BAN_IGNOREIP`, or you risk banning the proxy. See the [Fail2ban section](../../README.md#fail2ban-optional) in the root README.
+> **Behind a reverse proxy / load balancer:** Fail2ban bans the client IP nginx records (`$remote_addr`). If another proxy sits in front, that is the *proxy's* IP — so you must configure nginx real-IP recovery (`set_real_ip_from <trusted-cidr>; real_ip_header X-Forwarded-For;`) and/or add the proxy to `FAIL2BAN_IGNOREIP`, or you risk banning the proxy. See [Reverse Proxy Considerations](../../docs/fail2ban.md#reverse-proxy-considerations) in the Fail2ban guide.
 
 ## Directory Structure
 

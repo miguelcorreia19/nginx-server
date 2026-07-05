@@ -15,19 +15,16 @@ A Docker image providing a flexible, production-ready Nginx setup for managing m
 2. [Features](#features)
 3. [Requirements](#requirements)
 4. [Quick Start](#quick-start)
-5. [Configuration](#configuration)
-6. [Supported Modes](#supported-modes)
-7. [Environment Variables](#environment-variables)
-8. [SSL Certificate Modes](#ssl-certificate-modes)
-9. [Certbot Renewal](#certbot-renewal)
-10. [Healthcheck](#healthcheck)
-11. [Logs](#logs)
-12. [Troubleshooting](#troubleshooting)
-13. [Fail2ban (optional)](#fail2ban-optional)
-14. [Security Notes](#security-notes)
-15. [Development](#development)
-16. [Testing](#testing)
-17. [Changelog](#changelog)
+5. [Documentation](#documentation)
+6. [Configuration](#configuration)
+7. [SSL Modes](#ssl-modes)
+8. [Let's Encrypt](#lets-encrypt)
+9. [Troubleshooting](#troubleshooting)
+10. [Fail2ban (optional)](#fail2ban-optional)
+11. [Security Notes](#security-notes)
+12. [Examples](#examples)
+13. [Contributing](#contributing)
+14. [Changelog](#changelog)
 
 ---
 
@@ -113,455 +110,66 @@ docker compose logs -f
 
 ---
 
+## Documentation
+
+In-depth topic guides live under [`docs/`](docs/):
+
+| Guide | What it covers |
+|---|---|
+| [docs/configuration.md](docs/configuration.md) | Canonical configuration reference — `config.json` fields and examples, site nginx config files, the full environment-variable reference, and nginx config overrides. |
+| [docs/ssl-modes.md](docs/ssl-modes.md) | The SSL/TLS modes (`http`, `letsencrypt`, `letsencrypt-staging`, `custom`, and development self-signed) — when to use each, advantages, limitations, and how they relate. |
+| [docs/letsencrypt.md](docs/letsencrypt.md) | Let's Encrypt operational guide — prerequisites, staging workflow, automatic renewal, rate limits, and certificate backup. |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Troubleshooting & operations — the healthcheck, log locations and examples, and step-by-step fixes for startup, certificate, reload, and renewal problems. |
+| [docs/fail2ban.md](docs/fail2ban.md) | Optional Fail2ban protection — configuration, operational commands, viewing/lifting bans, logs, reverse-proxy / real-IP handling, advanced customization, FAQ, and security philosophy. |
+
+Runnable end-to-end examples live under [`examples/`](examples/) — see the [Examples](#examples) table. Contributor docs are in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
 ## Configuration
 
-The service reads a JSON file mounted at `/home/config.json`. Each top-level key is a **certificate/site ID** (used as the name for generated nginx include files). The value is a configuration object for that site.
+Configuration is a JSON file mounted at `/home/config.json` — one entry per site, each selecting a `mode` and its domains — plus a matching nginx server-block file per site in a mounted `sites/` directory. Runtime behavior is tuned with environment variables, and the built-in nginx config files (`nginx.conf`, `proxy.conf`, `http-common.conf`) can be overridden by mounting your own.
 
-### `config.json` fields
-
-| Field | Description | Required for | Default |
-|---|---|---|---|
-| `names` | List of domain names for the server block | all modes | — |
-| `mode` | `http`, `letsencrypt`, `letsencrypt-staging`, or `custom` | all | `letsencrypt` |
-| `email` | Email for Let's Encrypt notifications | `letsencrypt`, `letsencrypt-staging` | value of `CERTBOT_EMAIL` env var |
-| `http_redirect` | Redirect HTTP → HTTPS | `letsencrypt`, `custom` | `true` |
-| `cert_file` | Certificate filename in `CUSTOM_CERTS_PATH` | `custom` | — |
-| `privkey_file` | Private key filename in `CUSTOM_CERTS_PATH` | `custom` | — |
-
-### Full `config.json` example
-
-```json
-{
-  "main": {
-    "names": ["example.com", "www.example.com"],
-    "mode": "letsencrypt",
-    "email": "admin@example.com"
-  },
-  "api": {
-    "names": ["api.example.com"],
-    "mode": "letsencrypt",
-    "email": "admin@example.com",
-    "http_redirect": false
-  },
-  "staging-test": {
-    "names": ["test.example.com"],
-    "mode": "letsencrypt-staging",
-    "email": "admin@example.com"
-  },
-  "legacy": {
-    "names": ["old.example.com"],
-    "mode": "custom",
-    "cert_file": "old_example_com.pem",
-    "privkey_file": "old_example_com.key"
-  },
-  "static": {
-    "names": ["static.example.com"],
-    "mode": "http"
-  }
-}
-```
-
-### Site nginx config files
-
-Each site ID in `config.json` requires a corresponding nginx server block file in the mounted `sites/` directory. The file **must** include the generated SSL config for that ID:
-
-```nginx
-# nginx/sites/main.conf
-server {
-  # This line is required — it injects the SSL/TLS directives generated for this site.
-  include /etc/nginx/conf/main.conf;
-
-  server_name example.com www.example.com;
-
-  location / {
-    proxy_pass http://backend:8080/;
-  }
-
-  error_page 500 502 503 504 /50x.html;
-  location = /50x.html {
-    root /usr/share/nginx/html;
-  }
-}
-```
-
-The site config filename must match the key in `config.json` (e.g., key `"main"` → file `main.conf`).
+📖 **[docs/configuration.md](docs/configuration.md)** — `config.json` fields and a full example, site nginx config files, the complete **environment-variable reference**, and nginx config overrides.
 
 ---
 
-## Supported Modes
+## SSL Modes
 
-### Production (`ENVIRONMENT=production` or `prod`)
+Each domain picks a TLS mode in `config.json`: **`http`** (plain HTTP), **`letsencrypt`** / **`letsencrypt-staging`** (automatic certificates), or **`custom`** (bring your own). Running the container with `ENVIRONMENT=development` instead uses generated **self-signed** certificates for local work. Modes can be combined across domains in one container.
 
-The default. Supports multiple SSL modes per domain, controlled by `config.json`.
-
-#### HTTP-only mode (`"mode": "http"`)
-
-Serves plain HTTP on port 80. No certificates are generated or required.
-
-```json
-{
-  "mysite": {
-    "names": ["mysite.example.com"],
-    "mode": "http"
-  }
-}
-```
-
-#### Let's Encrypt (`"mode": "letsencrypt"`)
-
-Obtains a real certificate from Let's Encrypt. Requires the domain to be publicly reachable on port 80 for the ACME http-01 challenge.
-
-```json
-{
-  "mysite": {
-    "names": ["mysite.example.com"],
-    "mode": "letsencrypt",
-    "email": "admin@example.com"
-  }
-}
-```
-
-#### Let's Encrypt staging (`"mode": "letsencrypt-staging"`)
-
-Uses the Let's Encrypt staging server. Certificates are not trusted by browsers but the rate limits are much higher — use this to validate your setup before switching to `letsencrypt`.
-
-```json
-{
-  "mysite": {
-    "names": ["mysite.example.com"],
-    "mode": "letsencrypt-staging",
-    "email": "admin@example.com"
-  }
-}
-```
-
-#### Custom certificates (`"mode": "custom"`)
-
-Uses certificates you supply. Mount your certificate files at `CUSTOM_CERTS_PATH` (default `/home/custom-certificates`).
-
-```json
-{
-  "mysite": {
-    "names": ["mysite.example.com"],
-    "mode": "custom",
-    "cert_file": "mysite.pem",
-    "privkey_file": "mysite.key"
-  }
-}
-```
-
-```yaml
-volumes:
-  - ./certs/:/home/custom-certificates
-```
-
-### Development (`ENVIRONMENT=development` or `dev`)
-
-Generates a self-signed certificate locally. No CA contact, no public domain required. Intended for local development.
-
-**Requires** a `dev.conf` site file that includes the development SSL config:
-
-```nginx
-# nginx/sites/dev.conf
-server {
-  include /etc/nginx/conf/dev.conf;
-  server_name localhost;
-
-  location / {
-    proxy_pass http://myapp:3000/;
-  }
-}
-```
-
-```yaml
-environment:
-  - ENVIRONMENT=development
-volumes:
-  - ./nginx/sites/:/home/nginx/sites
-  - ./config.json:/home/config.json  # mount an empty {} if no domains are configured
-```
-
-See [`examples/dev/`](examples/dev/) for a complete Docker Compose example.
+📖 **[docs/ssl-modes.md](docs/ssl-modes.md)** — when to use each mode, advantages, limitations, and how they relate. For Let's Encrypt specifics (renewal, staging, rate limits, backup) see **[docs/letsencrypt.md](docs/letsencrypt.md)**.
 
 ---
 
-## Environment Variables
+## Let's Encrypt
 
-| Variable | Description | Default |
-|---|---|---|
-| `ENVIRONMENT` | Runtime mode: `production`/`prod` or `development`/`dev` | `production` |
-| `CERTBOT_EMAIL` | Fallback email for Let's Encrypt notifications | — |
-| `CERTBOT_BACKUP` | Enable certificate backup to `CERTBOT_BACKUP_PATH` (`true`/`false`) | `false` |
-| `CERTBOT_BACKUP_PATH` | Path for Let's Encrypt backup | `/home/letsencrypt` |
-| `CERTBOT_RENEW_CRONJOB` | Cron expression for renewal schedule | `0 5 * * *` (05:00 daily) |
-| `CUSTOM_CERTS_PATH` | Path where custom SSL certificate files are mounted | `/home/custom-certificates` |
-| `CUSTOM_NGINX_CONFIG_FILES_PATH` | Path for custom nginx config overrides (`nginx.conf`, `proxy.conf`, `http-common.conf`) | `/home/nginx/configs` |
-| `FAIL2BAN_ENABLED` | Enable optional Fail2ban brute-force protection (`true`/`false`) | `false` |
-| `FAIL2BAN_BANTIME` | Seconds an offending IP stays banned | `3600` |
-| `FAIL2BAN_FINDTIME` | Sliding window (seconds) over which failures are counted | `3600` |
-| `FAIL2BAN_MAXRETRY` | Failures within `FAIL2BAN_FINDTIME` before an IP is banned | `6` |
-| `FAIL2BAN_IGNOREIP` | Space/comma-separated allowlist of IPs, CIDRs, or hosts never banned | `127.0.0.1/8 ::1` |
+The `letsencrypt` and `letsencrypt-staging` modes obtain and **automatically renew** certificates from Let's Encrypt. Renewal runs on a cron schedule (default 05:00 daily); port 80 is briefly taken offline for the ACME challenge and nginx is reloaded afterward. Validate with staging first to avoid production rate limits, and optionally enable `CERTBOT_BACKUP=true` to persist issued certificates across container replacements.
 
-**Note**: `ENVIRONMENT` accepts both the short form (`prod`/`dev`) and the long form (`production`/`development`). Any other value causes the container to exit with a clear fatal error.
-
-**Note**: An invalid `FAIL2BAN_*` tuning value (e.g. a non-numeric `FAIL2BAN_BANTIME`) is **not** fatal — it is rejected with a warning and the documented default is used instead, so nginx always starts.
-
----
-
-## SSL Certificate Modes
-
-### Combining modes
-
-Multiple modes can be active simultaneously in the same container. For example, you can have one domain use Let's Encrypt, another use a custom certificate, and a third serve HTTP-only — all from a single `config.json`.
-
-### Overriding nginx config files
-
-Mount a directory at `CUSTOM_NGINX_CONFIG_FILES_PATH` (default `/home/nginx/configs`) containing any of `nginx.conf`, `proxy.conf`, or `http-common.conf` to override the built-in defaults:
-
-```yaml
-volumes:
-  - ./my-nginx-overrides/:/home/nginx/configs
-```
-
-Only the files present in the mounted directory are replaced; the others continue using built-in defaults.
-
-### Custom certificate setup example
-
-```yaml
-services:
-  nginx-server:
-    image: miguelcorreia19/nginx-server:latest
-    restart: always
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx/sites/:/home/nginx/sites
-      - ./config.json:/home/config.json
-      - ./certs/:/home/custom-certificates
-    environment:
-      - ENVIRONMENT=production
-```
-
-```json
-{
-  "mysite": {
-    "names": ["mysite.example.com"],
-    "mode": "custom",
-    "cert_file": "mysite_fullchain.pem",
-    "privkey_file": "mysite.key",
-    "http_redirect": true
-  }
-}
-```
-
----
-
-## Certbot Renewal
-
-Certificate renewal runs automatically via a cron job set up at container startup (default schedule: `0 5 * * *`, i.e. 05:00 daily).
-
-### What happens during renewal
-
-1. An atomic lock (`mkdir`) prevents concurrent renewal runs. If a renewal is already in progress, the new cron invocation logs "already in progress" and exits cleanly.
-2. The port-80 nginx config is backed up and port 80 is taken offline so certbot can complete the http-01 ACME challenge.
-3. `certbot renew` is invoked non-interactively.
-4. Port 80 is restored and nginx is reloaded, regardless of whether renewal succeeded or failed (EXIT trap).
-
-### Renewal logs
-
-Renewal output is written to `/var/log/certbot/certbot_renew.log` inside the container (bypasses Docker's log pipeline — this is a cron-driven file log):
-
-```bash
-docker exec <container> cat /var/log/certbot/certbot_renew.log
-```
-
-A successful renewal run looks like:
-
-```
-2026-06-08 05:00:01 [certbot_renew] certbot renew started
-2026-06-08 05:00:01 [certbot_renew] Port 80 disabled; nginx reloaded
-[certbot_renew.js] Starting certificate renewal — 2026-06-08T05:00:01.000Z
-... certbot renewal output per certificate ...
-[certbot_renew.js] certbot renew finished — 2026-06-08T05:00:03.000Z
-2026-06-08 05:00:03 [certbot_renew] certbot renew succeeded
-2026-06-08 05:00:03 [certbot_renew] Restoring port-80 config...
-2026-06-08 05:00:03 [certbot_renew] nginx reloaded after port-80 restore
-```
-
-### Let's Encrypt rate limits
-
-Let's Encrypt imposes certificate issuance rate limits. To avoid hitting them during configuration iteration, use `letsencrypt-staging` mode first to verify your setup, then switch to `letsencrypt`.
-
-Enable `CERTBOT_BACKUP=true` to persist Let's Encrypt state across container restarts. On next startup, if a backup exists, certbot loads certificates from the backup instead of re-issuing.
-
-### Known limitation: SIGKILL during renewal
-
-A `SIGKILL` during an active renewal cannot be trapped by the shell. It leaves port 80 disabled and the lock directory behind until the next scheduled renewal run, which detects the stale lock (dead PID), clears it, and restores port 80. At the default daily schedule, this means port 80 could be offline for up to 24 hours in the SIGKILL case. Use `SIGTERM` (Docker's `docker stop` default) for clean shutdowns.
-
----
-
-## Healthcheck
-
-The container includes a built-in Docker healthcheck that runs every 30 seconds:
-
-1. Reads `/var/run/nginx.pid` and verifies the nginx master process is alive (`kill -0 <pid>`).
-2. Runs `nginx -t` to confirm the on-disk configuration is valid.
-
-Both checks must pass for the container to report `healthy`. The check does not send any HTTP requests, so it works correctly in all modes (including development mode before a `dev.conf` is mounted).
-
-```bash
-# Check container health status
-docker inspect --format='{{.State.Health.Status}}' <container>
-
-# View recent health check output
-docker inspect --format='{{range .State.Health.Log}}{{.Output}}{{end}}' <container>
-```
-
-**Healthcheck parameters**: `--interval=30s --timeout=5s --start-period=15s --retries=3`
-
----
-
-## Logs
-
-### Container logs (Docker stdout/stderr)
-
-All startup, reload, and fatal error messages appear in `docker logs`:
-
-```bash
-docker logs <container>
-docker logs -f <container>      # follow
-docker logs -t <container>      # with Docker-added timestamps
-```
-
-**Startup sequence** (normal):
-```
-2026-06-08 11:27:52 [entrypoint] Starting up (ENVIRONMENT=production)
-Starting in ENVIRONMENT="production" (defaults to "production" if unset)
-...
-2026-06-08 11:27:55 [entrypoint] Entrypoint script ended — starting nginx
-```
-
-**Startup failure** (invalid nginx config):
-```
-2026-06-08 11:27:52 [entrypoint] Starting up (ENVIRONMENT=production)
-Fatal: generated nginx configuration is invalid (nginx -t failed): ...
-2026-06-08 11:27:53 [entrypoint] Fatal: entrypoint.js failed — refusing to start nginx with an incomplete/invalid configuration
-```
-
-**Nginx reload** (on config file change):
-```
-2026-06-08 12:00:01 [reload] File 'main.conf' was changed — reloading nginx
-2026-06-08 12:00:04 [reload] Nginx reloaded successfully
-```
-
-**Nginx reload failure** (invalid config pushed):
-```
-2026-06-08 12:00:01 [reload] File 'main.conf' was changed — reloading nginx
-2026-06-08 12:00:04 [reload] ERROR: nginx reload failed (exit 1) — configuration may be invalid; nginx continues running with its previous configuration
-```
-
-### Nginx access/error logs
-
-```bash
-docker exec <container> cat /var/log/nginx/access.log
-docker exec <container> cat /var/log/nginx/error.log
-```
-
-Or mount the log directory as a volume:
-```yaml
-volumes:
-  - ./nginx/logs/:/var/log/nginx/
-```
-
-### Certbot renewal log
-
-```bash
-docker exec <container> cat /var/log/certbot/certbot_renew.log
-```
-
-This file is written directly by cron (not via Docker's log pipeline). It persists for the lifetime of the container unless the container is removed.
+📖 **[docs/letsencrypt.md](docs/letsencrypt.md)** — prerequisites, the staging workflow, renewal behavior and logs, rate limits, certificate backup, and the relevant `CERTBOT_*` environment variables.
 
 ---
 
 ## Troubleshooting
 
-### Container exits immediately at startup
+The container ships a built-in healthcheck (nginx pidfile liveness + `nginx -t`, no HTTP request), and all startup, reload, and error output goes to `docker logs`. nginx access/error logs and the certbot renewal log are available inside the container.
 
-**Invalid ENVIRONMENT value**:
-```
-Fatal: invalid ENVIRONMENT value "staging" — must be 'development'/'dev' or 'production'/'prod'
-[entrypoint] Fatal: entrypoint.js failed — refusing to start nginx...
-```
-Fix: set `ENVIRONMENT` to `production`, `prod`, `development`, or `dev`.
-
-**Missing or invalid `config.json`**:
-```
-Fatal: config.json not found. Mount your configuration file at /home/config.json
-```
-Fix: ensure `config.json` is mounted at `/home/config.json`.
-
-**Invalid nginx configuration**:
-```
-Fatal: generated nginx configuration is invalid (nginx -t failed):
-nginx: [emerg] unknown directive "foo" in /etc/nginx/proxy.conf:1
-```
-Fix: check your custom nginx config files for syntax errors. Run `nginx -t` locally if possible.
-
-### Container starts but healthcheck stays `unhealthy`
-
-- Check `docker logs <container>` for errors during startup.
-- Run `docker exec <container> nginx -t` to check nginx config validity.
-- Check `docker exec <container> cat /var/run/nginx.pid` — if empty, nginx may have crashed.
-
-### Let's Encrypt certificate not issued
-
-- Ensure port 80 is publicly reachable from the internet before startup.
-- Check that `names` in `config.json` match your actual public DNS records.
-- Use `letsencrypt-staging` mode first to validate your setup without consuming rate-limit quota.
-- Check `docker logs <container>` for certbot error output.
-
-### Nginx not reloading after config change
-
-- Ensure you are modifying files inside the mounted `sites/` directory, not inside the container.
-- Check `docker logs <container>` for `[reload]` messages — if you see `inotifywait` errors, the watch may not have started.
-
-### Renewal not running
-
-- Check `docker exec <container> crontab -l` to confirm the cron job was registered.
-- Check `/var/log/certbot/certbot_renew.log` for the most recent run output.
-- A stale lock from a previous `SIGKILL` is cleared automatically on the next scheduled run.
-
-### Checking container health manually
-
-```bash
-# Quick status
-docker inspect --format='{{.State.Health.Status}}' <container>
-
-# Full health log
-docker inspect <container> | grep -A 20 '"Health"'
-
-# Manual check inside container
-docker exec <container> nginx -t
-docker exec <container> sh -c 'pid=$(cat /var/run/nginx.pid 2>/dev/null) && [ -n "$pid" ] && kill -0 "$pid" && echo "nginx alive" || echo "nginx down"'
-```
+📖 **[docs/troubleshooting.md](docs/troubleshooting.md)** — the healthcheck and how to read it, log locations and examples, and step-by-step fixes for common startup, certificate, reload, and renewal problems.
 
 ---
 
 ## Fail2ban (optional)
 
-Fail2ban is an **optional, disabled-by-default** layer that watches nginx's logs and bans abusive IPs at the firewall. It changes nothing unless you set `FAIL2BAN_ENABLED=true`.
+Fail2ban is an **optional, disabled-by-default** layer that watches nginx's error log and bans abusive IPs at the firewall. It changes nothing unless you set `FAIL2BAN_ENABLED=true`, and it needs the **`NET_ADMIN`** capability to install bans (without it, it logs a warning and skips startup — nginx still runs).
 
-For a complete, runnable setup (including a basic-auth endpoint to trigger the `nginx-http-auth` jail), see [`examples/fail2ban/`](examples/fail2ban/).
-
-### Enabling
+When enabled, three conservative, low-false-positive jails run against the nginx error log: **`nginx-http-auth`** (Basic-Auth brute force), **`nginx-botsearch`** (script/exploit probing), and **`nginx-forbidden`** (`deny`/`403`-blocked URLs). nginx stays the foreground process and Fail2ban startup failures are non-fatal.
 
 ```yaml
 services:
   nginx-server:
     image: miguelcorreia19/nginx-server:latest
     cap_add:
-      - NET_ADMIN            # required for bans to take effect (see below)
+      - NET_ADMIN            # required for bans to take effect
     environment:
       - FAIL2BAN_ENABLED=true
       # optional tuning (defaults shown):
@@ -571,130 +179,23 @@ services:
       - FAIL2BAN_IGNOREIP=127.0.0.1/8 ::1
 ```
 
-### What it does
+📖 **Full guide: [docs/fail2ban.md](docs/fail2ban.md)** — configuration, operational commands, viewing/lifting bans, logs, **reverse-proxy / real-IP handling**, advanced customization (`jail.d/` + `filter.d/` overrides), FAQ, and security philosophy. For a complete runnable setup, see [`examples/fail2ban/`](examples/fail2ban/).
 
-- Three jails are enabled, all reading nginx's **error log** (whose format is fixed by nginx and unaffected by this image's custom access-log format):
-  - **`nginx-http-auth`** — bans IPs that repeatedly fail HTTP Basic Auth.
-  - **`nginx-botsearch`** — bans IPs probing for scripts/exploits.
-  - **`nginx-forbidden`** — bans IPs that repeatedly hit URLs blocked by nginx `deny`/`return 403` rules (inert if you have no such rules).
-- These are a deliberately **conservative, low-false-positive** default set. To go further, see [Advanced Fail2ban customization](#advanced-fail2ban-customization) below.
-- Backend: **polling** (the inotify backend is not packaged on Alpine).
-- Ban action: **`iptables-multiport`** (installs rules in the container's own network namespace).
-- Fail2ban logs to **stdout**, so its output is visible via `docker logs`.
-
-It runs as a backgrounded helper alongside the config-reload watcher; nginx remains the foreground process. **If Fail2ban fails to start for any reason, a clear warning is logged and nginx keeps running** — the container healthcheck only ever reflects nginx, never Fail2ban.
-
-### `NET_ADMIN` requirement
-
-The `iptables-multiport` action needs the **`NET_ADMIN`** capability to install ban rules. Add `cap_add: [NET_ADMIN]` (already present in the `examples/` compose files). Without it, Fail2ban detects that iptables is unusable, logs a warning, and skips startup — nginx still runs, but no bans are applied.
-
-### Reverse proxy / real IP
-
-Fail2ban bans the client IP that nginx records (`$remote_addr`). **If this container sits behind another reverse proxy or load balancer, `$remote_addr` is the proxy's IP**, and Fail2ban could ban the proxy — cutting off all traffic.
-
-When fronted by a trusted proxy you must:
-
-1. Configure nginx real-IP recovery so `$remote_addr` becomes the true client IP, e.g. (in a mounted config) `set_real_ip_from <trusted-proxy-cidr>;` and `real_ip_header X-Forwarded-For;`. The trusted ranges are deployment-specific and are intentionally **not** hardcoded by this image.
-2. As a safety net, add the proxy/network to `FAIL2BAN_IGNOREIP` so it can never be banned.
-
-### Tuning validation
-
-`FAIL2BAN_BANTIME`, `FAIL2BAN_FINDTIME` and `FAIL2BAN_MAXRETRY` must be positive integers; `FAIL2BAN_IGNOREIP` must be a space/comma-separated list of valid IPs, CIDRs, or hostnames. An invalid value is rejected with a warning and the default is used — it never blocks startup.
-
-### False-positive considerations
-
-The default jails are chosen for **low false-positive risk**:
-
-- `nginx-http-auth` only counts genuine Basic-Auth failures (a user mistyping a password `FAIL2BAN_MAXRETRY` times within `FAIL2BAN_FINDTIME` will be banned for `FAIL2BAN_BANTIME` — tune those, or add their IP to `FAIL2BAN_IGNOREIP`).
-- `nginx-botsearch` matches script/exploit probing recorded in the error log.
-- `nginx-forbidden` only fires on requests blocked by your own `deny`/`return 403` rules; it does nothing if you have none.
-
-The biggest real-world false-positive risk is **banning a reverse proxy** when real-IP recovery is not configured — see [Reverse proxy / real IP](#reverse-proxy--real-ip) above. The more jails you enable (see below), the more important correct real-IP handling and `FAIL2BAN_IGNOREIP` become.
-
-### Advanced Fail2ban customization
-
-nginx-server intentionally ships a **conservative default configuration** — only the low-false-positive, error-log jails listed above are enabled. It does **not** bake in stronger or access-log-based jails, because the right trade-off is deployment-specific.
-
-If you need more, extend Fail2ban using its **native override directories**, which Fail2ban reads automatically — no special support in this image is required. Mount your own files into:
-
-- **`/etc/fail2ban/jail.d/`** — drop-in `*.local` (or `*.conf`) files to enable additional jails or override settings. This is the **preferred mechanism for enabling extra jails**. Fail2ban's read order is `jail.conf → jail.d/*.conf → jail.local → jail.d/*.local`, so a `jail.d/*.local` file overrides the generated `jail.local`.
-- **`/etc/fail2ban/filter.d/`** — drop-in filter definitions for **custom filters** (your own `failregex`).
-
-These configurations are **user-managed**: you own their content, correctness, and false-positive profile. Advanced users can use this to enable, for example, `nginx-limit-req` (requires nginx `limit_req` to be configured), `nginx-bad-request`, `recidive` (note: `recidive` parses Fail2ban's own log file, so it needs `logtarget` switched to a file — the default is stdout), or entirely custom jails and filters.
-
-Example — enable `nginx-limit-req` via a mounted override (no image change needed):
-
-```yaml
-# docker-compose.yml (excerpt)
-volumes:
-  - ./fail2ban/jail.d/:/etc/fail2ban/jail.d/
-```
-
-```ini
-# ./fail2ban/jail.d/nginx-limit-req.local
-[nginx-limit-req]
-enabled = true
-port    = http,https
-logpath = /var/log/nginx/error.log
-```
-
-Everything else is unchanged: Fail2ban stays disabled unless `FAIL2BAN_ENABLED=true`, the **`NET_ADMIN`** requirement is the same, and the reverse-proxy / real-IP and false-positive considerations above apply to any jail you add.
+> ⚠️ **Behind a reverse proxy?** Fail2ban bans `$remote_addr` — without real-IP recovery that is the *proxy's* IP, so you risk banning the proxy and taking the site offline. See [docs/fail2ban.md → Reverse Proxy Considerations](docs/fail2ban.md#reverse-proxy-considerations).
 
 ---
 
 ## Security Notes
 
-- **Command injection protection**: all shell-out calls in the Node startup scripts use `execFile` (not `exec`/`shell: true`), preventing injection via domain names or environment variables.
-- **Input validation**: `config.json` entries are validated at startup before any mode handler runs. Invalid entries abort with a clear error rather than generating broken nginx config.
-- **Certificates never exposed**: certificate paths and private key paths are passed as array arguments to `execFile`; they are never interpolated into shell strings.
-- **Self-signed certs in dev only**: self-signed certificate generation runs only in `development` mode. Production modes require a real CA or your own certificates.
-- **cap_add: NET_ADMIN**: required only when `FAIL2BAN_ENABLED=true`, so Fail2ban can install iptables ban rules (see [Fail2ban](#fail2ban-optional)). Shown in the `examples/` compose files; remove it if you do not enable Fail2ban.
+`nginx-server` favors secure, conservative defaults: all Node shell-outs use `execFile` (no shell-string interpolation, so domain names / cert paths / env vars can't inject commands), `config.json` is validated before any config is generated, self-signed certificates are generated only in `development` mode, and the `NET_ADMIN` capability is needed only when Fail2ban is enabled.
+
+📖 The full **security model** — together with the process model, startup flow, certbot and healthcheck internals, and design rationale — is documented in **[docs/architecture.md](docs/architecture.md)**.
 
 ---
 
-## Development
+## Examples
 
-### Running locally (dev mode)
-
-```yaml
-# docker-compose.yml
-services:
-  nginx-server:
-    image: miguelcorreia19/nginx-server:latest
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx/sites/:/home/nginx/sites
-    environment:
-      - ENVIRONMENT=development
-```
-
-Create `nginx/sites/dev.conf`:
-
-```nginx
-server {
-  include /etc/nginx/conf/dev.conf;
-  server_name localhost;
-
-  location / {
-    return 200 "hello from dev\n";
-  }
-}
-```
-
-```bash
-docker compose up
-# Access at https://localhost (self-signed cert warning is expected)
-```
-
-### Building from source
-
-```bash
-docker build -t nginx-server .
-```
-
-### Examples
+Runnable end-to-end Docker Compose examples:
 
 | Directory | What it shows |
 |---|---|
@@ -706,34 +207,9 @@ docker build -t nginx-server .
 
 ---
 
-## Testing
+## Contributing
 
-The test suite runs inside the `js/` directory using Jest. It does not require Docker or an internet connection.
-
-```bash
-cd js
-npm install
-npm test
-```
-
-Shell script syntax checks:
-
-```bash
-bash -n entrypoint.sh
-bash -n reload.sh
-bash -n certbot_renew.sh
-bash -n fail2ban.sh
-```
-
-The test suite covers:
-- Config generation for all four SSL modes
-- Environment variable validation
-- Nginx config validation behavior
-- Certbot renewal locking, restore, and failure paths
-- Healthcheck behavior
-- Fail2ban config generation, gating, and tuning validation
-- Logging format and severity correctness
-- Build-time and startup-time assertions
+Local development, building the image, and running the test suite (Jest + shell syntax checks) are documented in **[CONTRIBUTING.md](CONTRIBUTING.md)**.
 
 ---
 
