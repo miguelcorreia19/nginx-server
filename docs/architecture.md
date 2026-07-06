@@ -92,6 +92,12 @@ Let's Encrypt renewal is a cron-driven shell script, `certbot_renew.sh`, registe
 - **SIGKILL limitation.** `SIGKILL` cannot be trapped (OS limitation), so a mid-renewal hard kill leaves port 80 disabled and the lock directory behind.
 - **Stale-lock cleanup.** The next scheduled run detects the orphaned lock by checking whether the recorded PID is still alive; if not, it clears the stale lock and its `EXIT` trap restores port 80. Worst case, port 80 stays offline until that next run (up to ~24h at the default daily schedule). Use a graceful `SIGTERM` (Docker's `docker stop` default) to avoid this. The user-facing version of this caveat is in [docs/letsencrypt.md](letsencrypt.md#operational-caveat-hard-kill-during-renewal).
 
+### Webroot-readiness (preparatory infrastructure)
+
+A review recommended eventually moving renewal from standalone to a **webroot** model (nginx keeps port 80 permanently; certbot writes challenge files into a shared directory), which would remove the port-80 downtime and the SIGKILL caveat above. As a first, behavior-neutral step, the image now ships a shared ACME webroot at `/var/www/certbot` (created in the `Dockerfile`), and the project-controlled port-80 server blocks — the generated HTTP-redirect blocks (`js/templates/http_redirect.conf`) and the default port-80 vhost (`nginx/nginx.vh.default.80.conf`) — serve `^~ /.well-known/acme-challenge/` from it, matched *ahead of* the catch-all redirect so normal requests are unchanged.
+
+**This is infrastructure only — issuance and renewal still use standalone mode.** Switching renewal to webroot (and migrating existing certificates' `authenticator = standalone` renewal configs) is a deliberate later change. See [docs/letsencrypt.md](letsencrypt.md#acme-challenge-handling-webroot-readiness).
+
 ## Healthcheck Architecture
 
 The image defines a Docker `HEALTHCHECK` (`--interval=30s --timeout=5s --start-period=15s --retries=3`) that, on each run:

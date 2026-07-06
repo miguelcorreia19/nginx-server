@@ -65,12 +65,18 @@ COPY ./nginx/http-common.conf /etc/nginx/http-common.conf
 # TODO: check if is needed
 COPY ./nginx/ /etc/nginx/conf/
 
-# Copying nginx sites conf files and creating required directories
+# Copying nginx sites conf files and creating required directories.
+# /var/www/certbot is the shared ACME webroot: nginx (workers run as the
+# 'nginx' user) serves /.well-known/acme-challenge/ from it, and certbot/root
+# would write challenge tokens into it. Created here so it exists in the image;
+# default root ownership (mode 755) is readable by the nginx workers. Phase A
+# only provisions this infrastructure — renewal still uses standalone mode.
 RUN mkdir -p \
     /etc/nginx/conf \
     /home/nginx/sites \
     /etc/nginx/conf.d/80/ \
-    /etc/nginx/conf.d/443/
+    /etc/nginx/conf.d/443/ \
+    /var/www/certbot
 # COPY ./nginx/sites/ /home/nginx/sites
 
 COPY ./nginx/nginx.vh.default.443.conf /etc/nginx/conf.d/443/nginx.vh.default.443.conf

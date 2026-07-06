@@ -68,6 +68,27 @@ A successful renewal run looks like:
 
 A `SIGKILL` (rather than a graceful `SIGTERM`) **during an active renewal** can leave port 80 disabled until the next scheduled renewal run, which detects and clears the stale state and restores port 80. At the default daily schedule, port 80 could therefore stay offline for up to 24 hours in this case. Use a graceful shutdown — `docker stop` sends `SIGTERM` by default — to avoid it.
 
+## ACME challenge handling (webroot-readiness)
+
+> **Current renewals still use standalone mode.** This section documents preparatory infrastructure only; it does **not** change how certificates are issued or renewed today.
+
+The image ships a dedicated **ACME webroot** at `/var/www/certbot`, and every project-controlled port-80 server block serves the ACME http-01 challenge path from it:
+
+```nginx
+location ^~ /.well-known/acme-challenge/ {
+  root /var/www/certbot;
+}
+```
+
+This `location` is present in both project-controlled port-80 paths:
+
+- the generated **HTTP→HTTPS redirect blocks** (so a `letsencrypt` domain with `http_redirect=true` serves the challenge instead of redirecting it), and
+- the **default port-80 vhost** (so a `letsencrypt` domain with `http_redirect=false`, which has no dedicated port-80 block, is still served).
+
+Because the challenge `location` is matched ahead of the catch-all redirect, **normal requests are unaffected** — they still receive the usual `301`/`444`. Challenge requests are served directly over HTTP and never redirected to HTTPS.
+
+**Why this exists.** An [architecture review](architecture.md#certbot-architecture) recommended eventually moving renewal from standalone to a **webroot** model, where nginx keeps port 80 permanently and certbot just writes challenge files into this directory. That would remove the brief port-80 downtime during renewal and the hard-kill caveat above, and simplify the renewal script. This phase only provisions the directory and challenge handling; **switching renewal to webroot is a later, separate change** that will also migrate existing certificates' renewal configuration. Until then, issuance and renewal continue to use standalone mode exactly as before.
+
 ## Rate limits
 
 Let's Encrypt imposes certificate-issuance rate limits. To avoid hitting them while iterating on your configuration, use `letsencrypt-staging` mode first to verify your setup, then switch to `letsencrypt`.
