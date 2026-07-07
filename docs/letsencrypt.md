@@ -89,6 +89,29 @@ Because the challenge `location` is matched ahead of the catch-all redirect, **n
 
 **Why this exists.** An [architecture review](architecture.md#certbot-architecture) recommended eventually moving renewal from standalone to a **webroot** model, where nginx keeps port 80 permanently and certbot just writes challenge files into this directory. That would remove the brief port-80 downtime during renewal and the hard-kill caveat above, and simplify the renewal script. This phase only provisions the directory and challenge handling; **switching renewal to webroot is a later, separate change** that will also migrate existing certificates' renewal configuration. Until then, issuance and renewal continue to use standalone mode exactly as before.
 
+### Renewal-config migration (prepared, not active)
+
+> **Renewals still run through the existing standalone renewal path.** This step only *prepares* a webroot version of each renewal config; it does **not** activate it.
+
+At startup, the image scans `/etc/letsencrypt/renewal/*.conf` for legacy standalone configs (`authenticator = standalone`) and **stages** a webroot-schema equivalent of each — verified against Certbot's renewal-config expectations:
+
+```ini
+[renewalparams]
+authenticator = webroot
+webroot_path = /var/www/certbot
+```
+
+All other settings (account, server, key type, certificate paths, etc.) are preserved unchanged.
+
+To keep renewals working exactly as today, the migration is deliberately **non-activating**:
+
+- The **live** `/etc/letsencrypt/renewal/*.conf` are **never modified** — they stay `standalone`, so `certbot renew` (driven by the unchanged renewal script, which frees port 80 for the standalone challenge) continues to work. Activating webroot now would break renewals, because that script removes the port-80 challenge handler to free the port.
+- The migrated configs are written to a **staging** directory, `/etc/letsencrypt/renewal-webroot/`, which Certbot never reads.
+- A **backup** of each original standalone config is kept at `/etc/letsencrypt/renewal-backup/<name>.conf` (deterministic, easy to inspect; restore with `cp`).
+- A **schema marker** at `/etc/letsencrypt/.nginx-server-renewal-schema` records the prepared schema version (`webroot-renewal-v1`). It describes only the renewal-config schema, not the image version.
+
+The migration is **idempotent** (already-staged configs are skipped), **non-fatal** (any problem is logged and startup continues), and only logs meaningful events. A later phase will activate the staged configs at the same time it switches the renewal path to webroot.
+
 ## Rate limits
 
 Let's Encrypt imposes certificate-issuance rate limits. To avoid hitting them while iterating on your configuration, use `letsencrypt-staging` mode first to verify your setup, then switch to `letsencrypt`.

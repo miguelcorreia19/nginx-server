@@ -5,6 +5,7 @@ const dev = require('./dev');
 const custom = require('./custom');
 const http = require('./http');
 const fail2ban = require('./fail2ban');
+const migrateRenewalConfigs = require('./letsencrypt/migrate_renewal');
 const { command, mapCustomNginxConf, validateNginxConfig } = require("./utils.js");
 const { validateConfigEntry } = require("./validate.js");
 
@@ -84,6 +85,16 @@ const start = async () => {
       await fail2ban();
     } catch (err) {
       console.error(`WARNING: Fail2ban setup failed — continuing without it: ${err.message || err}`);
+    }
+
+    // Phase B: prepare (stage) webroot renewal configs from any legacy
+    // standalone ones. PREPARE ONLY — the live renewal configs are untouched
+    // and renewals still run through the existing standalone path. Isolated and
+    // non-fatal: a migration problem must never prevent nginx from starting.
+    try {
+      migrateRenewalConfigs();
+    } catch (err) {
+      console.error(`WARNING: renewal-config migration error — continuing: ${err.message || err}`);
     }
 
   } catch (err) {

@@ -98,6 +98,8 @@ A review recommended eventually moving renewal from standalone to a **webroot** 
 
 **This is infrastructure only — issuance and renewal still use standalone mode.** Switching renewal to webroot (and migrating existing certificates' `authenticator = standalone` renewal configs) is a deliberate later change. See [docs/letsencrypt.md](letsencrypt.md#acme-challenge-handling-webroot-readiness).
 
+A subsequent step **prepares but does not activate** the renewal-config migration: at startup, `js/letsencrypt/migrate_renewal.js` scans `/etc/letsencrypt/renewal/*.conf`, and for each legacy `authenticator = standalone` config it **stages** a verified webroot equivalent (`authenticator = webroot` + `webroot_path = /var/www/certbot`) into `/etc/letsencrypt/renewal-webroot/`, backs up the original to `/etc/letsencrypt/renewal-backup/`, and records a schema marker (`webroot-renewal-v1`) at `/etc/letsencrypt/.nginx-server-renewal-schema`. The **live** renewal configs are intentionally left untouched (still `standalone`) so the current standalone renewal keeps working — activating webroot is incompatible with the port-80-freeing `certbot_renew.sh` and is therefore deferred to the same future change that simplifies that script. The migration is idempotent and non-fatal (warn-and-continue).
+
 ## Healthcheck Architecture
 
 The image defines a Docker `HEALTHCHECK` (`--interval=30s --timeout=5s --start-period=15s --retries=3`) that, on each run:
