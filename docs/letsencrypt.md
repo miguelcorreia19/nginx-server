@@ -36,12 +36,14 @@ Before going live, use `letsencrypt-staging` to validate DNS, port-80 reachabili
 
 Certificate renewal runs automatically via a cron job set up at container startup. The default schedule is `0 5 * * *` (05:00 daily) and can be changed with the `CERTBOT_RENEW_CRONJOB` environment variable.
 
+Renewal uses the **webroot** authenticator: **nginx keeps port 80 the whole time**, and certbot writes the http-01 challenge into the shared webroot (`/var/www/certbot`) that nginx already serves at `/.well-known/acme-challenge/`. There is no longer any port-80 disable/restore step.
+
 ### What happens during a renewal run
 
-1. If a renewal is already in progress, the new run logs "already in progress" and exits cleanly — only one renewal runs at a time.
-2. Port 80 is taken offline briefly so certbot can complete the http-01 ACME challenge.
-3. `certbot renew` runs non-interactively (it only re-issues certificates that are close to expiry).
-4. Port 80 is restored and nginx is reloaded afterward, whether or not renewal succeeded.
+1. If a renewal is already in progress, the new run logs "already in progress" and exits cleanly — only one renewal runs at a time (a `mkdir` lock with stale-lock recovery).
+2. Each renewal config is ensured to be webroot (migrated in place if still legacy standalone; see below).
+3. `certbot renew --webroot -w /var/www/certbot` runs non-interactively (it only re-issues certificates close to expiry). The explicit `--webroot` forces the webroot authenticator for the run, so port 80 is never released.
+4. On success, nginx is reloaded so any renewed certificates are picked up. **Port 80 is never taken offline.**
 
 ### Renewal logs
 
@@ -55,22 +57,20 @@ A successful renewal run looks like:
 
 ```
 2026-06-08 05:00:01 [certbot_renew] certbot renew started
-2026-06-08 05:00:01 [certbot_renew] Port 80 disabled; nginx reloaded
 [certbot_renew.js] Starting certificate renewal — 2026-06-08T05:00:01.000Z
-... certbot renewal output per certificate ...
+... certbot renewal output per certificate (via webroot) ...
 [certbot_renew.js] certbot renew finished — 2026-06-08T05:00:03.000Z
+2026-06-08 05:00:03 [certbot_renew] nginx reloaded after renewal
 2026-06-08 05:00:03 [certbot_renew] certbot renew succeeded
-2026-06-08 05:00:03 [certbot_renew] Restoring port-80 config...
-2026-06-08 05:00:03 [certbot_renew] nginx reloaded after port-80 restore
 ```
 
-### Operational caveat: hard kill during renewal
+### Hard kill during renewal
 
-A `SIGKILL` (rather than a graceful `SIGTERM`) **during an active renewal** can leave port 80 disabled until the next scheduled renewal run, which detects and clears the stale state and restores port 80. At the default daily schedule, port 80 could therefore stay offline for up to 24 hours in this case. Use a graceful shutdown — `docker stop` sends `SIGTERM` by default — to avoid it.
+Because port 80 is never disabled, a `SIGKILL` (rather than a graceful `SIGTERM`) during an active renewal can at most leave a stale lock directory behind — the next scheduled run detects the dead PID and clears it. **The old failure mode, where a hard kill could leave port 80 disabled for up to 24 hours, no longer exists.**
 
-## ACME challenge handling (webroot-readiness)
+## ACME challenge handling (webroot)
 
-> **Current renewals still use standalone mode.** This section documents preparatory infrastructure only; it does **not** change how certificates are issued or renewed today.
+> **Renewals use webroot; nginx keeps port 80 throughout.** Issuance still uses standalone (see [Issuance](#issuance-still-uses-standalone) below).
 
 The image ships a dedicated **ACME webroot** at `/var/www/certbot`, and every project-controlled port-80 server block serves the ACME http-01 challenge path from it:
 
@@ -85,15 +85,11 @@ This `location` is present in both project-controlled port-80 paths:
 - the generated **HTTP→HTTPS redirect blocks** (so a `letsencrypt` domain with `http_redirect=true` serves the challenge instead of redirecting it), and
 - the **default port-80 vhost** (so a `letsencrypt` domain with `http_redirect=false`, which has no dedicated port-80 block, is still served).
 
-Because the challenge `location` is matched ahead of the catch-all redirect, **normal requests are unaffected** — they still receive the usual `301`/`444`. Challenge requests are served directly over HTTP and never redirected to HTTPS.
+Because the challenge `location` is matched ahead of the catch-all redirect, **normal requests are unaffected** — they still receive the usual `301`/`444`, and challenge requests are served directly over HTTP and never redirected to HTTPS. The webroot keeps working during renewal because nginx never gives up port 80.
 
-**Why this exists.** An [architecture review](architecture.md#certbot-architecture) recommended eventually moving renewal from standalone to a **webroot** model, where nginx keeps port 80 permanently and certbot just writes challenge files into this directory. That would remove the brief port-80 downtime during renewal and the hard-kill caveat above, and simplify the renewal script. This phase only provisions the directory and challenge handling; **switching renewal to webroot is a later, separate change** that will also migrate existing certificates' renewal configuration. Until then, issuance and renewal continue to use standalone mode exactly as before.
+### Renewal-config migration (automatic)
 
-### Renewal-config migration (prepared, not active)
-
-> **Renewals still run through the existing standalone renewal path.** This step only *prepares* a webroot version of each renewal config; it does **not** activate it.
-
-At startup, the image scans `/etc/letsencrypt/renewal/*.conf` for legacy standalone configs (`authenticator = standalone`) and **stages** a webroot-schema equivalent of each — verified against Certbot's renewal-config expectations:
+Existing certificates issued before this change have a renewal config recording `authenticator = standalone`. They are migrated to webroot **automatically** — no reissue, no user action:
 
 ```ini
 [renewalparams]
@@ -101,16 +97,16 @@ authenticator = webroot
 webroot_path = /var/www/certbot
 ```
 
-All other settings (account, server, key type, certificate paths, etc.) are preserved unchanged.
+- The migration runs **in place** at container startup, and again defensively at the start of each renewal, so a cron renewal can never run before configs are webroot. It rewrites each standalone config atomically (temp file + rename — never a torn config) and preserves every other setting (account, server, key type, certificate/archive paths).
+- A **backup** of each original is written to `/etc/letsencrypt/renewal-backup/<name>.conf` before rewriting (deterministic; restore with `cp`).
+- A **schema marker** at `/etc/letsencrypt/.nginx-server-renewal-schema` records the schema version (`webroot-renewal-v1`) — it describes only the renewal-config schema, not the image version.
+- It is **idempotent** (already-webroot configs are left untouched) and **non-fatal**: a migration problem logs a clear error, preserves the original config, and never blocks startup or renewal.
 
-To keep renewals working exactly as today, the migration is deliberately **non-activating**:
+Migration is also belt-and-suspenders, not a hard prerequisite: the renewal command passes `--webroot -w /var/www/certbot` explicitly, which forces the webroot authenticator for the run regardless of the stored config. So even a config that failed to migrate renews via webroot — **port 80 is never disabled**.
 
-- The **live** `/etc/letsencrypt/renewal/*.conf` are **never modified** — they stay `standalone`, so `certbot renew` (driven by the unchanged renewal script, which frees port 80 for the standalone challenge) continues to work. Activating webroot now would break renewals, because that script removes the port-80 challenge handler to free the port.
-- The migrated configs are written to a **staging** directory, `/etc/letsencrypt/renewal-webroot/`, which Certbot never reads.
-- A **backup** of each original standalone config is kept at `/etc/letsencrypt/renewal-backup/<name>.conf` (deterministic, easy to inspect; restore with `cp`).
-- A **schema marker** at `/etc/letsencrypt/.nginx-server-renewal-schema` records the prepared schema version (`webroot-renewal-v1`). It describes only the renewal-config schema, not the image version.
+### Issuance (still uses standalone)
 
-The migration is **idempotent** (already-staged configs are skipped), **non-fatal** (any problem is logged and startup continues), and only logs meaningful events. A later phase will activate the staged configs at the same time it switches the renewal path to webroot.
+**Issuance is intentionally unchanged.** New certificates are obtained with `certbot certonly --standalone`, which runs during container startup **before nginx is listening** — port 80 is free, so standalone is the simplest reliable option and webroot is not yet servable. Immediately after issuance (still at startup), the new certificate's standalone renewal config is migrated to webroot, so it will **renew via webroot** like every other certificate. No reissue is ever required to move an existing certificate onto webroot renewal.
 
 ## Rate limits
 

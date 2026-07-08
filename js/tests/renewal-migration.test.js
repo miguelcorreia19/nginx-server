@@ -241,3 +241,87 @@ describe('marker', () => {
     expect(fs.existsSync(markerPath)).toBe(false);
   });
 });
+
+// ── Apply mode (Phase C activation — in place) ─────────────────────────────
+describe('apply mode (in-place activation)', () => {
+  const applyOpts = () => ({ ...opts(), apply: true });
+
+  it('rewrites a standalone live config to webroot IN PLACE', () => {
+    writeConf('example.com.conf', STANDALONE);
+    const s = migrate(applyOpts());
+    expect(s).toMatchObject({ migrated: 1, failed: 0 });
+    const live = readLive('example.com.conf');
+    expect(live).toMatch(/^authenticator = webroot$/m);
+    expect(live).not.toMatch(/^authenticator = standalone$/m);
+    expect(live).toMatch(new RegExp(`^webroot_path = ${WEBROOT_PATH.replace(/\//g, '\\/')}$`, 'm'));
+    expect(validateMigratedContent(live)).toBe(true);
+  });
+
+  it('leaves an already-webroot live config unchanged', () => {
+    writeConf('site.conf', WEBROOT_ALREADY);
+    const s = migrate(applyOpts());
+    expect(s).toMatchObject({ migrated: 0, skipped: 1 });
+    expect(readLive('site.conf')).toBe(WEBROOT_ALREADY);
+  });
+
+  it('preserves all unrelated settings when rewriting in place', () => {
+    writeConf('example.com.conf', STANDALONE);
+    migrate(applyOpts());
+    const live = readLive('example.com.conf');
+    for (const line of [
+      'version = 2.11.0',
+      'cert = /etc/letsencrypt/live/example.com/cert.pem',
+      'account = abc123def456',
+      'server = https://acme-v02.api.letsencrypt.org/directory',
+      'key_type = ecdsa',
+    ]) {
+      expect(live).toContain(line);
+    }
+  });
+
+  it('backs up the original standalone config before rewriting', () => {
+    writeConf('example.com.conf', STANDALONE);
+    migrate(applyOpts());
+    expect(fs.readFileSync(path.join(backupDir, 'example.com.conf'), 'utf8')).toBe(STANDALONE);
+  });
+
+  it('is idempotent — a second apply run is a no-op', () => {
+    writeConf('example.com.conf', STANDALONE);
+    migrate(applyOpts());
+    const afterFirst = readLive('example.com.conf');
+    const second = migrate(applyOpts());
+    expect(second).toMatchObject({ migrated: 0, skipped: 1 });
+    expect(readLive('example.com.conf')).toBe(afterFirst);
+  });
+
+  it('leaves no temp files behind', () => {
+    writeConf('example.com.conf', STANDALONE);
+    migrate(applyOpts());
+    expect(fs.readdirSync(renewalDir).some((f) => f.includes('migrate-tmp'))).toBe(false);
+  });
+
+  it('writes the schema marker on a clean apply run', () => {
+    writeConf('example.com.conf', STANDALONE);
+    const s = migrate(applyOpts());
+    expect(s.markerWritten).toBe(true);
+    expect(fs.readFileSync(markerPath, 'utf8').trim()).toBe(SCHEMA_VERSION);
+  });
+
+  it('partial failure: applies the good config, preserves the bad one, withholds the marker', () => {
+    writeConf('good.conf', STANDALONE);
+    fs.mkdirSync(path.join(renewalDir, 'bad.conf')); // unreadable -> failure
+    const s = migrate(applyOpts());
+    expect(s.migrated).toBe(1);
+    expect(s.failed).toBeGreaterThanOrEqual(1);
+    expect(isStandaloneConfig(readLive('good.conf'))).toBe(false); // good one activated
+    expect(s.markerWritten).toBe(false);
+    expect(fs.existsSync(markerPath)).toBe(false);
+  });
+
+  it('validation failure leaves the live config untouched (never corrupted)', () => {
+    writeConf('broken.conf', 'authenticator = standalone\n'); // no [renewalparams] -> invalid output
+    const s = migrate(applyOpts());
+    expect(s.failed).toBe(1);
+    expect(readLive('broken.conf')).toBe('authenticator = standalone\n');
+  });
+});

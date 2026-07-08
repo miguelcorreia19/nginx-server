@@ -1,5 +1,6 @@
 const { parseCerts } = require("./utils.js");
 const { command, commandSafe } = require("../utils.js");
+const migrateRenewalConfigs = require("./migrate_renewal");
 
 // Logged with explicit timestamps (rather than relying on Docker's log
 // timestamps): this script's stdout is captured by certbot_renew.sh, whose
@@ -9,9 +10,19 @@ console.log(`[certbot_renew.js] Starting certificate renewal — ${new Date().to
 
 const start = async () => {
   try {
-    // The challenge will run on port 80
-    // await command('certbot renew --noninteractive --quiet --preferred-challenges http');
-    const renewOutput = await command('certbot renew --noninteractive --preferred-challenges http');
+    // Defensively ensure every renewal config uses webroot before renewing
+    // (also done at container startup). In-place + non-fatal; the original is
+    // preserved on any failure. Renewal correctness does not depend on this:
+    // the certbot command below forces webroot explicitly.
+    migrateRenewalConfigs({ apply: true });
+
+    // Renew using the webroot authenticator, serving the http-01 challenge from
+    // the shared webroot that nginx keeps available on port 80. The explicit
+    // `--webroot -w` overrides any stored authenticator for this run, so even a
+    // not-yet-migrated config renews via webroot (never standalone) — port 80 is
+    // never disabled. (Verified: `certbot renew --webroot -w <path>` selects the
+    // webroot authenticator regardless of the renewal config's authenticator.)
+    const renewOutput = await command('certbot renew --webroot -w /var/www/certbot --noninteractive');
     // certbot's own renewal report (which certs were due, skipped, renewed,
     // or failed) was previously discarded — surface it for troubleshooting.
     if (renewOutput) console.log(renewOutput);

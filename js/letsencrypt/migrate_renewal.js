@@ -1,20 +1,22 @@
-// Phase B — Let's Encrypt renewal-config migration (PREPARE ONLY).
+// Let's Encrypt renewal-config migration (standalone -> webroot).
 //
-// Goal: prepare a webroot-schema version of each legacy standalone Certbot
-// renewal config so a later phase can switch renewals to webroot. This phase
-// is deliberately NON-ACTIVATING:
+// Two modes, sharing one verified transform:
 //
-//   * The live /etc/letsencrypt/renewal/*.conf are NEVER modified. They stay
-//     `authenticator = standalone`, so `certbot renew` (driven by the unchanged
-//     certbot_renew.sh, which frees port 80 for standalone) keeps working
-//     exactly as today. Activating webroot now would break renewals, because
-//     certbot_renew.sh removes the port-80 challenge handler to free the port.
-//   * The migrated webroot configs are written to a separate STAGED directory,
-//     which Certbot never reads (it only globs <renewal>/*.conf).
-//   * A backup of each original is kept for a clean Phase-C rollback.
+//   * stage  (default; Phase B): writes the migrated webroot config to a
+//            separate STAGED directory and leaves the live config untouched.
+//   * apply  (Phase C activation): rewrites the live config IN PLACE (atomically)
+//            to webroot, after backing up the original. This is the active path
+//            now that renewals use webroot and nginx keeps port 80 during
+//            renewal — so a live webroot config is safe.
 //
-// The migration is idempotent, never throws, and never fails startup (warn and
-// continue) — consistent with the rest of the project.
+// Both modes are idempotent (already-webroot configs are left untouched), never
+// throw, and never fail startup (warn and continue). On any per-config failure
+// the original config is preserved (never corrupted) and the schema marker is
+// withheld so the next run retries. Renewal correctness does not depend on this
+// migration succeeding: certbot_renew.sh forces webroot via an explicit
+// `certbot renew --webroot -w /var/www/certbot` regardless of the stored
+// authenticator — this migration just persists the webroot setting in the
+// config (as required) and keeps it accurate.
 //
 // Verified Certbot webroot renewal-config schema (Certbot 2.x/3.x):
 //   [renewalparams]
@@ -81,9 +83,12 @@ const writePreservingPerms = (dest, content, srcStat) => {
   try { fs.chownSync(dest, srcStat.uid, srcStat.gid); } catch (_) {}
 };
 
-// Prepare (stage) webroot renewal configs without touching the live ones.
+// Migrate standalone renewal configs to webroot.
+//   stage mode (default): write the migrated config to the staged dir; leave live untouched.
+//   apply mode (overrides.apply === true): rewrite the live config in place (atomically).
 // Returns a summary; never throws.
 const migrate = (overrides = {}) => {
+  const apply = overrides.apply === true;
   const { renewalDir, stagedDir, backupDir, markerPath } = cfg(overrides);
   const summary = { scanned: 0, migrated: 0, alreadyStaged: 0, skipped: 0, failed: 0, markerWritten: false };
 
@@ -113,11 +118,13 @@ const migrate = (overrides = {}) => {
       }
 
       if (!isStandaloneConfig(content)) {
-        summary.skipped++; // already webroot / non-standalone — nothing to prepare
+        summary.skipped++; // already webroot / non-standalone — nothing to do (idempotent)
         continue;
       }
-      if (fs.existsSync(staged)) {
-        summary.alreadyStaged++; // idempotent: already prepared
+      // In stage mode, skip configs already prepared. In apply mode, idempotency
+      // is automatic: a config that's already webroot is caught above.
+      if (!apply && fs.existsSync(staged)) {
+        summary.alreadyStaged++;
         continue;
       }
 
@@ -128,7 +135,7 @@ const migrate = (overrides = {}) => {
       try {
         migrated = migrateConfigContent(content);
       } catch (err) {
-        warn(`Migration of "${file}" failed to transform — skipping (${err.message})`);
+        warn(`Migration of "${file}" failed to transform — leaving the original in place; skipping (${err.message})`);
         summary.failed++;
         continue;
       }
@@ -141,20 +148,33 @@ const migrate = (overrides = {}) => {
 
       try {
         fs.mkdirSync(backupDir, { recursive: true });
-        fs.mkdirSync(stagedDir, { recursive: true });
-        // Backup the original standalone config (deterministic, easy to restore).
+        // Backup the original standalone config first (deterministic, easy to restore).
         writePreservingPerms(path.join(backupDir, file), content, stat);
-        // Stage the migrated webroot config (NOT read by Certbot; activated in Phase C).
-        writePreservingPerms(staged, migrated, stat);
+
+        if (apply) {
+          // Rewrite the live config in place, atomically (write a temp sibling
+          // then rename over the original) so an interrupted write can never
+          // leave a torn/half-written config.
+          const tmp = `${live}.migrate-tmp`;
+          writePreservingPerms(tmp, migrated, stat);
+          fs.renameSync(tmp, live);
+        } else {
+          fs.mkdirSync(stagedDir, { recursive: true });
+          // Stage the migrated webroot config (NOT read by Certbot until activation).
+          writePreservingPerms(staged, migrated, stat);
+        }
       } catch (err) {
-        warn(`Could not write staged/backup files for "${file}" — skipping (${err.message})`);
-        // Best effort: drop a partially-written staged file so it isn't mistaken for valid.
-        try { if (fs.existsSync(staged)) fs.unlinkSync(staged); } catch (_) {}
+        warn(`Could not write ${apply ? "live" : "staged"} config for "${file}" — original preserved; skipping (${err.message})`);
+        // Best effort: drop a partially-written temp/staged file.
+        try { if (fs.existsSync(`${live}.migrate-tmp`)) fs.unlinkSync(`${live}.migrate-tmp`); } catch (_) {}
+        try { if (!apply && fs.existsSync(staged)) fs.unlinkSync(staged); } catch (_) {}
         summary.failed++;
         continue;
       }
 
-      log(`Migrating to webroot renewal schema (staged): ${file}`);
+      log(apply
+        ? `Activated webroot renewal config (in place): ${file}`
+        : `Migrating to webroot renewal schema (staged): ${file}`);
       summary.migrated++;
     }
 
@@ -173,7 +193,10 @@ const migrate = (overrides = {}) => {
     }
 
     if (summary.migrated > 0) {
-      log(`Migration successful — ${summary.migrated} renewal config(s) staged for webroot. ` +
+      log(apply
+        ? `Migration successful — ${summary.migrated} renewal config(s) now use webroot (live). ` +
+          `nginx keeps port 80 during renewal.`
+        : `Migration successful — ${summary.migrated} renewal config(s) staged for webroot. ` +
           `Live renewals still use standalone mode (unchanged).`);
     }
     // If there was nothing to do (already migrated / no standalone configs), stay quiet.
