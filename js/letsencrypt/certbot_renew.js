@@ -22,7 +22,17 @@ const start = async () => {
     // not-yet-migrated config renews via webroot (never standalone) — port 80 is
     // never disabled. (Verified: `certbot renew --webroot -w <path>` selects the
     // webroot authenticator regardless of the renewal config's authenticator.)
-    const renewOutput = await command('certbot renew --webroot -w /var/www/certbot --noninteractive');
+    //
+    // `--deploy-hook` is Certbot's supported "a certificate was renewed and
+    // deployed" signal: it runs ONLY for certificates that are actually renewed
+    // in this run (never on a "not yet due" no-op). The hook touches a flag file;
+    // certbot_renew.sh reloads nginx only if that flag exists afterward, so nginx
+    // is reloaded only when at least one certificate actually changed. The flag
+    // path is an internal value supplied by certbot_renew.sh.
+    const renewedFlag = process.env.CERTBOT_RENEWED_FLAG || '/tmp/certbot-renewed.flag';
+    const renewOutput = await command(
+      `certbot renew --webroot -w /var/www/certbot --noninteractive --deploy-hook "touch '${renewedFlag}'"`
+    );
     // certbot's own renewal report (which certs were due, skipped, renewed,
     // or failed) was previously discarded — surface it for troubleshooting.
     if (renewOutput) console.log(renewOutput);

@@ -43,7 +43,7 @@ Renewal uses the **webroot** authenticator: **nginx keeps port 80 the whole time
 1. If a renewal is already in progress, the new run logs "already in progress" and exits cleanly — only one renewal runs at a time (a `mkdir` lock with stale-lock recovery).
 2. Each renewal config is ensured to be webroot (migrated in place if still legacy standalone; see below).
 3. `certbot renew --webroot -w /var/www/certbot` runs non-interactively (it only re-issues certificates close to expiry). The explicit `--webroot` forces the webroot authenticator for the run, so port 80 is never released.
-4. On success, nginx is reloaded so any renewed certificates are picked up. **Port 80 is never taken offline.**
+4. nginx is reloaded **only if at least one certificate was actually renewed** — detected via certbot's `--deploy-hook`, which runs only on a real renewal. A "not yet due" run renews nothing and **skips the reload** (no needless work or log noise). **Port 80 is never taken offline either way.**
 
 ### Renewal logs
 
@@ -60,9 +60,12 @@ A successful renewal run looks like:
 [certbot_renew.js] Starting certificate renewal — 2026-06-08T05:00:01.000Z
 ... certbot renewal output per certificate (via webroot) ...
 [certbot_renew.js] certbot renew finished — 2026-06-08T05:00:03.000Z
+2026-06-08 05:00:03 [certbot_renew] Certificates renewed; reloading nginx
 2026-06-08 05:00:03 [certbot_renew] nginx reloaded after renewal
 2026-06-08 05:00:03 [certbot_renew] certbot renew succeeded
 ```
+
+Most daily runs renew nothing (certificates are renewed only near expiry); those runs log `No certificates renewed; nginx reload skipped` instead and do not reload nginx.
 
 ### Hard kill during renewal
 

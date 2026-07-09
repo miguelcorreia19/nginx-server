@@ -32,6 +32,12 @@ LOCK_DIR=${CERTBOT_LOCK_DIR:-/tmp/certbot_renew.lock.d}
 LOCK_PID_FILE="$LOCK_DIR/pid"
 JS_DIR=${CERTBOT_JS_DIR:-/home/scripts/js}
 
+# Flag file the certbot deploy hook (wired up in certbot_renew.js) touches when a
+# certificate is actually renewed. Exported so the Node script and certbot agree
+# on the path; nginx is reloaded only if this flag exists after the run.
+RENEWED_FLAG=${CERTBOT_RENEWED_FLAG:-/tmp/certbot-renewed.flag}
+export CERTBOT_RENEWED_FLAG="$RENEWED_FLAG"
+
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [certbot_renew] $*"; }
 
 # ---- Lock release --------------------------------------------------------
@@ -77,6 +83,9 @@ echo $$ > "$LOCK_PID_FILE"
 # `certbot renew --webroot -w /var/www/certbot`.
 log "certbot renew started"
 
+# Clear any stale renewal flag so it can't trigger a needless reload this run.
+rm -f "$RENEWED_FLAG"
+
 RENEWAL_EXIT=0
 pushd "$JS_DIR" > /dev/null 2>&1
 node letsencrypt/certbot_renew.js || RENEWAL_EXIT=$?
@@ -87,11 +96,19 @@ if [ "$RENEWAL_EXIT" -ne 0 ]; then
   exit "$RENEWAL_EXIT"
 fi
 
-# Reload nginx so any renewed certificates are picked up. Port 80 was never
-# touched — this only loads new certificate files.
-nginx -s reload 2>/dev/null \
-  && log "nginx reloaded after renewal" \
-  || log "WARNING: nginx reload after renewal failed (nginx may already be stopping)"
+# Reload nginx ONLY if certbot actually renewed at least one certificate — its
+# deploy hook touches "$RENEWED_FLAG" only on a real renewal. A "not yet due"
+# no-op leaves the flag absent, so the daily reload (and its log noise) is
+# skipped. Port 80 is never touched either way.
+if [ -f "$RENEWED_FLAG" ]; then
+  log "Certificates renewed; reloading nginx"
+  nginx -s reload 2>/dev/null \
+    && log "nginx reloaded after renewal" \
+    || log "WARNING: nginx reload after renewal failed (nginx may already be stopping)"
+  rm -f "$RENEWED_FLAG"
+else
+  log "No certificates renewed; nginx reload skipped"
+fi
 
 log "certbot renew succeeded"
 # The EXIT trap releases the lock — on this success path and on every other path

@@ -126,7 +126,7 @@ describe('js/letsencrypt/certbot_renew.js — clear, timestamped renewal boundar
   });
 
   it('surfaces certbot\'s own renewal report instead of discarding it', () => {
-    expect(source).toMatch(/const renewOutput = await command\('certbot renew/);
+    expect(source).toMatch(/const renewOutput = await command\(\s*`certbot renew/);
     expect(source).toMatch(/if \(renewOutput\) console\.log\(renewOutput\)/);
   });
 });
