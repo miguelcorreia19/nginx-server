@@ -1,9 +1,9 @@
-// Phase B — Let's Encrypt renewal-config migration tests.
+// Let's Encrypt renewal-config migration tests.
 //
-// The migration PREPARES (stages) webroot renewal configs without touching the
-// live ones, so these tests assert both the transform correctness AND that the
-// live standalone configs are left byte-for-byte unchanged (renewal behavior
-// stays standalone until Phase C). No renewal-execution is exercised here.
+// The migration rewrites each legacy `authenticator = standalone` renewal config
+// IN PLACE to webroot (atomically, after backing up the original). These tests
+// prove the standalone -> webroot transform, idempotency, backup, validation,
+// failure handling, and the schema marker. No renewal execution is exercised.
 
 const fs = require('fs');
 const os = require('os');
@@ -35,12 +35,11 @@ key_type = ecdsa
 const WEBROOT_ALREADY = STANDALONE
   .replace('authenticator = standalone', `authenticator = webroot\nwebroot_path = ${WEBROOT_PATH}`);
 
-let tmp, renewalDir, stagedDir, backupDir, markerPath;
+let tmp, renewalDir, backupDir, markerPath;
 
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'renewal-mig-'));
   renewalDir = path.join(tmp, 'renewal');
-  stagedDir = path.join(tmp, 'renewal-webroot');
   backupDir = path.join(tmp, 'renewal-backup');
   markerPath = path.join(tmp, '.schema');
   fs.mkdirSync(renewalDir, { recursive: true });
@@ -52,10 +51,10 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
-const opts = () => ({ renewalDir, stagedDir, backupDir, markerPath });
+const opts = () => ({ renewalDir, backupDir, markerPath });
 const writeConf = (name, content) => fs.writeFileSync(path.join(renewalDir, name), content);
-const readStaged = (name) => fs.readFileSync(path.join(stagedDir, name), 'utf8');
 const readLive = (name) => fs.readFileSync(path.join(renewalDir, name), 'utf8');
+const webrootRe = new RegExp(`^webroot_path = ${WEBROOT_PATH.replace(/\//g, '\\/')}$`, 'm');
 
 // ── Pure transform/validation helpers ─────────────────────────────────────
 describe('helpers', () => {
@@ -69,7 +68,7 @@ describe('helpers', () => {
     const out = migrateConfigContent(STANDALONE);
     expect(out).toMatch(/^authenticator = webroot$/m);
     expect(out).not.toMatch(/^authenticator = standalone$/m);
-    expect(out).toMatch(new RegExp(`^webroot_path = ${WEBROOT_PATH.replace(/\//g, '\\/')}$`, 'm'));
+    expect(out).toMatch(webrootRe);
   });
 
   it('preserves all unrelated [renewalparams] and lineage settings', () => {
@@ -103,34 +102,37 @@ describe('helpers', () => {
   });
 });
 
-// ── Detection ──────────────────────────────────────────────────────────────
-describe('detection', () => {
-  it('migrates a single standalone config', () => {
+// ── In-place migration (standalone -> webroot) ─────────────────────────────
+describe('migration (standalone -> webroot, in place)', () => {
+  it('rewrites a single standalone live config to webroot', () => {
     writeConf('example.com.conf', STANDALONE);
     const s = migrate(opts());
     expect(s).toMatchObject({ scanned: 1, migrated: 1, failed: 0 });
-    expect(fs.existsSync(path.join(stagedDir, 'example.com.conf'))).toBe(true);
+    const live = readLive('example.com.conf');
+    expect(live).toMatch(/^authenticator = webroot$/m);
+    expect(live).not.toMatch(/^authenticator = standalone$/m);
+    expect(live).toMatch(webrootRe);
+    expect(validateMigratedContent(live)).toBe(true);
   });
 
-  it('skips an already-webroot config', () => {
+  it('leaves an already-webroot config unchanged', () => {
     writeConf('site.conf', WEBROOT_ALREADY);
     const s = migrate(opts());
     expect(s).toMatchObject({ scanned: 1, migrated: 0, skipped: 1 });
-    expect(fs.existsSync(path.join(stagedDir, 'site.conf'))).toBe(false);
+    expect(readLive('site.conf')).toBe(WEBROOT_ALREADY);
   });
 
-  it('handles a mix of standalone and webroot configs', () => {
+  it('handles a mix of standalone and already-webroot configs', () => {
     writeConf('a.conf', STANDALONE);
     writeConf('b.conf', WEBROOT_ALREADY);
     const s = migrate(opts());
     expect(s).toMatchObject({ scanned: 2, migrated: 1, skipped: 1, failed: 0 });
-    expect(fs.existsSync(path.join(stagedDir, 'a.conf'))).toBe(true);
-    expect(fs.existsSync(path.join(stagedDir, 'b.conf'))).toBe(false);
+    expect(isStandaloneConfig(readLive('a.conf'))).toBe(false); // migrated
+    expect(readLive('b.conf')).toBe(WEBROOT_ALREADY);           // untouched
   });
 
   it('does nothing when there are no configs', () => {
-    const s = migrate(opts());
-    expect(s).toMatchObject({ scanned: 0, migrated: 0 });
+    expect(migrate(opts())).toMatchObject({ scanned: 0, migrated: 0 });
   });
 
   it('does nothing (and does not throw) when the renewal dir is absent', () => {
@@ -138,80 +140,47 @@ describe('detection', () => {
     expect(() => migrate(opts())).not.toThrow();
     expect(migrate(opts())).toMatchObject({ scanned: 0, migrated: 0 });
   });
-});
 
-// ── Migration correctness + live-config safety ─────────────────────────────
-describe('migration output', () => {
-  beforeEach(() => writeConf('example.com.conf', STANDALONE));
-
-  it('stages a correct webroot config', () => {
+  it('preserves all unrelated settings when rewriting in place', () => {
+    writeConf('example.com.conf', STANDALONE);
     migrate(opts());
-    const staged = readStaged('example.com.conf');
-    expect(staged).toMatch(/^authenticator = webroot$/m);
-    expect(staged).toMatch(new RegExp(`^webroot_path = ${WEBROOT_PATH.replace(/\//g, '\\/')}$`, 'm'));
-    expect(validateMigratedContent(staged)).toBe(true);
+    const live = readLive('example.com.conf');
+    for (const line of [
+      'version = 2.11.0',
+      'cert = /etc/letsencrypt/live/example.com/cert.pem',
+      'account = abc123def456',
+      'server = https://acme-v02.api.letsencrypt.org/directory',
+      'key_type = ecdsa',
+    ]) {
+      expect(live).toContain(line);
+    }
   });
 
-  it('leaves the LIVE renewal config byte-for-byte unchanged (still standalone)', () => {
-    migrate(opts());
-    expect(readLive('example.com.conf')).toBe(STANDALONE);
-    expect(isStandaloneConfig(readLive('example.com.conf'))).toBe(true);
-  });
-
-  it('backs up the original standalone config verbatim', () => {
+  it('backs up the original standalone config verbatim before rewriting', () => {
+    writeConf('example.com.conf', STANDALONE);
     migrate(opts());
     expect(fs.readFileSync(path.join(backupDir, 'example.com.conf'), 'utf8')).toBe(STANDALONE);
   });
-});
 
-// ── Idempotency ────────────────────────────────────────────────────────────
-describe('idempotency', () => {
-  it('is safe to run repeatedly', () => {
+  it('writes atomically — leaves no temp files behind', () => {
     writeConf('example.com.conf', STANDALONE);
-    const first = migrate(opts());
-    const stagedBefore = readStaged('example.com.conf');
+    migrate(opts());
+    expect(fs.readdirSync(renewalDir).some((f) => f.includes('migrate-tmp'))).toBe(false);
+  });
+
+  it('is idempotent — a second run is a no-op', () => {
+    writeConf('example.com.conf', STANDALONE);
+    migrate(opts());
+    const afterFirst = readLive('example.com.conf');
     const second = migrate(opts());
-    expect(first).toMatchObject({ migrated: 1 });
-    expect(second).toMatchObject({ migrated: 0, alreadyStaged: 1 });
-    expect(readStaged('example.com.conf')).toBe(stagedBefore); // unchanged
-  });
-});
-
-// ── Failure handling (warn and continue; never fail startup) ───────────────
-describe('failure handling', () => {
-  it('handles an unreadable config and continues', () => {
-    writeConf('good.conf', STANDALONE);
-    fs.mkdirSync(path.join(renewalDir, 'bad.conf')); // a directory named *.conf -> read fails
-    const s = migrate(opts());
-    expect(s.failed).toBeGreaterThanOrEqual(1);
-    expect(s.migrated).toBe(1); // the good one still migrated
-    expect(fs.existsSync(path.join(stagedDir, 'good.conf'))).toBe(true);
-  });
-
-  it('does not stage a config that fails validation, and never throws', () => {
-    // Standalone authenticator but NO [renewalparams] header -> migrated output invalid.
-    writeConf('broken.conf', 'authenticator = standalone\n');
-    let s;
-    expect(() => { s = migrate(opts()); }).not.toThrow();
-    expect(s.failed).toBe(1);
-    expect(fs.existsSync(path.join(stagedDir, 'broken.conf'))).toBe(false);
-    // Live config untouched.
-    expect(readLive('broken.conf')).toBe('authenticator = standalone\n');
-  });
-
-  it('handles a staged-write failure without throwing', () => {
-    writeConf('example.com.conf', STANDALONE);
-    fs.writeFileSync(stagedDir, 'i am a file, not a directory'); // mkdir/staged write will fail
-    let s;
-    expect(() => { s = migrate(opts()); }).not.toThrow();
-    expect(s.failed).toBe(1);
-    expect(s.migrated).toBe(0);
+    expect(second).toMatchObject({ migrated: 0, skipped: 1 });
+    expect(readLive('example.com.conf')).toBe(afterFirst); // unchanged
   });
 });
 
 // ── Marker behavior ────────────────────────────────────────────────────────
 describe('marker', () => {
-  it('writes the schema-version marker on a clean first run', () => {
+  it('writes the schema-version marker on a clean run', () => {
     writeConf('example.com.conf', STANDALONE);
     const s = migrate(opts());
     expect(s.markerWritten).toBe(true);
@@ -226,7 +195,7 @@ describe('marker', () => {
     expect(fs.existsSync(markerPath)).toBe(true);
   });
 
-  it('marker is independent of any app version (only the schema version)', () => {
+  it('records only the schema version (independent of any app version)', () => {
     writeConf('example.com.conf', STANDALONE);
     migrate(opts());
     expect(fs.readFileSync(markerPath, 'utf8').trim()).toBe('webroot-renewal-v1');
@@ -242,86 +211,33 @@ describe('marker', () => {
   });
 });
 
-// ── Apply mode (Phase C activation — in place) ─────────────────────────────
-describe('apply mode (in-place activation)', () => {
-  const applyOpts = () => ({ ...opts(), apply: true });
-
-  it('rewrites a standalone live config to webroot IN PLACE', () => {
-    writeConf('example.com.conf', STANDALONE);
-    const s = migrate(applyOpts());
-    expect(s).toMatchObject({ migrated: 1, failed: 0 });
-    const live = readLive('example.com.conf');
-    expect(live).toMatch(/^authenticator = webroot$/m);
-    expect(live).not.toMatch(/^authenticator = standalone$/m);
-    expect(live).toMatch(new RegExp(`^webroot_path = ${WEBROOT_PATH.replace(/\//g, '\\/')}$`, 'm'));
-    expect(validateMigratedContent(live)).toBe(true);
-  });
-
-  it('leaves an already-webroot live config unchanged', () => {
-    writeConf('site.conf', WEBROOT_ALREADY);
-    const s = migrate(applyOpts());
-    expect(s).toMatchObject({ migrated: 0, skipped: 1 });
-    expect(readLive('site.conf')).toBe(WEBROOT_ALREADY);
-  });
-
-  it('preserves all unrelated settings when rewriting in place', () => {
-    writeConf('example.com.conf', STANDALONE);
-    migrate(applyOpts());
-    const live = readLive('example.com.conf');
-    for (const line of [
-      'version = 2.11.0',
-      'cert = /etc/letsencrypt/live/example.com/cert.pem',
-      'account = abc123def456',
-      'server = https://acme-v02.api.letsencrypt.org/directory',
-      'key_type = ecdsa',
-    ]) {
-      expect(live).toContain(line);
-    }
-  });
-
-  it('backs up the original standalone config before rewriting', () => {
-    writeConf('example.com.conf', STANDALONE);
-    migrate(applyOpts());
-    expect(fs.readFileSync(path.join(backupDir, 'example.com.conf'), 'utf8')).toBe(STANDALONE);
-  });
-
-  it('is idempotent — a second apply run is a no-op', () => {
-    writeConf('example.com.conf', STANDALONE);
-    migrate(applyOpts());
-    const afterFirst = readLive('example.com.conf');
-    const second = migrate(applyOpts());
-    expect(second).toMatchObject({ migrated: 0, skipped: 1 });
-    expect(readLive('example.com.conf')).toBe(afterFirst);
-  });
-
-  it('leaves no temp files behind', () => {
-    writeConf('example.com.conf', STANDALONE);
-    migrate(applyOpts());
-    expect(fs.readdirSync(renewalDir).some((f) => f.includes('migrate-tmp'))).toBe(false);
-  });
-
-  it('writes the schema marker on a clean apply run', () => {
-    writeConf('example.com.conf', STANDALONE);
-    const s = migrate(applyOpts());
-    expect(s.markerWritten).toBe(true);
-    expect(fs.readFileSync(markerPath, 'utf8').trim()).toBe(SCHEMA_VERSION);
-  });
-
-  it('partial failure: applies the good config, preserves the bad one, withholds the marker', () => {
+// ── Failure handling (warn and continue; never corrupt; never throw) ───────
+describe('failure handling', () => {
+  it('handles an unreadable config and continues with the rest', () => {
     writeConf('good.conf', STANDALONE);
-    fs.mkdirSync(path.join(renewalDir, 'bad.conf')); // unreadable -> failure
-    const s = migrate(applyOpts());
-    expect(s.migrated).toBe(1);
+    fs.mkdirSync(path.join(renewalDir, 'bad.conf')); // a directory named *.conf -> read fails
+    const s = migrate(opts());
     expect(s.failed).toBeGreaterThanOrEqual(1);
-    expect(isStandaloneConfig(readLive('good.conf'))).toBe(false); // good one activated
-    expect(s.markerWritten).toBe(false);
-    expect(fs.existsSync(markerPath)).toBe(false);
+    expect(s.migrated).toBe(1); // the good one still migrated
+    expect(isStandaloneConfig(readLive('good.conf'))).toBe(false);
   });
 
-  it('validation failure leaves the live config untouched (never corrupted)', () => {
-    writeConf('broken.conf', 'authenticator = standalone\n'); // no [renewalparams] -> invalid output
-    const s = migrate(applyOpts());
+  it('on a validation failure, leaves the live config untouched and never throws', () => {
+    // Standalone authenticator but NO [renewalparams] header -> migrated output invalid.
+    writeConf('broken.conf', 'authenticator = standalone\n');
+    let s;
+    expect(() => { s = migrate(opts()); }).not.toThrow();
     expect(s.failed).toBe(1);
-    expect(readLive('broken.conf')).toBe('authenticator = standalone\n');
+    expect(readLive('broken.conf')).toBe('authenticator = standalone\n'); // preserved, never corrupted
+  });
+
+  it('on a write failure, preserves the original and never throws', () => {
+    writeConf('example.com.conf', STANDALONE);
+    fs.writeFileSync(backupDir, 'i am a file, not a directory'); // mkdir(backupDir) will fail
+    let s;
+    expect(() => { s = migrate(opts()); }).not.toThrow();
+    expect(s.failed).toBe(1);
+    expect(s.migrated).toBe(0);
+    expect(readLive('example.com.conf')).toBe(STANDALONE); // live config never corrupted
   });
 });

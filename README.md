@@ -144,7 +144,7 @@ Each domain picks a TLS mode in `config.json`: **`http`** (plain HTTP), **`letse
 
 ## Let's Encrypt
 
-The `letsencrypt` and `letsencrypt-staging` modes obtain and **automatically renew** certificates from Let's Encrypt. Renewal runs on a cron schedule (default 05:00 daily); port 80 is briefly taken offline for the ACME challenge and nginx is reloaded afterward. Validate with staging first to avoid production rate limits, and optionally enable `CERTBOT_BACKUP=true` to persist issued certificates across container replacements.
+The `letsencrypt` and `letsencrypt-staging` modes obtain and **automatically renew** certificates from Let's Encrypt. Renewal runs on a cron schedule (default 05:00 daily) using the **webroot** method, so **nginx keeps serving port 80 throughout** (no downtime), and nginx is reloaded only when a certificate actually changes. Validate with staging first to avoid production rate limits, and optionally enable `CERTBOT_BACKUP=true` to persist issued certificates across container replacements.
 
 📖 **[docs/letsencrypt.md](docs/letsencrypt.md)** — prerequisites, the staging workflow, renewal behavior and logs, rate limits, certificate backup, and the relevant `CERTBOT_*` environment variables.
 

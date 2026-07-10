@@ -14,7 +14,7 @@ const start = async () => {
     // (also done at container startup). In-place + non-fatal; the original is
     // preserved on any failure. Renewal correctness does not depend on this:
     // the certbot command below forces webroot explicitly.
-    migrateRenewalConfigs({ apply: true });
+    migrateRenewalConfigs();
 
     // Renew using the webroot authenticator, serving the http-01 challenge from
     // the shared webroot that nginx keeps available on port 80. The explicit

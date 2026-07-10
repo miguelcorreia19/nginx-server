@@ -87,14 +87,14 @@ const start = async () => {
       console.error(`WARNING: Fail2ban setup failed — continuing without it: ${err.message || err}`);
     }
 
-    // Activate webroot renewal: migrate any legacy standalone renewal configs
-    // to webroot IN PLACE, so a cron renewal can never start before the configs
-    // are webroot-compatible. nginx keeps port 80 during renewal, so a live
-    // webroot config is safe. Isolated and non-fatal: a migration problem must
-    // never prevent nginx from starting (and certbot_renew.sh re-applies it and
-    // forces webroot via an explicit flag, so renewals are correct regardless).
+    // Migrate any legacy standalone renewal configs to webroot IN PLACE, so a
+    // cron renewal can never start before the configs are webroot-compatible.
+    // nginx keeps port 80 during renewal, so a live webroot config is safe.
+    // Isolated and non-fatal: a migration problem must never prevent nginx from
+    // starting (and certbot_renew.sh re-applies it and forces webroot via an
+    // explicit flag, so renewals are correct regardless).
     try {
-      migrateRenewalConfigs({ apply: true });
+      migrateRenewalConfigs();
     } catch (err) {
       console.error(`WARNING: renewal-config migration error — continuing: ${err.message || err}`);
     }
