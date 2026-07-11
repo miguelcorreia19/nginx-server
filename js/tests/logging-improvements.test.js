@@ -112,7 +112,7 @@ describe('js/letsencrypt/index.js — error-level messages use console.error', (
   });
 });
 
-describe('js/letsencrypt/certbot_renew.js — clear, timestamped renewal boundaries', () => {
+describe('js/letsencrypt/certbot_renew.js — clear, consistent renewal logs', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'letsencrypt', 'certbot_renew.js'), 'utf8');
 
   it('no longer logs the all-caps "NODEJS START RENEWAL" banner or raw toTimeString() calls', () => {
@@ -120,14 +120,75 @@ describe('js/letsencrypt/certbot_renew.js — clear, timestamped renewal boundar
     expect(source).not.toMatch(/toTimeString/);
   });
 
-  it('logs ISO-8601 timestamps tagged with [certbot_renew.js] at the start and end of the run', () => {
-    expect(source).toMatch(/\[certbot_renew\.js\] Starting certificate renewal — \$\{new Date\(\)\.toISOString\(\)\}/);
-    expect(source).toMatch(/\[certbot_renew\.js\] certbot renew finished — \$\{new Date\(\)\.toISOString\(\)\}/);
+  it('removes the "Certificates Status" banner blocks (no #### separators)', () => {
+    expect(source).not.toMatch(/#{4,}/);
+    expect(source).not.toMatch(/Certificates Status/);
+    expect(source).not.toMatch(/Certificates not found/);
+  });
+
+  it('routes log lines through a single [certbot_renew.js]-prefixed helper', () => {
+    expect(source).toMatch(/const PREFIX = '\[certbot_renew\.js\]'/);
+    expect(source).toMatch(/const log = \(msg\) => console\.log\(`\$\{PREFIX\} \$\{msg\}`\)/);
+  });
+
+  it('logs ISO-8601-timestamped start and finish boundaries', () => {
+    expect(source).toMatch(/Starting certificate renewal — \$\{new Date\(\)\.toISOString\(\)\}/);
+    expect(source).toMatch(/certbot renew finished — \$\{new Date\(\)\.toISOString\(\)\}/);
   });
 
   it('surfaces certbot\'s own renewal report instead of discarding it', () => {
     expect(source).toMatch(/const renewOutput = await command\(\s*`certbot renew/);
     expect(source).toMatch(/if \(renewOutput\) console\.log\(renewOutput\)/);
+  });
+
+  it('logs a concise certificate status summary with a count', () => {
+    expect(source).toMatch(/Certificate status summary: \$\{ids\.length\} certificate\(s\)/);
+    expect(source).toMatch(/`- \$\{id\}: \$\{status\}`/);
+    expect(source).toMatch(/domains: \$\{cert_domains\.join/);
+    expect(source).toMatch(/validity: \$\{formatValidity\(validity\)\}/);
+  });
+
+  it('warns clearly when no certificates are found after renewal', () => {
+    expect(source).toMatch(/no certificates found after renewal/);
+  });
+
+  it('logs the exported certificate paths (never key contents)', () => {
+    expect(source).toMatch(/fullchain:\s+\$\{fullchainDest\}/);
+    expect(source).toMatch(/privkey:\s+\$\{privkeyDest\}/);
+    expect(source).toMatch(/chain:\s+\$\{chainDest\}/);
+    // The script never reads certificate/key file contents — it only copies and
+    // logs paths — so no key material can leak into the logs.
+    expect(source).not.toMatch(/readFileSync/);
+  });
+
+  it('uses clear backup logs', () => {
+    expect(source).toMatch(/Backing up Let's Encrypt state to \$\{process\.env\.CERTBOT_BACKUP_PATH\}/);
+    expect(source).toMatch(/Backup completed/);
+  });
+
+  it('logs fatal errors with a clear [certbot_renew.js] ERROR prefix and preserves exit(1)', () => {
+    expect(source).toMatch(/const error = \(msg\) => console\.error\(`\$\{PREFIX\} ERROR: \$\{msg\}`\)/);
+    expect(source).toMatch(/error\(`certbot renewal failed: /);
+    expect(source).toMatch(/process\.exit\(1\)/);
+  });
+});
+
+describe('js/letsencrypt/certbot_renew.js — formatValidity (behavioral)', () => {
+  const { formatValidity } = require('../letsencrypt/certbot_renew');
+  const { DateTime } = require('luxon');
+
+  it('formats a future expiry as "expires in N day(s)"', () => {
+    expect(formatValidity(DateTime.now().plus({ days: 30, hours: 6 }))).toMatch(/^expires in \d+ days?$/);
+  });
+
+  it('formats a past expiry as "expired N day(s) ago"', () => {
+    expect(formatValidity(DateTime.now().minus({ days: 5, hours: 6 }))).toMatch(/^expired \d+ days? ago$/);
+  });
+
+  it('returns "unknown" for an invalid or missing validity', () => {
+    expect(formatValidity(DateTime.invalid('parse error'))).toBe('unknown');
+    expect(formatValidity(undefined)).toBe('unknown');
+    expect(formatValidity(null)).toBe('unknown');
   });
 });
 

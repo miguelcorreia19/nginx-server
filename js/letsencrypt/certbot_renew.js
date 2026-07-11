@@ -2,14 +2,30 @@ const { parseCerts } = require("./utils.js");
 const { command, commandSafe } = require("../utils.js");
 const migrateRenewalConfigs = require("./migrate_renewal");
 
-// Logged with explicit timestamps (rather than relying on Docker's log
-// timestamps): this script's stdout is captured by certbot_renew.sh, whose
-// own output is redirected by cron straight into a file
-// (/var/log/certbot/certbot_renew.log) — outside Docker's logging pipeline.
-console.log(`[certbot_renew.js] Starting certificate renewal — ${new Date().toISOString()}`);
+// Consistent, prefixed, container-friendly logging. This script's stdout is
+// captured by certbot_renew.sh, whose output is redirected by cron straight into
+// /var/log/certbot/certbot_renew.log (outside Docker's log pipeline), so every
+// line carries the [certbot_renew.js] tag and the run boundaries carry an
+// ISO-8601 timestamp (rather than relying on Docker's own log timestamps).
+const PREFIX = '[certbot_renew.js]';
+const log = (msg) => console.log(`${PREFIX} ${msg}`);
+const warn = (msg) => console.warn(`${PREFIX} WARNING: ${msg}`);
+const error = (msg) => console.error(`${PREFIX} ERROR: ${msg}`);
+
+// Human-readable expiry derived from the parsed Luxon validity. Logging only —
+// no behavior depends on this, and an unparseable/missing validity is tolerated.
+const formatValidity = (validity) => {
+  if (!validity || !validity.isValid) return 'unknown';
+  const days = Math.round(validity.diffNow('days').days);
+  if (days > 0) return `expires in ${days} day${days === 1 ? '' : 's'}`;
+  if (days === 0) return 'expires today';
+  return `expired ${Math.abs(days)} day${Math.abs(days) === 1 ? '' : 's'} ago`;
+};
 
 const start = async () => {
   try {
+    log(`Starting certificate renewal — ${new Date().toISOString()}`);
+
     // Defensively ensure every renewal config uses webroot before renewing
     // (also done at container startup). In-place + non-fatal; the original is
     // preserved on any failure. Renewal correctness does not depend on this:
@@ -33,52 +49,57 @@ const start = async () => {
     const renewOutput = await command(
       `certbot renew --webroot -w /var/www/certbot --noninteractive --deploy-hook "touch '${renewedFlag}'"`
     );
-    // certbot's own renewal report (which certs were due, skipped, renewed,
-    // or failed) was previously discarded — surface it for troubleshooting.
+    // Surface certbot's own renewal report (which certs were due, skipped,
+    // renewed, or failed) verbatim for troubleshooting.
     if (renewOutput) console.log(renewOutput);
 
-    console.log(`[certbot_renew.js] certbot renew finished — ${new Date().toISOString()}`);
+    log(`certbot renew finished — ${new Date().toISOString()}`);
 
     const final_certificates = await parseCerts();
+    const ids = Object.keys(final_certificates);
 
-    console.log(`\n#######################################`);
-    console.log(`######    Certificates Status    ######`);
-    console.log(`#######################################\n`);
-    const size = Object.keys(final_certificates).length;
-    let count = 0;
+    log(`Certificate status summary: ${ids.length} certificate(s)`);
+    if (ids.length === 0) {
+      warn('no certificates found after renewal');
+    }
 
-    for (let id in final_certificates) {
+    for (const id of ids) {
       const { cert_path, cert_key_path, cert_domains, status, validity } = final_certificates[id];
 
-      // TODO: ? status ?
+      // Export the certificate material to the well-known paths nginx reads
+      // (behavior unchanged). Only file paths are logged — never key contents.
+      const fullchainDest = `/etc/ssl/certs/${id}_fullchain.pem`;
+      const privkeyDest = `/etc/ssl/certs/${id}_privkey.pem`;
+      const chainDest = `/etc/ssl/certs/${id}_chain.pem`;
+      await commandSafe('cp', [cert_path, fullchainDest]);
+      await commandSafe('cp', [cert_key_path, privkeyDest]);
+      await commandSafe('cp', [cert_key_path.replace('privkey', 'chain'), chainDest]);
 
-      await commandSafe('cp', [cert_path, `/etc/ssl/certs/${id}_fullchain.pem`]);
-      await commandSafe('cp', [cert_key_path, `/etc/ssl/certs/${id}_privkey.pem`]);
-      await commandSafe('cp', [cert_key_path.replace('privkey', 'chain'), `/etc/ssl/certs/${id}_chain.pem`]);
-
-      console.log(` Certificate ${id} - ${status}`);
-      console.log(` Domains ${cert_domains.join(', ')}`);
-      console.log(` Validity ${validity}\n`);
-
-      if (count !== size) console.log(`#######################################\n`);
+      log(`- ${id}: ${status}`);
+      log(`  domains: ${cert_domains.join(', ')}`);
+      log(`  validity: ${formatValidity(validity)}`);
+      log(`  exported:`);
+      log(`    fullchain: ${fullchainDest}`);
+      log(`    privkey:   ${privkeyDest}`);
+      log(`    chain:     ${chainDest}`);
     }
 
-    if (size === 0) console.log("Certificates not found!\n")
-    console.log(`#######################################`);
-    console.log(`######    Certificates Status    ######`);
-    console.log(`#######################################\n`);
-
-    // ############################### //
-    //              BACKUP
-    // ############################### //
+    // Backup Let's Encrypt state if enabled (behavior unchanged).
     if (process.env.CERTBOT_BACKUP && process.env.CERTBOT_BACKUP !== 'false') {
-      console.log(`Backup certificates to ${process.env.CERTBOT_BACKUP_PATH}`)
+      log(`Backing up Let's Encrypt state to ${process.env.CERTBOT_BACKUP_PATH}`);
       await command(`cp -rf /etc/letsencrypt/* ${process.env.CERTBOT_BACKUP_PATH}`);
+      log('Backup completed');
     }
   } catch (err) {
-    console.error("Fatal: certbot renewal failed —", err);
+    error(`certbot renewal failed: ${err.error || err.message || err}`);
     process.exit(1);
   }
-}
+};
 
-start();
+module.exports = { formatValidity };
+
+// Run only when invoked directly (`node letsencrypt/certbot_renew.js`) so the
+// module can be required by tests without triggering a real renewal.
+if (require.main === module) {
+  start();
+}
