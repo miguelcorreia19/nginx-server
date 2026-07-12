@@ -2,6 +2,9 @@ const fs = require("fs");
 const { DateTime } = require("luxon");
 const { command } = require("../utils.js");
 
+const { createLogger } = require("../logger.js");
+const { log, error } = createLogger("letsencrypt");
+
 let COUNT_PROTECTION = 200;
 
 exports.parseCerts = parseCerts = async (copy_files = false) => {
@@ -37,7 +40,7 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
         new_line = output.indexOf('\n', index);
         new_cert.cert_path = output.substring(index + CERT_PATH.length + 1/* white space */, new_line);
       } else {
-        console.error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_PATH}"`);
+        error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_PATH}"`);
       }
 
       // Get cert private key path
@@ -45,7 +48,7 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
         new_line = output.indexOf('\n', index);
         new_cert.cert_key_path = output.substring(index + CERT_KEY_PATH.length + 1/* white space */, new_line);
       } else {
-        console.error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_KEY_PATH}"`);
+        error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_KEY_PATH}"`);
       }
 
       // Get cert domains
@@ -54,7 +57,7 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
         new_cert.cert_domains = output.substring(index + CERT_DOMAINS.length + 1/* white space */, new_line);
         new_cert.cert_domains = new_cert.cert_domains.split(' ').filter(c => c.length > 0);
       } else {
-        console.error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_DOMAINS}"`);
+        error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_DOMAINS}"`);
       }
 
       // Get cert status
@@ -65,7 +68,7 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
 
         new_cert.status = expiry.includes('INVALID') ? expiry.includes('TEST_CERT') ? 'staging' : 'invalid' : 'valid';
       } else {
-        console.error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_VALID}" (status)`);
+        error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_VALID}" (status)`);
       }
 
       // Get cert validity
@@ -74,7 +77,7 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
         new_cert.validity = DateTime.fromJSDate(new Date(output.substring(index + CERT_VALID.length + 1/* white space */, new_line - 1)));
         // valid | invalid | staging
       } else {
-        console.error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_VALID}" (validity)`);
+        error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_VALID}" (validity)`);
       }
 
       found_certs[cert_id] = new_cert;
@@ -83,7 +86,7 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
     copy_files &&
     process.env.CERTBOT_BACKUP
   ) {
-    console.log("Check existing backups....");
+    log("Checking backup certificates...");
     if (fs.existsSync(process.env.CERTBOT_BACKUP_PATH) &&
       fs.existsSync(`${process.env.CERTBOT_BACKUP_PATH}/live`)
     ) {
@@ -93,13 +96,13 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
       // holding exactly one certificate is still detected as non-empty.
       const certDirs = entries.filter((name) => name !== 'README');
       if (certDirs.length > 0) {
-        console.log("Found some certificates on backup path...");
+        log(`Found ${certDirs.length} certificate(s) in backup storage`);
         await command(`cp -rf ${process.env.CERTBOT_BACKUP_PATH}/* /etc/letsencrypt`);
         return await parseCerts();
       } else {
-        console.log(`Backup path is empty...\nDiscarding backup!`);
+        log("No certificates in backup storage; discarding backup");
       }
-    } else console.log(`Backup path is empty...\nDiscarding backup!`);
+    } else log("No certificates in backup storage; discarding backup");
   }
 
   return found_certs;

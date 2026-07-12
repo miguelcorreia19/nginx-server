@@ -2,6 +2,9 @@ const fs = require("fs");
 const { configFiles, commandSafe } = require("../utils.js");
 const { createConf, checkCertFiles } = require("./utils.js");
 
+const { createLogger } = require("../logger.js");
+const { log, warn, fatal } = createLogger("custom");
+
 module.exports = async () => {
   const _certs = require("../config.json");
 
@@ -15,7 +18,7 @@ module.exports = async () => {
 
   try {
     for (let id in certs) {
-      console.log(`Start mapping custom certificate ${id}... \n`);
+      log(`Mapping custom certificate ${id}`);
       const check = checkCertFiles(id, certs[id]);
       if (!check) {
         const { cert_file, privkey_file } = certs[id];
@@ -25,9 +28,7 @@ module.exports = async () => {
         if (!privkey_file) missing.push('privkey_file (not set in config.json)');
         else if (!fs.existsSync(`${process.env.CUSTOM_CERTS_PATH}/${privkey_file}`)) missing.push(privkey_file);
 
-        console.log(`Custom certificate "${id}" is missing required file(s): ${missing.join(', ')}`);
-        console.log(`Place your custom certificate in ${process.env.CUSTOM_CERTS_PATH} folder and define them on config.json!`);
-        console.log(`Skipping ${id}`);
+        warn(`Certificate "${id}" is missing required file(s): ${missing.join(', ')} — place them in ${process.env.CUSTOM_CERTS_PATH} and define them in config.json; skipping ${id}`);
       } else {
         await commandSafe('cp', [`${process.env.CUSTOM_CERTS_PATH}/${certs[id].cert_file}`, `/etc/ssl/certs/${certs[id].cert_file}`]);
         await commandSafe('cp', [`${process.env.CUSTOM_CERTS_PATH}/${certs[id].privkey_file}`, `/etc/ssl/certs/${certs[id].privkey_file}`]);
@@ -35,11 +36,11 @@ module.exports = async () => {
         await createConf(id, certs[id]);
         await configFiles(id, "valid", certs[id].http_redirect, certs[id].names);
         
-        console.log(`Custom certificate ${id} configured! \n`);
+        log(`Certificate ${id} configured`);
       }
     }
   } catch (err) {
-    console.error("Fatal: custom mode setup failed —", err);
+    fatal("setup failed —", err);
     throw err;
   }
 }

@@ -1,6 +1,8 @@
 const { configFiles, command } = require("../utils.js");
 const path = require('path');
 const fs = require('fs');
+const { createLogger } = require("../logger.js");
+const { log, fatal } = createLogger("dev");
 
 module.exports = async () => {
 
@@ -13,13 +15,13 @@ module.exports = async () => {
     await command(`cp ${path.join(__dirname, 'templates/ssl-dev-certificate.conf')} /etc/nginx/conf/dev.conf`);
 
     if (!fs.existsSync(`/home/nginx/sites/dev.conf`)) {
-      console.log(`Place your dev.conf on /home/nginx/sites/dev.conf folder.`);
+      log(`No dev.conf found — place one at /home/nginx/sites/dev.conf`);
       process.exit(0);
     }
     await configFiles("dev", "valid", true, ["localhost", "127.0.0.1"]);
 
   } catch (err) {
-    console.error("Fatal: dev mode setup failed —", err);
+    fatal("setup failed —", err);
     throw err;
   }
 }

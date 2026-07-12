@@ -4,6 +4,9 @@ const { command, commandSafe, configFiles } = require("../utils.js");
 const { validateCronExpression } = require("../validate.js");
 const { createCert, deleteCert, createConf } = require("./manage_certs.js");
 
+const { createLogger } = require("../logger.js");
+const { log, warn, error, fatal } = createLogger("letsencrypt");
+
 module.exports = async () => {
   await command(`mkdir -p ${process.env.CERTBOT_BACKUP_PATH}`);
   const _certs = require("../config.json");
@@ -23,7 +26,6 @@ module.exports = async () => {
 
   try {
     const certificates = await parseCerts(true);
-    // console.log(certificates);
     // certificates = {
     //  id: {
     //    cert_path: string
@@ -34,66 +36,57 @@ module.exports = async () => {
     //  }
     // }
 
-    // ################################## //
-    //         MANAGE CERTIFICATES
-    // ################################## //
+    // Manage certificates
     for (let id in certs) {
 
       if (certificates[id]) {
-        console.log(`Certificate ${id} found!`);
+        log(`Certificate ${id} found`);
 
         const check = checkCertFiles(id, certificates[id]);
 
         if (!check) { // have issues?
-          console.log(`Certificate ${id} have some issues!\nPreparing to recreate...`);
+          log(`Certificate ${id} has issues — recreating`);
 
           const deleted = await deleteCert(id);
-          if (deleted) console.log(`Certificate ${id} deleted!`);
-          else console.error(`Certificate ${id} deletion failed`);
+          if (deleted) log(`Certificate ${id} deleted`);
+          else error(`Certificate ${id} deletion failed`);
 
           await command("certbot certificates");
 
-          console.log(`Recreating certificate ${id}...`);
+          log(`Recreating certificate ${id}`);
 
           const created = await createCert(id);
 
-          if (created) console.log(`Certificate ${id} created!`);
-          else console.error(`Certificate ${id} creation failed`);
+          if (created) log(`Certificate ${id} created`);
+          else error(`Certificate ${id} creation failed`);
 
         }
       } else { // not exists
 
-        console.log(`Certificate ${id} not exists! Preparing to create...`)
+        log(`Certificate ${id} does not exist — creating`);
 
         const created = await createCert(id);
 
-        if (created) console.log(`Certificate ${id} created!`)
-        else console.error(`Certificate ${id} creation failed`)
+        if (created) log(`Certificate ${id} created`);
+        else error(`Certificate ${id} creation failed`);
       }
-
-      console.log('');
     }
 
-    // ################################## //
-    //       DELETE OLD CERTIFICATES
-    // ################################## //
+    // Delete certificates that are no longer in config.json
     for (let id in certificates) {
       if (!certs[id]) {
-        console.log(`Found old certificate ${id}\nPreparing to remove certificate...\n`);
+        log(`Removing old certificate ${id} (no longer in config.json)`);
 
         const deleted = await deleteCert(id);
-        if (deleted) console.log(`Certificate ${id} deleted!`);
-        else console.error(`Certificate ${id} deletion failed`);
+        if (deleted) log(`Certificate ${id} deleted`);
+        else error(`Certificate ${id} deletion failed`);
       }
     }
 
-    // ################################## //
-    //     VERIFY AND COPY CERT FILES
-    // ################################## //
+    // Verify and export certificate files
     const final_certificates = await parseCerts();
 
-    console.log("Start mapping certificates...");
-    // console.log(final_certificates);
+    log("Building certificate map...");
 
     for (let id in certs) {
 
@@ -110,46 +103,29 @@ module.exports = async () => {
       }
     }
 
-    // ################################## //
-    //                PRINT
-    // ################################## //
-    console.log(`\n#######################################`);
-    console.log(`######    Certificates Status    ######`);
-    console.log(`#######################################\n`);
-    const size = Object.keys(certs).length;
-    let count = 0;
-
-    for (let id in certs) {
-      count++;
+    // Certificate status summary
+    const ids = Object.keys(certs);
+    log(`Certificate status summary: ${ids.length} certificate(s)`);
+    for (const id of ids) {
       if (!final_certificates[id]) {
-        console.log(` Certificate ${id} - invalid`);
-        console.log(` ${certs[id].names.join(', ')}\n`);
+        log(`- ${id}: invalid`);
+        log(`  domains: ${certs[id].names.join(', ')}`);
       } else {
         const { cert_domains, status } = final_certificates[id];
-        console.log(` Certificate ${id} - ${status}`);
-        console.log(` ${cert_domains.join(', ')}\n`);
+        log(`- ${id}: ${status}`);
+        log(`  domains: ${cert_domains.join(', ')}`);
       }
-      if (count !== size) console.log(`#######################################\n`);
     }
 
-    if (size === 0) console.log("Certificates not found!\n")
-    console.log(`#######################################`);
-    console.log(`######    Certificates Status    ######`);
-    console.log(`#######################################\n`);
-
-
-    // ################################## //
-    //               BACKUP
-    // ################################## //
+    // Back up Let's Encrypt state (optional)
     if (process.env.CERTBOT_BACKUP && process.env.CERTBOT_BACKUP !== 'false') {
-      console.log(`Backup certificates to ${process.env.CERTBOT_BACKUP_PATH}`)
+      log(`Backing up Let's Encrypt state to ${process.env.CERTBOT_BACKUP_PATH}`);
       await command(`cp -rf /etc/letsencrypt/* ${process.env.CERTBOT_BACKUP_PATH}`);
+      log('Backup completed');
     }
 
-    // ################################## //
-    //                RENEW
-    // ################################## //
-    console.log(`Setting up renewal...`);
+    // Set up automatic renewal
+    log('Setting up automatic renewal...');
     await command(`crontab -l | grep -v '/usr/local/bin/certbot_renew.sh'  | crontab -`)
     let cronjob = "0 5 * * *";
     if (process.env.CERTBOT_RENEW_CRONJOB) {
@@ -157,7 +133,7 @@ module.exports = async () => {
         validateCronExpression(process.env.CERTBOT_RENEW_CRONJOB);
         cronjob = process.env.CERTBOT_RENEW_CRONJOB;
       } catch (err) {
-        console.warn(`Invalid CERTBOT_RENEW_CRONJOB: ${err.message}. Using default: ${cronjob}`);
+        warn(`Invalid CERTBOT_RENEW_CRONJOB: ${err.message}. Using default: ${cronjob}`);
       }
     }
     const cronLine = `${cronjob} /bin/bash /usr/local/bin/certbot_renew.sh >> /var/log/certbot/certbot_renew.log\n`;
@@ -167,11 +143,7 @@ module.exports = async () => {
     await command(`crond -bS -c /var/spool/cron/crontabs`);
 
 
-    // ################################## //
-    //          COPY CONF FILES
-    // ################################## //
-
-    // await command('rsync -aP --exclude=dev.conf --exclude=_*.conf /home/nginx/sites/ /etc/nginx/conf.d/ >/dev/null');
+    // Link nginx site configs
     // delete all redirect files from http to https
     await command('rm -f /etc/nginx/conf.d/80/*-http-redirect.conf');
     await command('rm -f /etc/nginx/conf.d/443/*');
@@ -184,13 +156,12 @@ module.exports = async () => {
       }
 
     if(Object.keys(certs).length === 0) {
-      console.log("No certificates found in config.json!");
       await command('cp /home/scripts/nginx/nginx.vh.default.443.conf /etc/nginx/conf.d/443/nginx.vh.default.443.conf');
     }
 
-    console.log("NodeJS letsencrypt terminated!")
+    log("Let's Encrypt startup completed");
   } catch (err) {
-    console.error("Fatal: letsencrypt mode setup failed —", err);
+    fatal("setup failed —", err);
     throw err;
   }
 }

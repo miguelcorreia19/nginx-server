@@ -36,8 +36,8 @@ const cfg = (overrides = {}) => ({
   markerPath: overrides.markerPath || process.env.CERTBOT_RENEWAL_MARKER || "/etc/letsencrypt/.nginx-server-renewal-schema",
 });
 
-const log = (msg) => console.log(`${new Date().toISOString()} [renewal-migration] ${msg}`);
-const warn = (msg) => console.warn(`${new Date().toISOString()} [renewal-migration] ${msg}`);
+const { createLogger } = require("../logger.js");
+const { log, warn } = createLogger("renewal-migration");
 
 // A config is "legacy standalone" if its [renewalparams] sets authenticator=standalone.
 const isStandaloneConfig = (content) =>

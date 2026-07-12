@@ -57,13 +57,15 @@ A successful renewal run looks like:
 
 ```
 2026-06-08 05:00:01 [certbot_renew] certbot renew started
-[certbot_renew.js] Starting certificate renewal — 2026-06-08T05:00:01.000Z
+2026-06-08 05:00:01 [certbot_renew.js] Starting certificate renewal
 ... certbot renewal output per certificate (via webroot) ...
-[certbot_renew.js] certbot renew finished — 2026-06-08T05:00:03.000Z
+2026-06-08 05:00:03 [certbot_renew.js] certbot renew finished
 2026-06-08 05:00:03 [certbot_renew] Certificates renewed; reloading nginx
 2026-06-08 05:00:03 [certbot_renew] nginx reloaded after renewal
 2026-06-08 05:00:03 [certbot_renew] certbot renew succeeded
 ```
+
+Both layers use the same `YYYY-MM-DD HH:mm:ss` timestamp; the `[component]` tag tells them apart — the shell wrapper logs as `[certbot_renew]`, the Node step as `[certbot_renew.js]` (see [Troubleshooting → Logs](troubleshooting.md#logs)).
 
 Most daily runs renew nothing (certificates are renewed only near expiry); those runs log `No certificates renewed; nginx reload skipped` instead and do not reload nginx.
 

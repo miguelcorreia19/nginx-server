@@ -2,15 +2,13 @@ const { parseCerts } = require("./utils.js");
 const { command, commandSafe } = require("../utils.js");
 const migrateRenewalConfigs = require("./migrate_renewal");
 
-// Consistent, prefixed, container-friendly logging. This script's stdout is
-// captured by certbot_renew.sh, whose output is redirected by cron straight into
-// /var/log/certbot/certbot_renew.log (outside Docker's log pipeline), so every
-// line carries the [certbot_renew.js] tag and the run boundaries carry an
-// ISO-8601 timestamp (rather than relying on Docker's own log timestamps).
-const PREFIX = '[certbot_renew.js]';
-const log = (msg) => console.log(`${PREFIX} ${msg}`);
-const warn = (msg) => console.warn(`${PREFIX} WARNING: ${msg}`);
-const error = (msg) => console.error(`${PREFIX} ERROR: ${msg}`);
+// Consistent, container-friendly logging via the shared logger. This script's
+// stdout is captured by certbot_renew.sh, whose output is redirected by cron
+// straight into /var/log/certbot/certbot_renew.log (outside Docker's log
+// pipeline), so every line carries its own "<ISO timestamp> [certbot_renew.js]"
+// prefix rather than relying on Docker's own log timestamps.
+const { createLogger } = require("../logger.js");
+const { log, warn, error } = createLogger("certbot_renew.js");
 
 // Human-readable expiry derived from the parsed Luxon validity. Logging only —
 // no behavior depends on this, and an unparseable/missing validity is tolerated.
@@ -24,7 +22,7 @@ const formatValidity = (validity) => {
 
 const start = async () => {
   try {
-    log(`Starting certificate renewal — ${new Date().toISOString()}`);
+    log('Starting certificate renewal');
 
     // Defensively ensure every renewal config uses webroot before renewing
     // (also done at container startup). In-place + non-fatal; the original is
@@ -53,7 +51,7 @@ const start = async () => {
     // renewed, or failed) verbatim for troubleshooting.
     if (renewOutput) console.log(renewOutput);
 
-    log(`certbot renew finished — ${new Date().toISOString()}`);
+    log('certbot renew finished');
 
     const final_certificates = await parseCerts();
     const ids = Object.keys(final_certificates);

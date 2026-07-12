@@ -2,6 +2,9 @@ const fs = require("fs");
 const path = require("path");
 const { command, commandSafe } = require("../utils.js");
 
+const { createLogger } = require("../logger.js");
+const { warn, error } = createLogger("letsencrypt");
+
 exports.createCert = async (id) => {
   const certs = require("../config.json");
 
@@ -19,7 +22,7 @@ exports.createCert = async (id) => {
     await commandSafe('certbot', args);
     return true;
   } catch (err) {
-    console.error(`Certificate creation failed for "${id}" (domains: ${names.join(', ')}):`, err.error || err.message || err);
+    error(`Certificate creation failed for "${id}" (domains: ${names.join(', ')}): ${err.error || err.message || err}`);
     return false;
   }
 }
@@ -29,7 +32,7 @@ exports.deleteCert = async (id) => {
     await commandSafe('certbot', ['delete', '--cert-name', id]);
     return true;
   } catch (err) {
-    console.error(`Certificate deletion failed for "${id}":`, err.error || err.message || err);
+    error(`Certificate deletion failed for "${id}": ${err.error || err.message || err}`);
     return false;
   }
 }
@@ -39,7 +42,7 @@ exports.createConf = async (id, { cert_path, cert_key_path, status }) => {
 
   let data = '';
   if (status === 'invalid' && !process.env.FORCE_INVALID_ON_FAIL) {
-    console.log(`Certificate "${id}" is invalid — generating a self-signed fallback certificate (set FORCE_INVALID_ON_FAIL to disable this fallback)`);
+    warn(`Certificate "${id}" is invalid — generating a self-signed fallback certificate (set FORCE_INVALID_ON_FAIL to disable this fallback)`);
     await command(`openssl req -x509 -newkey rsa:2048 -keyout /etc/ssl/certs/${id}_privkey.pem -out /etc/ssl/certs/${id}_cert.pem -days 365 -nodes -subj \"/C=UA\" 2>&1`);
 
     data = fs.readFileSync(templatePath, 'utf8');
@@ -57,7 +60,7 @@ exports.createConf = async (id, { cert_path, cert_key_path, status }) => {
       .replace('${PRIVKEY}', `/etc/ssl/certs/${id}_privkey.pem`)
       .replace('${CHAIN}', `/etc/ssl/certs/${id}_chain.pem`);
   } else {
-    console.log(`Certificate "${id}" is invalid — proceeding without a fallback because FORCE_INVALID_ON_FAIL is set; nginx may fail to start for this site`);
+    warn(`Certificate "${id}" is invalid — proceeding without a fallback because FORCE_INVALID_ON_FAIL is set; nginx may fail to start for this site`);
   }
 
   fs.writeFileSync(`/etc/nginx/conf/${id}.conf`, data);

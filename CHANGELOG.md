@@ -106,6 +106,9 @@ Migration characteristics:
 - Simplified Let's Encrypt renewal implementation.
 - Removed obsolete standalone-renewal migration staging infrastructure.
 - Improved renewal logging and operational visibility.
+- Normalized project-owned startup logs around consistent `[component]` prefixes (`[entrypoint]`, `[letsencrypt]`, `[fail2ban]`, `[http]`, `[dev]`, `[custom]`) with `WARNING:`/`ERROR:`/`Fatal:` severity labels; replaced the legacy `#####` "Certificates Status" banner with a concise certificate status summary. No runtime behavior changed.
+- Centralized project-owned Node logging in a shared `js/logger.js` factory, and quietened empty-state handler logs (removed `[http] No HTTP certificates found in config.json` and the unreachable "No certificates found" lines). No runtime behavior changed.
+- Unified the log timestamp format across the whole stack: every project-owned line — shell and Node — now uses `YYYY-MM-DD HH:mm:ss [component] message`. The Node logger's previous ISO-8601 timestamp was replaced with the same local-time format the shell `date '+%Y-%m-%d %H:%M:%S'` helper already emits, so `docker logs` is visually consistent. Presentation only.
 - Expanded automated test coverage.
 - Improved documentation cross-linking and validation.
 

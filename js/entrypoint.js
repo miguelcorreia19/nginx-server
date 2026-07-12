@@ -1,4 +1,7 @@
-console.log(`Starting in ENVIRONMENT="${process.env.ENVIRONMENT || ''}" (defaults to "production" if unset)\n`);
+const { createLogger } = require("./logger.js");
+const { log, warn, fatal } = createLogger("entrypoint");
+
+log(`Starting in ENVIRONMENT="${process.env.ENVIRONMENT || ''}" (defaults to "production" if unset)`);
 
 const letsencrypt = require('./letsencrypt');
 const dev = require('./dev');
@@ -27,22 +30,22 @@ const start = async () => {
     try {
       const _config = require("./config.json");
       if (typeof _config !== 'object' || _config === null || Array.isArray(_config)) {
-        console.error("Fatal: config.json must be a JSON object, got:", typeof _config);
+        fatal(`config.json must be a JSON object, got: ${typeof _config}`);
         process.exit(1);
       }
       for (const [id, entry] of Object.entries(_config)) {
         try {
           validateConfigEntry(id, entry);
         } catch (err) {
-          console.error(`Fatal: config.json entry "${id}" failed validation: ${err.message}`);
+          fatal(`config.json entry "${id}" failed validation: ${err.message}`);
           process.exit(1);
         }
       }
     } catch (err) {
       if (err.code === 'MODULE_NOT_FOUND') {
-        console.error("Fatal: config.json not found. Mount your configuration file at /home/config.json");
+        fatal("config.json not found. Mount your configuration file at /home/config.json");
       } else {
-        console.error("Fatal: config.json could not be parsed:", err.message);
+        fatal(`config.json could not be parsed: ${err.message}`);
       }
       process.exit(1);
     }
@@ -60,7 +63,7 @@ const start = async () => {
 
         break;
       default:
-        console.error(`Fatal: invalid ENVIRONMENT value "${process.env.ENVIRONMENT}" — must be 'development'/'dev' or 'production'/'prod'`);
+        fatal(`invalid ENVIRONMENT value "${process.env.ENVIRONMENT}" — must be 'development'/'dev' or 'production'/'prod'`);
         process.exit(1);
     }
 
@@ -73,7 +76,7 @@ const start = async () => {
     try {
       await validateNginxConfig();
     } catch (err) {
-      console.error(`Fatal: generated nginx configuration is invalid (nginx -t failed):\n${err.error || err.message || err}`);
+      fatal(`generated nginx configuration is invalid (nginx -t failed):\n${err.error || err.message || err}`);
       process.exit(1);
     }
 
@@ -84,7 +87,7 @@ const start = async () => {
     try {
       await fail2ban();
     } catch (err) {
-      console.error(`WARNING: Fail2ban setup failed — continuing without it: ${err.message || err}`);
+      warn(`Fail2ban setup failed — continuing without it: ${err.message || err}`);
     }
 
     // Migrate any legacy standalone renewal configs to webroot IN PLACE, so a
@@ -96,11 +99,11 @@ const start = async () => {
     try {
       migrateRenewalConfigs();
     } catch (err) {
-      console.error(`WARNING: renewal-config migration error — continuing: ${err.message || err}`);
+      warn(`renewal-config migration error — continuing: ${err.message || err}`);
     }
 
   } catch (err) {
-    console.error("Fatal: entrypoint failed —", err);
+    fatal("entrypoint failed —", err);
     process.exit(1);
   }
 }

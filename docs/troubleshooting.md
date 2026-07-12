@@ -38,7 +38,7 @@ docker logs -t <container>      # with Docker-added timestamps
 **Startup sequence** (normal):
 ```
 2026-06-08 11:27:52 [entrypoint] Starting up (ENVIRONMENT=production)
-Starting in ENVIRONMENT="production" (defaults to "production" if unset)
+2026-06-08 11:27:52 [entrypoint] Starting in ENVIRONMENT="production" (defaults to "production" if unset)
 ...
 2026-06-08 11:27:55 [entrypoint] Entrypoint script ended — starting nginx
 ```
@@ -46,9 +46,11 @@ Starting in ENVIRONMENT="production" (defaults to "production" if unset)
 **Startup failure** (invalid nginx config):
 ```
 2026-06-08 11:27:52 [entrypoint] Starting up (ENVIRONMENT=production)
-Fatal: generated nginx configuration is invalid (nginx -t failed): ...
+2026-06-08 11:27:52 [entrypoint] Fatal: generated nginx configuration is invalid (nginx -t failed): ...
 2026-06-08 11:27:53 [entrypoint] Fatal: entrypoint.js failed — refusing to start nginx with an incomplete/invalid configuration
 ```
+
+> **Log format.** Every project-owned log line uses `YYYY-MM-DD HH:mm:ss [component] message`. Both the **shell** scripts (`entrypoint.sh`, `reload.sh`, `certbot_renew.sh`, `fail2ban.sh`) and the **Node** layer (`entrypoint.js`, the mode handlers, `certbot_renew.js`, …, via the shared `js/logger.js`) emit the same local-time stamp, so the whole stream is visually uniform. The `[component]` tag identifies the source; `WARNING:`/`ERROR:`/`Fatal:` mark severity. Raw third-party output (certbot's report, `nginx -t` errors, `inotifywait`'s `Setting up watches.`) is passed through untouched.
 
 **Nginx reload** (on config file change):
 ```
@@ -89,20 +91,20 @@ This file is written directly by cron (not via Docker's log pipeline). It persis
 
 **Invalid ENVIRONMENT value**:
 ```
-Fatal: invalid ENVIRONMENT value "staging" — must be 'development'/'dev' or 'production'/'prod'
-[entrypoint] Fatal: entrypoint.js failed — refusing to start nginx...
+2026-06-08 11:27:52 [entrypoint] Fatal: invalid ENVIRONMENT value "staging" — must be 'development'/'dev' or 'production'/'prod'
+2026-06-08 11:27:52 [entrypoint] Fatal: entrypoint.js failed — refusing to start nginx...
 ```
 Fix: set `ENVIRONMENT` to `production`, `prod`, `development`, or `dev`.
 
 **Missing or invalid `config.json`**:
 ```
-Fatal: config.json not found. Mount your configuration file at /home/config.json
+2026-06-08 11:27:52 [entrypoint] Fatal: config.json not found. Mount your configuration file at /home/config.json
 ```
 Fix: ensure `config.json` is mounted at `/home/config.json`.
 
 **Invalid nginx configuration**:
 ```
-Fatal: generated nginx configuration is invalid (nginx -t failed):
+2026-06-08 11:27:52 [entrypoint] Fatal: generated nginx configuration is invalid (nginx -t failed):
 nginx: [emerg] unknown directive "foo" in /etc/nginx/proxy.conf:1
 ```
 Fix: check your custom nginx config files for syntax errors. Run `nginx -t` locally if possible.

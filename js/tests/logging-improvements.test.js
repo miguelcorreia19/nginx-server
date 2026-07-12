@@ -1,18 +1,22 @@
-// Phase 5B — observability & logging.
+// Observability & logging.
 //
-// These tests guard the logging improvements made to the shell scripts and
-// the Node mode handlers/certbot helpers: consistent timestamped log lines in
-// the shell scripts, the "Realoading"/"realoaded" typo fix in reload.sh,
-// clear success/failure distinction on nginx reload, and replacement of
-// cryptic/inconsistent Node log messages with ones that carry real context
-// (cert id, what was being parsed, etc).
+// These tests guard the project's logging convention:
+//   * Shell scripts keep their own "YYYY-MM-DD HH:MM:SS [component] message"
+//     helper (intentionally left as-is — see js/logger.js / docs/architecture.md).
+//   * Project-owned Node logs all go through the shared js/logger.js factory,
+//     which emits "<ISO-8601 timestamp> [component] message" (with WARNING:/
+//     ERROR:/Fatal: severity labels). Component tags now live in the logger
+//     wiring (createLogger("<component>")) rather than inline in each message.
+//   * Empty states are quiet: a handler with nothing to do logs nothing.
+//   * Raw third-party output (certbot report, nginx -t, inotifywait) is left
+//     untouched.
 //
-// Scripts are checked via their source text (the same approach used by
+// Scripts/modules are checked via their source text (the same approach used by
 // build-startup-assertions.test.js and environment-validation.test.js) rather
 // than executed — inotifywait (reload.sh's core dependency) isn't available
 // outside the Alpine runtime image, and certbot_renew.sh's behavior is already
-// covered end-to-end by certbot-renew.test.js. Only operationally meaningful
-// lines are asserted on, not incidental wording.
+// covered end-to-end by certbot-renew.test.js. The shared logger itself is also
+// exercised behaviorally. Only operationally meaningful lines are asserted on.
 
 const fs = require('fs');
 const path = require('path');
@@ -97,18 +101,50 @@ describe('js/letsencrypt/utils.js — actionable certificate-parsing diagnostics
     // One for each of: cert path, key path, domains, status, validity
     expect(matches.length).toBe(5);
   });
+
+  it('uses clear [letsencrypt]-prefixed backup-discovery logs (no legacy trailing-dot strings)', () => {
+    expect(source).not.toMatch(/Check existing backups/);
+    expect(source).not.toMatch(/Found some certificates on backup path/);
+    expect(source).not.toMatch(/Backup path is empty/);
+    expect(source).toMatch(/Checking backup certificates\.\.\./);
+    expect(source).toMatch(/Found \$\{certDirs\.length\} certificate\(s\) in backup storage/);
+  });
 });
 
-describe('js/letsencrypt/index.js — error-level messages use console.error', () => {
+describe('js/letsencrypt/index.js — consistent [letsencrypt] logging', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'letsencrypt', 'index.js'), 'utf8');
 
-  it('no longer logs certificate creation/deletion failures via console.log with a lowercase "error:" prefix', () => {
-    expect(source).not.toMatch(/console\.log\(`error: Certificate/);
+  it('routes log lines through the shared [letsencrypt] logger', () => {
+    expect(source).toMatch(/createLogger\(["']letsencrypt["']\)/);
+    expect(source).toMatch(/const \{ log, warn, error, fatal \} = createLogger/);
   });
 
-  it('logs certificate creation/deletion failures via console.error', () => {
-    expect(source).toMatch(/console\.error\(`Certificate \$\{id\} deletion failed`\)/);
-    expect(source).toMatch(/console\.error\(`Certificate \$\{id\} creation failed`\)/);
+  it('removes the "Certificates Status" banner blocks (no #### separators)', () => {
+    expect(source).not.toMatch(/#{4,}/);
+    expect(source).not.toMatch(/Certificates Status/);
+    expect(source).not.toMatch(/Certificates not found!/);
+  });
+
+  it('stays quiet on the empty state (no "No certificates found" noise)', () => {
+    expect(source).not.toMatch(/No certificates found/);
+  });
+
+  it('logs a concise certificate status summary with a count', () => {
+    expect(source).toMatch(/Certificate status summary: \$\{ids\.length\} certificate\(s\)/);
+    expect(source).toMatch(/`- \$\{id\}: \$\{status\}`/);
+    expect(source).toMatch(/domains: \$\{cert_domains\.join/);
+  });
+
+  it('routes certificate creation/deletion failures through the error() helper (stderr), not console.log', () => {
+    expect(source).not.toMatch(/console\.log\(`error: Certificate/);
+    expect(source).toMatch(/error\(`Certificate \$\{id\} deletion failed`\)/);
+    expect(source).toMatch(/error\(`Certificate \$\{id\} creation failed`\)/);
+  });
+
+  it('normalizes the legacy ALL-CAPS / "!"-terminated status messages', () => {
+    expect(source).not.toMatch(/NodeJS letsencrypt terminated/);
+    expect(source).not.toMatch(/Start mapping certificates/);
+    expect(source).toMatch(/Let's Encrypt startup completed/);
   });
 });
 
@@ -126,14 +162,16 @@ describe('js/letsencrypt/certbot_renew.js — clear, consistent renewal logs', (
     expect(source).not.toMatch(/Certificates not found/);
   });
 
-  it('routes log lines through a single [certbot_renew.js]-prefixed helper', () => {
-    expect(source).toMatch(/const PREFIX = '\[certbot_renew\.js\]'/);
-    expect(source).toMatch(/const log = \(msg\) => console\.log\(`\$\{PREFIX\} \$\{msg\}`\)/);
+  it('routes log lines through the shared [certbot_renew.js] logger', () => {
+    expect(source).toMatch(/createLogger\(["']certbot_renew\.js["']\)/);
+    expect(source).toMatch(/const \{ log, warn, error \} = createLogger/);
   });
 
-  it('logs ISO-8601-timestamped start and finish boundaries', () => {
-    expect(source).toMatch(/Starting certificate renewal — \$\{new Date\(\)\.toISOString\(\)\}/);
-    expect(source).toMatch(/certbot renew finished — \$\{new Date\(\)\.toISOString\(\)\}/);
+  it('logs clear start and finish boundaries (timestamp supplied by the shared logger)', () => {
+    expect(source).toMatch(/log\('Starting certificate renewal'\)/);
+    expect(source).toMatch(/log\('certbot renew finished'\)/);
+    // The embedded per-line toISOString() is gone — the logger prefix carries it.
+    expect(source).not.toMatch(/— \$\{new Date\(\)\.toISOString\(\)\}/);
   });
 
   it('surfaces certbot\'s own renewal report instead of discarding it', () => {
@@ -166,8 +204,7 @@ describe('js/letsencrypt/certbot_renew.js — clear, consistent renewal logs', (
     expect(source).toMatch(/Backup completed/);
   });
 
-  it('logs fatal errors with a clear [certbot_renew.js] ERROR prefix and preserves exit(1)', () => {
-    expect(source).toMatch(/const error = \(msg\) => console\.error\(`\$\{PREFIX\} ERROR: \$\{msg\}`\)/);
+  it('logs fatal errors through the logger error() helper and preserves exit(1)', () => {
     expect(source).toMatch(/error\(`certbot renewal failed: /);
     expect(source).toMatch(/process\.exit\(1\)/);
   });
@@ -209,8 +246,128 @@ describe('js/letsencrypt/manage_certs.js — fallback-certificate messages witho
 describe('js/entrypoint.js — clear startup environment line', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'entrypoint.js'), 'utf8');
 
-  it('logs the active ENVIRONMENT in a labeled, readable line instead of a bare value dump', () => {
+  it('logs the active ENVIRONMENT through the shared [entrypoint] logger', () => {
     expect(source).not.toMatch(/console\.log\("ENVIRONMENT", process\.env\.ENVIRONMENT/);
+    expect(source).toMatch(/createLogger\(["']entrypoint["']\)/);
     expect(source).toMatch(/Starting in ENVIRONMENT=/);
+  });
+
+  it('routes fatal/warning lines through the logger fatal()/warn() helpers', () => {
+    expect(source).toMatch(/fatal\("entrypoint failed/);
+    expect(source).toMatch(/warn\(`Fail2ban setup failed/);
+  });
+});
+
+describe('js/http/index.js — quiet empty state', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'http', 'index.js'), 'utf8');
+
+  it('no longer logs the noisy "No HTTP certificates found in config.json" line', () => {
+    expect(source).not.toMatch(/No HTTP certificates found in config\.json/);
+  });
+
+  it('still copies the default :80 vhost when there are no http sites (behavior unchanged)', () => {
+    expect(source).toMatch(/cp \/home\/scripts\/nginx\/nginx\.vh\.default\.80\.conf/);
+  });
+});
+
+describe('js/logger.js — shared timestamped logger (source)', () => {
+  const loggerSource = fs.readFileSync(path.join(__dirname, '..', 'logger.js'), 'utf8');
+
+  it('builds a "YYYY-MM-DD HH:mm:ss [component] message" prefix (no ISO timestamps)', () => {
+    expect(loggerSource).toMatch(/const tag = `\[\$\{component\}\]`/);
+    // Local-time YYYY-MM-DD HH:mm:ss assembled from Date getters — matches the
+    // shell `date '+%Y-%m-%d %H:%M:%S'` helper. The old ISO formatter is gone.
+    expect(loggerSource).toMatch(/getFullYear\(\)/);
+    expect(loggerSource).not.toMatch(/toISOString/);
+  });
+
+  it('adds WARNING:/ERROR:/Fatal: severity labels', () => {
+    expect(loggerSource).toMatch(/WARNING:/);
+    expect(loggerSource).toMatch(/ERROR:/);
+    expect(loggerSource).toMatch(/Fatal:/);
+  });
+
+  it('introduces no logging library, JSON logs, or colors', () => {
+    expect(loggerSource).not.toMatch(/require\(['"](winston|pino|bunyan|log4js|chalk)['"]\)/);
+    expect(loggerSource).not.toMatch(/JSON\.stringify/);
+    expect(loggerSource).not.toMatch(/\x1b\[/); // no ANSI color escapes
+  });
+});
+
+describe('js/logger.js — behavioral', () => {
+  const { createLogger } = require('../logger.js');
+  // Same "YYYY-MM-DD HH:mm:ss " prefix the shell scripts emit — no ISO T/Z, no
+  // milliseconds, no timezone suffix. Format only; never asserts a date value.
+  const TS = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} /;
+
+  it('prefixes log lines with a "YYYY-MM-DD HH:mm:ss" timestamp and the component tag', () => {
+    const spy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    createLogger('demo').log('hello');
+    const line = spy.mock.calls[0][0];
+    expect(line).toMatch(TS);
+    expect(line).toMatch(/ \[demo\] hello$/);
+    // No ISO-8601 timestamp leaks through (no "T..Z").
+    expect(line).not.toMatch(/\dT\d{2}:\d{2}:\d{2}/);
+    expect(line).not.toMatch(/Z\b/);
+    spy.mockRestore();
+  });
+
+  it('labels warn/error/fatal severities and routes them to the right stream', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const errSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const l = createLogger('demo');
+    l.warn('careful');
+    l.error('broke');
+    l.fatal('dead');
+    expect(warnSpy.mock.calls[0][0]).toMatch(/ \[demo\] WARNING: careful$/);
+    expect(errSpy.mock.calls[0][0]).toMatch(/ \[demo\] ERROR: broke$/);
+    expect(errSpy.mock.calls[1][0]).toMatch(/ \[demo\] Fatal: dead$/);
+    warnSpy.mockRestore();
+    errSpy.mockRestore();
+  });
+
+  it('passes through extra console arguments (e.g. an Error for its stack)', () => {
+    const spy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const err = new Error('boom');
+    createLogger('demo').fatal('failed —', err);
+    expect(spy.mock.calls[0][0]).toMatch(/ \[demo\] Fatal: failed —$/);
+    expect(spy.mock.calls[0][1]).toBe(err);
+    spy.mockRestore();
+  });
+});
+
+describe('Node modules — wired to the shared timestamped logger', () => {
+  const read = (rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  // Each project-owned Node logging source and the component it registers with
+  // createLogger(...). The shared logger supplies the "<ISO timestamp>
+  // [component]" prefix, so the tag no longer appears inline in each message.
+  const cases = [
+    ['entrypoint.js', 'entrypoint'],
+    ['utils.js', 'nginx'],
+    ['letsencrypt/index.js', 'letsencrypt'],
+    ['letsencrypt/utils.js', 'letsencrypt'],
+    ['letsencrypt/manage_certs.js', 'letsencrypt'],
+    ['letsencrypt/migrate_renewal.js', 'renewal-migration'],
+    ['letsencrypt/certbot_renew.js', 'certbot_renew.js'],
+    ['fail2ban/index.js', 'fail2ban'],
+    ['http/index.js', 'http'],
+    ['dev/index.js', 'dev'],
+    ['custom/index.js', 'custom'],
+  ];
+
+  it.each(cases)('%s registers createLogger("%s")', (rel, component) => {
+    expect(read(rel)).toMatch(new RegExp(`createLogger\\((['"])${esc(component)}\\1\\)`));
+  });
+
+  it.each(cases.map(([rel]) => [rel]))('%s contains no banner/separator blocks (no #### runs)', (rel) => {
+    expect(read(rel)).not.toMatch(/#{4,}/);
+  });
+
+  it.each(cases.map(([rel]) => [rel]))('%s defines no inline `[component]` log-prefix helper', (rel) => {
+    // The component tag must come from the shared logger, not a per-module
+    // `const log = (msg) => console.log(`[x] ...`)` definition.
+    expect(read(rel)).not.toMatch(/=> console\.(log|warn|error)\(`\[/);
   });
 });

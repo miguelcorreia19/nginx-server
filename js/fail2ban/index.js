@@ -14,6 +14,9 @@ const fs = require("fs");
 const path = require("path");
 const { validatePositiveInt, validateIgnoreIp } = require("../validate.js");
 
+const { createLogger } = require("../logger.js");
+const { log, warn, error } = createLogger("fail2ban");
+
 // Defaults documented in the README. Strings so they substitute verbatim.
 const DEFAULTS = {
   bantime: "3600",
@@ -37,7 +40,7 @@ const isEnabled = () => process.env.FAIL2BAN_ENABLED === "true";
 const warnIfUnrecognizedFlag = () => {
   const raw = process.env.FAIL2BAN_ENABLED;
   if (raw !== undefined && raw !== "" && raw !== "true" && raw !== "false") {
-    console.warn(
+    warn(
       `FAIL2BAN_ENABLED="${raw}" is not a recognized value — Fail2ban stays disabled. ` +
       `Set FAIL2BAN_ENABLED="true" to enable, or "false"/unset to disable.`
     );
@@ -53,7 +56,7 @@ const resolveValue = (envName, rawValue, defaultValue, validator) => {
     validator(rawValue, envName);
     return rawValue;
   } catch (err) {
-    console.warn(`Invalid ${envName}: ${err.message}. Using default: ${defaultValue}`);
+    warn(`Invalid ${envName}: ${err.message}. Using default: ${defaultValue}`);
     return defaultValue;
   }
 };
@@ -83,9 +86,9 @@ module.exports = async () => {
   try {
     const config = buildConfig();
     fs.writeFileSync(jailOutputPath(), config);
-    console.log(`Fail2ban enabled — wrote jail configuration to ${jailOutputPath()}`);
+    log(`Enabled — wrote jail configuration to ${jailOutputPath()}`);
   } catch (err) {
-    console.error(`WARNING: Fail2ban configuration generation failed — continuing without Fail2ban: ${err.message || err}`);
+    error(`Fail2ban configuration generation failed — continuing without Fail2ban: ${err.message || err}`);
   }
 };
 

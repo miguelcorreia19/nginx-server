@@ -2,6 +2,8 @@ const { exec, execFile, spawn } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { createLogger } = require("./logger.js");
+const { log } = createLogger("nginx");
 
 exports.command = command = (cmd) => {
   return new Promise((resolve, reject) => {
@@ -126,6 +128,6 @@ exports.configFiles = async (id, status, http_redirect, cert_domains) => {
       await httpRedirect(id, cert_domains.join(' '));
     }
   } else {
-    console.log(`Discarding ${id}.conf`);
+    log(`Skipping ${id}: certificate invalid or missing site config /home/nginx/sites/${id}.conf`);
   }
 }
