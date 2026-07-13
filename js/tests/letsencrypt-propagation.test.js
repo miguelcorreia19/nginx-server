@@ -19,6 +19,8 @@ jest.mock('../utils.js', () => ({
 
 jest.mock('../validate.js', () => ({
   validateCronExpression: jest.fn(),
+  // The handler also screens names for wildcards; this entry has none.
+  isWildcardDomain: jest.fn(() => false),
 }));
 
 jest.mock('../letsencrypt/manage_certs.js', () => ({

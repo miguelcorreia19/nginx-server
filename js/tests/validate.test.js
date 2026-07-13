@@ -52,6 +52,9 @@ describe('validateDomain', () => {
     'localhost',
     '192.168.1.1',
     'a',
+    // wildcard as the complete left-most label
+    '*.example.com',
+    '*.sub.example.com',
   ];
   const invalid = [
     ['shell injection', 'example.com; rm -rf /'],
@@ -62,6 +65,14 @@ describe('validateDomain', () => {
     ['trailing dot', 'example.com.'],
     ['empty string', ''],
     ['newline', 'example.com\nwhoami'],
+    ['bare wildcard', '*'],
+    ['wildcard prefix with no domain', '*.'],
+    ['wildcard not followed by a dot', '*example.com'],
+    ['wildcard as a middle label', 'foo.*.example.com'],
+    ['wildcard as the last label', 'example.*'],
+    ['two wildcard labels', '*.*.example.com'],
+    ['wildcard inside the left-most label', 'foo*.example.com'],
+    ['wildcard inside a middle label', 'foo.*bar.example.com'],
   ];
 
   test.each(valid)('accepts "%s"', (domain) => {
@@ -215,6 +226,8 @@ describe('validateIgnoreIp', () => {
     ['leading-hyphen label', '-badhost'],
     ['trailing dot', '192.168.1.1.'],
     ['non-string', 12345],
+    ['wildcard hostname', '*.example.com'],
+    ['bare wildcard', '*'],
   ];
 
   test.each(valid)('accepts "%s"', (value) => {
@@ -249,6 +262,16 @@ describe('validateConfigEntry', () => {
 
   it('accepts an HTTP-only entry without names', () => {
     expect(() => validateConfigEntry('mysite', { mode: 'http' })).not.toThrow();
+  });
+
+  // Wildcard syntax must survive global config validation. The mode is 'custom'
+  // because whether a mode can actually obtain a wildcard certificate is a
+  // capability question owned by the mode handlers, not by this validator.
+  it('accepts a wildcard domain in names', () => {
+    expect(() => validateConfigEntry('mysite', {
+      names: ['*.example.com', 'example.com'],
+      mode: 'custom',
+    })).not.toThrow();
   });
 
   it('rejects an invalid cert ID', () => {

@@ -21,6 +21,8 @@ The service reads a JSON file mounted at `/home/config.json`. Each top-level key
 
 See [SSL modes](ssl-modes.md) for what each `mode` does and when to use it.
 
+**Note**: a `names` entry may use a wildcard as the complete left-most label (e.g. `*.example.com`). Wildcards are supported by the `http` and `custom` modes. The `letsencrypt` and `letsencrypt-staging` modes do **not** support them — wildcard certificates require a DNS-01 challenge, which this image does not implement — so a wildcard entry in those modes is skipped with a warning at startup and no certificate is requested for it.
+
 ### Full `config.json` example
 
 ```json

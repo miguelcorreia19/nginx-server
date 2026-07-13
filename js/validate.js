@@ -7,6 +7,14 @@ const CERT_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$/;
 // Standard hostname labels: alphanumeric, hyphens in the middle, dots as separators.
 const DOMAIN_RE = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
 
+// A wildcard domain is an ordinary hostname (above) carrying a literal "*."
+// prefix, e.g. "*.example.com". The prefix is stripped before matching rather
+// than folded into DOMAIN_RE: "*" must never become a character allowed inside
+// a label (so "*example.com", "foo.*.example.com" and "*.*.example.com" all
+// stay invalid), and DOMAIN_RE is also used by validateIgnoreIp, which must
+// keep rejecting wildcards.
+const WILDCARD_PREFIX = '*.';
+
 // Certificate filenames: basename only, no path separators or shell metacharacters.
 const CERT_FILE_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,253}$/;
 
@@ -30,8 +38,22 @@ const validateCertId = (id) => {
   }
 };
 
+// Removes an exact leading "*." so the remainder can be validated by the
+// unchanged DOMAIN_RE. Anything else is left untouched.
+const stripWildcardPrefix = (domain) =>
+  domain.startsWith(WILDCARD_PREFIX) ? domain.slice(WILDCARD_PREFIX.length) : domain;
+
+// True when a domain carries the wildcard prefix accepted by validateDomain.
+// Syntax only: it says nothing about whether a given SSL mode can obtain a
+// certificate for that name — that capability rule belongs to each mode handler.
+const isWildcardDomain = (domain) =>
+  typeof domain === 'string' && domain.startsWith(WILDCARD_PREFIX);
+
+// Accepts an ordinary hostname, optionally prefixed with "*." to wildcard the
+// complete left-most label. The length limit still applies to the value as
+// written, so non-wildcard input behaves exactly as before.
 const validateDomain = (domain) => {
-  if (typeof domain !== 'string' || domain.length > 253 || !DOMAIN_RE.test(domain)) {
+  if (typeof domain !== 'string' || domain.length > 253 || !DOMAIN_RE.test(stripWildcardPrefix(domain))) {
     throw new Error(`Domain "${domain}" is invalid: must be a valid hostname`);
   }
 };
@@ -154,6 +176,7 @@ const validateConfigEntry = (id, entry) => {
 module.exports = {
   validateCertId,
   validateDomain,
+  isWildcardDomain,
   validateCertFilename,
   validateEmail,
   validateCronExpression,

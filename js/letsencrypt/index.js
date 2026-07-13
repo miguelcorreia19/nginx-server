@@ -1,7 +1,7 @@
 const { parseCerts, checkCertFiles } = require("./utils.js");
 const fs = require("fs");
 const { command, commandSafe, configFiles } = require("../utils.js");
-const { validateCronExpression } = require("../validate.js");
+const { validateCronExpression, isWildcardDomain } = require("../validate.js");
 const { createCert, deleteCert, createConf } = require("./manage_certs.js");
 
 const { createLogger } = require("../logger.js");
@@ -20,6 +20,28 @@ module.exports = async () => {
     if (certs[id].mode !== 'letsencrypt-staging' && certs[id].mode !== 'letsencrypt') {
       delete certs[id];
     }
+  }
+
+  // Wildcard names need a DNS-01 challenge, which this image's Let's Encrypt
+  // flow does not implement (http-01: --standalone at issuance, webroot at
+  // renewal). Drop those entries here — after the mode filter/default above, so
+  // an omitted mode is already resolved to 'letsencrypt', and before parseCerts
+  // and every deletion/creation below — so an unsupported entry can never reach
+  // certbot. Warn-and-skip per site, matching how the custom handler treats a
+  // site whose certificate files are missing.
+  const wildcard_skipped = [];
+  for (let id in certs) {
+    const wildcards = (certs[id].names || []).filter(isWildcardDomain);
+    if (wildcards.length === 0) continue;
+
+    warn(
+      `Certificate "${id}" uses wildcard name(s): ${wildcards.join(', ')} — wildcard ` +
+      `certificates require a DNS-01 challenge, which this image's Let's Encrypt flow ` +
+      `does not support; skipping ${id}. Use mode "custom" with your own wildcard ` +
+      `certificate, or list each name explicitly.`
+    );
+    wildcard_skipped.push(id);
+    delete certs[id];
   }
 
   if (Object.keys(certs).length == 0) return;
@@ -74,7 +96,10 @@ module.exports = async () => {
 
     // Delete certificates that are no longer in config.json
     for (let id in certificates) {
-      if (!certs[id]) {
+      // Entries skipped above are still present in config.json — they are only
+      // unprocessable here — so their existing certificate is not an orphan and
+      // must not be deleted.
+      if (!certs[id] && !wildcard_skipped.includes(id)) {
         log(`Removing old certificate ${id} (no longer in config.json)`);
 
         const deleted = await deleteCert(id);
