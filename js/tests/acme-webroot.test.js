@@ -49,7 +49,11 @@ describe('ACME webroot — generated HTTP redirect block', () => {
   });
 
   it('preserves the exact redirect target (no behavior change for normal requests)', () => {
-    expect(tpl).toContain('return 301 https://\\$host\\$request_uri;');
+    expect(tpl).toContain('return 301 https://$host$request_uri;');
+  });
+
+  it('does not escape the redirect target variables (no literal backslashes in the Location header)', () => {
+    expect(tpl).not.toMatch(/\\\$host|\\\$request_uri/);
   });
 
   it('matches the ACME challenge before the catch-all redirect', () => {
