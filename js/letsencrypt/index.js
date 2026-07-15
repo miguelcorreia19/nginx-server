@@ -173,16 +173,19 @@ module.exports = async () => {
     await command('rm -f /etc/nginx/conf.d/80/*-http-redirect.conf');
     await command('rm -f /etc/nginx/conf.d/443/*');
 
+    // The rm above also removes the build-time default vhost, so it must always
+    // be restored here — unconditionally, regardless of how many certificates
+    // are active — or unmatched SNI/Host traffic on 443 falls through to
+    // whichever real site nginx promotes to default_server instead of the
+    // intended 444.
+    await command('cp /home/scripts/nginx/nginx.vh.default.443.conf /etc/nginx/conf.d/443/nginx.vh.default.443.conf');
+
     if(Object.keys(final_certificates).length > 0)
       for (let id in certs) {
         if (!final_certificates[id]) continue;
         const { status, cert_domains } = final_certificates[id];
         await configFiles(id, status, certs[id].http_redirect, cert_domains);
       }
-
-    if(Object.keys(certs).length === 0) {
-      await command('cp /home/scripts/nginx/nginx.vh.default.443.conf /etc/nginx/conf.d/443/nginx.vh.default.443.conf');
-    }
 
     log("Let's Encrypt startup completed");
   } catch (err) {
