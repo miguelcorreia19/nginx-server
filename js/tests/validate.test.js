@@ -260,20 +260,6 @@ describe('validateConfigEntry', () => {
     })).not.toThrow();
   });
 
-  it('accepts an HTTP-only entry without names', () => {
-    expect(() => validateConfigEntry('mysite', { mode: 'http' })).not.toThrow();
-  });
-
-  // Wildcard syntax must survive global config validation. The mode is 'custom'
-  // because whether a mode can actually obtain a wildcard certificate is a
-  // capability question owned by the mode handlers, not by this validator.
-  it('accepts a wildcard domain in names', () => {
-    expect(() => validateConfigEntry('mysite', {
-      names: ['*.example.com', 'example.com'],
-      mode: 'custom',
-    })).not.toThrow();
-  });
-
   it('rejects an invalid cert ID', () => {
     expect(() => validateConfigEntry('my;site', { names: ['example.com'] })).toThrow(/invalid/i);
   });
@@ -291,21 +277,219 @@ describe('validateConfigEntry', () => {
     })).toThrow();
   });
 
+  // mode is 'custom' (rather than the implicit letsencrypt default) so this
+  // exercises validateCertFilename in isolation, without also tripping the
+  // separate "custom requires both filename fields" / "letsencrypt requires
+  // an email" rules covered by their own describe blocks below.
   it('rejects an invalid cert_file', () => {
     expect(() => validateConfigEntry('mysite', {
       names: ['example.com'],
+      mode: 'custom',
       cert_file: '../etc/passwd',
-    })).toThrow();
+      privkey_file: 'site.key',
+    })).toThrow(/cert_file/i);
   });
 
   it('rejects an invalid privkey_file', () => {
     expect(() => validateConfigEntry('mysite', {
       names: ['example.com'],
+      mode: 'custom',
+      cert_file: 'site.pem',
       privkey_file: 'key.pem; rm -rf /',
-    })).toThrow();
+    })).toThrow(/privkey_file/i);
   });
 
   it('rejects names: [] (empty array)', () => {
     expect(() => validateConfigEntry('mysite', { names: [] })).toThrow();
+  });
+});
+
+// ──────────────────────────────────────────────
+//  validateConfigEntry — names is mandatory for every mode
+// ──────────────────────────────────────────────
+describe('validateConfigEntry — names is required for every mode', () => {
+  // Extra fields each mode needs to satisfy its own unrelated requirements,
+  // so these cases isolate the "names" check specifically.
+  const extraByMode = {
+    http: {},
+    letsencrypt: { email: 'admin@example.com' },
+    'letsencrypt-staging': { email: 'admin@example.com' },
+    custom: { cert_file: 'site.pem', privkey_file: 'site.key' },
+  };
+  const modes = Object.keys(extraByMode);
+
+  test.each(modes)('rejects a missing "names" field for mode "%s"', (mode) => {
+    expect(() => validateConfigEntry('mysite', { mode, ...extraByMode[mode] })).toThrow(/names/i);
+  });
+
+  test.each(modes)('accepts a non-empty "names" array for mode "%s"', (mode) => {
+    expect(() => validateConfigEntry('mysite', {
+      mode, names: ['example.com'], ...extraByMode[mode],
+    })).not.toThrow();
+  });
+});
+
+// ──────────────────────────────────────────────
+//  validateConfigEntry — mode
+// ──────────────────────────────────────────────
+describe('validateConfigEntry — mode', () => {
+  it('defaults an omitted mode to letsencrypt', () => {
+    expect(() => validateConfigEntry('mysite', {
+      names: ['example.com'],
+      email: 'admin@example.com',
+    })).not.toThrow();
+  });
+
+  const explicitModes = [
+    ['http', {}],
+    ['letsencrypt', { email: 'admin@example.com' }],
+    ['letsencrypt-staging', { email: 'admin@example.com' }],
+    ['custom', { cert_file: 'site.pem', privkey_file: 'site.key' }],
+  ];
+
+  test.each(explicitModes)('accepts explicit mode "%s"', (mode, extra) => {
+    expect(() => validateConfigEntry('mysite', {
+      mode, names: ['example.com'], ...extra,
+    })).not.toThrow();
+  });
+
+  it('rejects an unsupported mode', () => {
+    expect(() => validateConfigEntry('mysite', {
+      mode: 'bogus',
+      names: ['example.com'],
+    })).toThrow(/mode "bogus" is not supported/i);
+  });
+});
+
+// ──────────────────────────────────────────────
+//  validateConfigEntry — wildcard vs. mode compatibility
+// ──────────────────────────────────────────────
+describe('validateConfigEntry — wildcard vs. mode compatibility', () => {
+  it('rejects a wildcard name with mode "letsencrypt"', () => {
+    expect(() => validateConfigEntry('mysite', {
+      mode: 'letsencrypt',
+      names: ['*.example.com'],
+      email: 'admin@example.com',
+    })).toThrow(/wildcard/i);
+  });
+
+  it('rejects a wildcard name with mode "letsencrypt-staging"', () => {
+    expect(() => validateConfigEntry('mysite', {
+      mode: 'letsencrypt-staging',
+      names: ['*.example.com'],
+      email: 'admin@example.com',
+    })).toThrow(/wildcard/i);
+  });
+
+  it('rejects a mix of wildcard and ordinary names under mode "letsencrypt"', () => {
+    expect(() => validateConfigEntry('mysite', {
+      mode: 'letsencrypt',
+      names: ['example.com', '*.example.com'],
+      email: 'admin@example.com',
+    })).toThrow(/wildcard/i);
+  });
+
+  it('accepts a wildcard name with mode "custom"', () => {
+    expect(() => validateConfigEntry('mysite', {
+      mode: 'custom',
+      names: ['*.example.com'],
+      cert_file: 'site.pem',
+      privkey_file: 'site.key',
+    })).not.toThrow();
+  });
+
+  it('accepts a wildcard name with mode "http"', () => {
+    expect(() => validateConfigEntry('mysite', {
+      mode: 'http',
+      names: ['*.example.com'],
+    })).not.toThrow();
+  });
+
+  it('accepts ordinary (non-wildcard) names with mode "letsencrypt"', () => {
+    expect(() => validateConfigEntry('mysite', {
+      mode: 'letsencrypt',
+      names: ['example.com', 'www.example.com'],
+      email: 'admin@example.com',
+    })).not.toThrow();
+  });
+});
+
+// ──────────────────────────────────────────────
+//  validateConfigEntry — custom requires both certificate filename fields
+// ──────────────────────────────────────────────
+describe('validateConfigEntry — custom requires both certificate filename fields', () => {
+  it('rejects mode "custom" without cert_file', () => {
+    expect(() => validateConfigEntry('mysite', {
+      mode: 'custom',
+      names: ['example.com'],
+      privkey_file: 'site.key',
+    })).toThrow(/cert_file/i);
+  });
+
+  it('rejects mode "custom" without privkey_file', () => {
+    expect(() => validateConfigEntry('mysite', {
+      mode: 'custom',
+      names: ['example.com'],
+      cert_file: 'site.pem',
+    })).toThrow(/privkey_file/i);
+  });
+
+  it('rejects mode "custom" with neither field', () => {
+    expect(() => validateConfigEntry('mysite', {
+      mode: 'custom',
+      names: ['example.com'],
+    })).toThrow();
+  });
+
+  it('accepts mode "custom" with valid filenames for both fields', () => {
+    expect(() => validateConfigEntry('mysite', {
+      mode: 'custom',
+      names: ['example.com'],
+      cert_file: 'site.pem',
+      privkey_file: 'site.key',
+    })).not.toThrow();
+  });
+});
+
+// ──────────────────────────────────────────────
+//  validateConfigEntry — Let's Encrypt requires a usable email source
+// ──────────────────────────────────────────────
+describe("validateConfigEntry — Let's Encrypt requires a usable email source", () => {
+  const leModes = ['letsencrypt', 'letsencrypt-staging'];
+
+  test.each(leModes)('accepts mode "%s" with only a per-site email', (mode) => {
+    expect(() => validateConfigEntry('mysite', {
+      mode, names: ['example.com'], email: 'admin@example.com',
+    })).not.toThrow();
+  });
+
+  test.each(leModes)('accepts mode "%s" with only a CERTBOT_EMAIL fallback', (mode) => {
+    expect(() => validateConfigEntry('mysite', {
+      mode, names: ['example.com'],
+    }, 'fallback@example.com')).not.toThrow();
+  });
+
+  test.each(leModes)('rejects mode "%s" when neither a per-site email nor CERTBOT_EMAIL is available', (mode) => {
+    expect(() => validateConfigEntry('mysite', {
+      mode, names: ['example.com'],
+    })).toThrow(/requires an email/i);
+  });
+
+  it('rejects an invalid CERTBOT_EMAIL fallback value (reuses the existing email validator)', () => {
+    expect(() => validateConfigEntry('mysite', {
+      mode: 'letsencrypt', names: ['example.com'],
+    }, '$(whoami)@example.com')).toThrow(/invalid/i);
+  });
+
+  it('does not require an email for mode "http"', () => {
+    expect(() => validateConfigEntry('mysite', {
+      mode: 'http', names: ['example.com'],
+    })).not.toThrow();
+  });
+
+  it('does not require an email for mode "custom"', () => {
+    expect(() => validateConfigEntry('mysite', {
+      mode: 'custom', names: ['example.com'], cert_file: 'site.pem', privkey_file: 'site.key',
+    })).not.toThrow();
   });
 });

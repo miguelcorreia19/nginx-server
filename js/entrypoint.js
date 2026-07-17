@@ -35,7 +35,7 @@ const start = async () => {
       }
       for (const [id, entry] of Object.entries(_config)) {
         try {
-          validateConfigEntry(id, entry);
+          validateConfigEntry(id, entry, process.env.CERTBOT_EMAIL);
         } catch (err) {
           fatal(`config.json entry "${id}" failed validation: ${err.message}`);
           process.exit(1);

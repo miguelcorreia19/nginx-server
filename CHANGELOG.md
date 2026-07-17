@@ -101,6 +101,22 @@ Migration characteristics:
 
 ---
 
+#### Stricter startup configuration validation
+
+`config.json` is now validated more strictly before any certificate or nginx configuration work begins. An entry that fails these checks is a fatal startup error naming the affected site — it is never silently skipped.
+
+New rules:
+
+- `names` is now required for every entry, in every mode — including `http`, which previously allowed it to be omitted. **This may reject existing HTTP-mode configurations that omit `names`; add it to continue.**
+- An unsupported `mode` value is now a fatal error (an omitted `mode` still defaults to `letsencrypt`).
+- A wildcard name combined with `letsencrypt`/`letsencrypt-staging` is now a fatal validation error, raised before any certificate work begins — replacing the previous behavior of warning and silently skipping the site. Wildcards remain valid for `custom` and `http`.
+- `mode: "custom"` now requires both `cert_file` and `privkey_file` to be set.
+- `mode: "letsencrypt"`/`"letsencrypt-staging"` now requires a usable email — the entry's `email`, or the `CERTBOT_EMAIL` environment variable — validated at startup instead of failing later at certificate issuance.
+
+This validates configuration shape only; it does not yet check whether referenced files (site configs, custom certificate files) exist on disk.
+
+---
+
 ### Internal
 
 - Simplified Let's Encrypt renewal implementation.

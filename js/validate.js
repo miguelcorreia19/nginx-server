@@ -147,22 +147,89 @@ const validateIgnoreIp = (value) => {
   }
 };
 
-// Validates all security-relevant fields of a single config.json entry.
+// Modes supported by a config.json entry. An omitted/falsy `mode` defaults to
+// 'letsencrypt' (mirrors the runtime default in js/letsencrypt/index.js).
+const SUPPORTED_MODES = ['http', 'letsencrypt', 'letsencrypt-staging', 'custom'];
+
+const isEmpty = (value) => value === undefined || value === null || value === '';
+
+// Validates all security-relevant fields of a single config.json entry, plus
+// the deterministic configuration-contract rules that can be established
+// before any mode handler runs: names is mandatory, mode must be one of the
+// supported values, wildcard names are incompatible with the built-in
+// Let's Encrypt modes, "custom" requires both certificate filename fields,
+// and the Let's Encrypt modes require a usable email source. External or
+// transient failures (a real Certbot/renewal/reload failure) are not this
+// function's concern and keep their existing, feature-specific handling.
 // Called at startup for every entry before any mode handler runs.
-const validateConfigEntry = (id, entry) => {
+//
+// certbotEmailFallback is the value of CERTBOT_EMAIL — the documented
+// fallback email source for Let's Encrypt modes — passed in explicitly
+// rather than read from process.env so this module stays free of direct
+// environment access, matching its existing style.
+const validateConfigEntry = (id, entry, certbotEmailFallback) => {
   validateCertId(id);
 
-  if (entry.names !== undefined) {
-    if (!Array.isArray(entry.names) || entry.names.length === 0) {
-      throw new Error(`Entry "${id}": names must be a non-empty array`);
-    }
-    for (const domain of entry.names) {
-      validateDomain(domain);
+  // names is the canonical identity of every configured site — required for
+  // all modes, including http, which does not currently consume it directly.
+  if (!Array.isArray(entry.names) || entry.names.length === 0) {
+    throw new Error(`Entry "${id}": names must be a non-empty array`);
+  }
+  for (const domain of entry.names) {
+    validateDomain(domain);
+  }
+
+  const mode = entry.mode || 'letsencrypt';
+  if (!SUPPORTED_MODES.includes(mode)) {
+    throw new Error(
+      `Entry "${id}": mode "${entry.mode}" is not supported (must be one of: ${SUPPORTED_MODES.join(', ')})`
+    );
+  }
+
+  // Wildcard names require a DNS-01 challenge. This image's built-in Let's
+  // Encrypt flow only implements http-01 (--standalone at issuance, webroot
+  // at renewal) and does not support DNS-01, so a wildcard name is
+  // incompatible with mode "letsencrypt"/"letsencrypt-staging". Wildcards
+  // remain valid for "custom" (bring your own certificate) and "http" (no
+  // certificate is issued).
+  if (mode === 'letsencrypt' || mode === 'letsencrypt-staging') {
+    const wildcards = entry.names.filter(isWildcardDomain);
+    if (wildcards.length > 0) {
+      throw new Error(
+        `Entry "${id}": wildcard name(s) ${wildcards.join(', ')} are not supported by mode "${mode}" — ` +
+        `wildcard certificates require a DNS-01 challenge, which this image's built-in Let's Encrypt flow ` +
+        `does not implement. Use mode "custom" with your own wildcard certificate, or list each name explicitly.`
+      );
     }
   }
 
-  if (entry.email !== undefined && entry.email !== null && entry.email !== '') {
+  if (!isEmpty(entry.email)) {
     validateEmail(entry.email);
+  }
+
+  // Issuance always passes "--email <value>" to certbot; with neither a
+  // per-site email nor CERTBOT_EMAIL, that argument becomes the literal
+  // string "undefined" (Node stringifies a missing execFile array element
+  // rather than throwing), so this is a deterministic, pre-runtime-detectable
+  // misconfiguration rather than an external Certbot failure.
+  if (mode === 'letsencrypt' || mode === 'letsencrypt-staging') {
+    if (isEmpty(entry.email)) {
+      if (isEmpty(certbotEmailFallback)) {
+        throw new Error(
+          `Entry "${id}": mode "${mode}" requires an email — set "email" on this entry or the CERTBOT_EMAIL environment variable`
+        );
+      }
+      validateEmail(certbotEmailFallback);
+    }
+  }
+
+  if (mode === 'custom') {
+    if (entry.cert_file === undefined) {
+      throw new Error(`Entry "${id}": mode "custom" requires "cert_file"`);
+    }
+    if (entry.privkey_file === undefined) {
+      throw new Error(`Entry "${id}": mode "custom" requires "privkey_file"`);
+    }
   }
 
   if (entry.cert_file !== undefined) {

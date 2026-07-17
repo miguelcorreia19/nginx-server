@@ -21,7 +21,21 @@ The service reads a JSON file mounted at `/home/config.json`. Each top-level key
 
 See [SSL modes](ssl-modes.md) for what each `mode` does and when to use it.
 
-**Note**: a `names` entry may use a wildcard as the complete left-most label (e.g. `*.example.com`). Wildcards are supported by the `http` and `custom` modes. The `letsencrypt` and `letsencrypt-staging` modes do **not** support them — wildcard certificates require a DNS-01 challenge, which this image does not implement — so a wildcard entry in those modes is skipped with a warning at startup and no certificate is requested for it.
+**Note**: a `names` entry may use a wildcard as the complete left-most label (e.g. `*.example.com`). Wildcards are supported by the `http` and `custom` modes. The `letsencrypt` and `letsencrypt-staging` modes do **not** support them — wildcard certificates require a DNS-01 challenge, which this image's built-in Let's Encrypt flow does not implement — so a wildcard name combined with either mode is a **fatal configuration error at startup**: the container exits before any certificate is requested. Use `mode: "custom"` with your own wildcard certificate (e.g. obtained externally via DNS-01) instead.
+
+### Startup validation
+
+`config.json` is validated before any certificate or nginx configuration work begins. An entry that is missing a required field, uses an unsupported `mode`, or is otherwise impossible to satisfy is a **fatal startup error** naming the affected site and the problem — it is never silently skipped or ignored. See [Troubleshooting](troubleshooting.md#container-exits-immediately-at-startup).
+
+Rules enforced at startup:
+
+- `names` must be present and non-empty for **every** entry, in every mode — including `http`, which does not otherwise consume it directly.
+- `mode`, if set, must be one of `http`, `letsencrypt`, `letsencrypt-staging`, `custom`; any other value is a fatal error. An omitted `mode` still defaults to `letsencrypt`.
+- A wildcard name combined with `letsencrypt`/`letsencrypt-staging` is fatal (see the note above).
+- `mode: "custom"` requires both `cert_file` and `privkey_file`.
+- `mode: "letsencrypt"`/`"letsencrypt-staging"` requires a usable email — the entry's `email`, or the `CERTBOT_EMAIL` environment variable.
+
+This validation checks the *shape* of `config.json` only. It does not yet check whether referenced files — the site's nginx config, or a `custom` entry's certificate files — actually exist on disk; that is a separate, planned preflight step.
 
 ### Full `config.json` example
 

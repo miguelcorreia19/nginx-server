@@ -22,7 +22,7 @@ Set `"mode": "letsencrypt"` (production) or `"mode": "letsencrypt-staging"` on a
 
 - The domain(s) in `names` must resolve **publicly** to the host running the container.
 - **Port 80 must be reachable from the internet** at issuance and at renewal time — Let's Encrypt's http-01 ACME challenge uses it.
-- A valid contact email — from the entry's `email` field, falling back to the `CERTBOT_EMAIL` environment variable.
+- A valid contact email — from the entry's `email` field, falling back to the `CERTBOT_EMAIL` environment variable. This is validated at startup: neither source being available is a fatal configuration error, raised before any certificate work begins.
 
 ## Staging workflow
 
