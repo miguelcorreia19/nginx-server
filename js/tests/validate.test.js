@@ -359,6 +359,24 @@ describe('validateConfigEntry — mode', () => {
       names: ['example.com'],
     })).toThrow(/mode "bogus" is not supported/i);
   });
+
+  // An explicitly supplied falsy/structural value must not be treated the
+  // same as an omitted mode — only `undefined` defaults to letsencrypt.
+  const explicitInvalidModes = [
+    ['empty string', ''],
+    ['null', null],
+    ['false', false],
+    ['zero', 0],
+    ['array', ['letsencrypt']],
+    ['object', { value: 'letsencrypt' }],
+  ];
+
+  test.each(explicitInvalidModes)('an explicitly supplied %s mode is rejected (not treated as absent)', (_label, mode) => {
+    expect(() => validateConfigEntry('mysite', {
+      mode,
+      names: ['example.com'],
+    })).toThrow();
+  });
 });
 
 // ──────────────────────────────────────────────

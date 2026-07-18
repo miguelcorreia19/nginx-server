@@ -147,8 +147,10 @@ const validateIgnoreIp = (value) => {
   }
 };
 
-// Modes supported by a config.json entry. An omitted/falsy `mode` defaults to
-// 'letsencrypt' (mirrors the runtime default in js/letsencrypt/index.js).
+// Modes supported by a config.json entry. Only an *omitted* `mode` defaults
+// to 'letsencrypt' (mirrors the runtime default in js/letsencrypt/index.js).
+// An explicitly supplied falsy value (e.g. "", null, false, 0) is not treated
+// as absent — it must still be one of the values below, so it is rejected.
 const SUPPORTED_MODES = ['http', 'letsencrypt', 'letsencrypt-staging', 'custom'];
 
 const isEmpty = (value) => value === undefined || value === null || value === '';
@@ -179,7 +181,7 @@ const validateConfigEntry = (id, entry, certbotEmailFallback) => {
     validateDomain(domain);
   }
 
-  const mode = entry.mode || 'letsencrypt';
+  const mode = entry.mode === undefined ? 'letsencrypt' : entry.mode;
   if (!SUPPORTED_MODES.includes(mode)) {
     throw new Error(
       `Entry "${id}": mode "${entry.mode}" is not supported (must be one of: ${SUPPORTED_MODES.join(', ')})`

@@ -14,7 +14,10 @@ module.exports = async () => {
   const certs = { ..._certs };
 
   for (let id in certs) {
-    if (!certs[id].mode) {
+    // Only an *omitted* mode defaults to letsencrypt, matching validateConfigEntry
+    // in ../validate.js — central validation has already rejected every other
+    // falsy value (e.g. "", null, false, 0) as fatal, so this can never see one.
+    if (certs[id].mode === undefined) {
       certs[id].mode = 'letsencrypt';
     }
     if (certs[id].mode !== 'letsencrypt-staging' && certs[id].mode !== 'letsencrypt') {
