@@ -102,6 +102,12 @@ Fix: set `ENVIRONMENT` to `production`, `prod`, `development`, or `dev`.
 ```
 Fix: ensure `config.json` is mounted at `/home/config.json`.
 
+**Missing required site config or custom certificate file** (production only):
+```
+2026-06-08 11:27:52 [entrypoint] Fatal: config.json entry "main" failed startup preflight: Entry "main": required site config /home/nginx/sites/main.conf does not exist
+```
+Fix: every `config.json` entry needs a matching `/home/nginx/sites/<id>.conf` in the mounted `sites/` directory, and a `custom` entry's `cert_file`/`privkey_file` must exist under `CUSTOM_CERTS_PATH`. This check runs for every entry before any certificate work begins, so one missing file aborts startup before any other site is touched. Not run in development mode — see [Development mode](ssl-modes.md#development-mode-self-signed).
+
 **Invalid nginx configuration**:
 ```
 2026-06-08 11:27:52 [entrypoint] Fatal: generated nginx configuration is invalid (nginx -t failed):

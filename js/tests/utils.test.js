@@ -1,12 +1,12 @@
 // Mocks must be declared before any require of the module under test.
-jest.mock('child_process', () => ({ exec: jest.fn() }));
+jest.mock('child_process', () => ({ exec: jest.fn(), execFile: jest.fn() }));
 jest.mock('fs', () => ({ existsSync: jest.fn() }));
 
-const { exec } = require('child_process');
+const { exec, execFile } = require('child_process');
 const { existsSync } = require('fs');
 
 // Fresh module reference after mocks are wired.
-const { mapCustomNginxConf } = require('../utils.js');
+const { mapCustomNginxConf, configFiles } = require('../utils.js');
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -77,5 +77,56 @@ describe('mapCustomNginxConf — async sequencing', () => {
       'ln -sf /custom/configs/nginx.conf /etc/nginx/nginx.conf',
       expect.any(Function)
     );
+  });
+});
+
+// configFiles() is shared by the letsencrypt, custom, and dev handlers. A
+// missing site config used to be a silent, non-fatal skip; after the
+// filesystem-preflight step (js/preflight.js) that already guarantees the
+// file exists before any production handler runs, this is now a defensive
+// check only — and it must be fatal, not a silent skip, if it ever fires
+// (e.g. the file disappearing between preflight and this call).
+//
+// http_redirect is passed as `false` throughout so these cases never reach
+// httpRedirect()'s own template read/write — that behavior is covered by
+// acme-webroot.test.js / templates.test.js.
+describe('configFiles — site linking is fatal on a missing file, unlike an invalid certificate', () => {
+  beforeEach(() => {
+    execFile.mockImplementation((bin, args, opts, cb) => cb(null, '', ''));
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('links the site config when the certificate is valid and the file exists', async () => {
+    existsSync.mockReturnValue(true);
+
+    await configFiles('main', 'valid', false, ['example.com']);
+
+    expect(execFile).toHaveBeenCalledWith(
+      'ln',
+      ['-sf', '/home/nginx/sites/main.conf', '/etc/nginx/conf.d/443/main.conf'],
+      expect.any(Object),
+      expect.any(Function)
+    );
+  });
+
+  it('throws instead of silently skipping when the site config is missing', async () => {
+    existsSync.mockReturnValue(false);
+
+    await expect(configFiles('main', 'valid', false, ['example.com']))
+      .rejects.toThrow(/missing site config \/home\/nginx\/sites\/main\.conf/);
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  it('still skips (non-fatal) an invalid certificate — an external Certbot outcome, unrelated to local files', async () => {
+    await expect(configFiles('main', 'invalid', false, ['example.com'])).resolves.toBeUndefined();
+
+    expect(execFile).not.toHaveBeenCalled();
+    // The site file's presence is irrelevant to an invalid-certificate skip
+    // — it must not even be checked for this (external) failure class.
+    expect(existsSync).not.toHaveBeenCalled();
   });
 });

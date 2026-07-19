@@ -120,14 +120,28 @@ const httpRedirect = async (id, names) => {
 }
 
 exports.configFiles = async (id, status, http_redirect, cert_domains) => {
-  if (status !== 'invalid' && fs.existsSync(`/home/nginx/sites/${id}.conf`)) {
-    await commandSafe('ln', ['-sf', `/home/nginx/sites/${id}.conf`, `/etc/nginx/conf.d/443/${id}.conf`]);
-    
-    // create redirect files from http to https
-    if (http_redirect !== false) {
-      await httpRedirect(id, cert_domains.join(' '));
-    }
-  } else {
-    log(`Skipping ${id}: certificate invalid or missing site config /home/nginx/sites/${id}.conf`);
+  // An invalid certificate is an external/transient Certbot outcome (e.g. a
+  // failed issuance or renewal), not a local configuration problem — this
+  // stays a non-fatal skip, unchanged from before.
+  if (status === 'invalid') {
+    log(`Skipping ${id}: certificate invalid`);
+    return;
+  }
+
+  // js/preflight.js already guarantees this site config exists before any
+  // production handler runs (dev mode guarantees it itself — see
+  // js/dev/index.js). This is a defensive check only, for the file
+  // disappearing between preflight and this call: startup configuration is
+  // no longer satisfied, so it must fail rather than silently skip the site.
+  const sitePath = `/home/nginx/sites/${id}.conf`;
+  if (!fs.existsSync(sitePath)) {
+    throw new Error(`Site "${id}": missing site config ${sitePath} (present at preflight, now missing)`);
+  }
+
+  await commandSafe('ln', ['-sf', sitePath, `/etc/nginx/conf.d/443/${id}.conf`]);
+
+  // create redirect files from http to https
+  if (http_redirect !== false) {
+    await httpRedirect(id, cert_domains.join(' '));
   }
 }

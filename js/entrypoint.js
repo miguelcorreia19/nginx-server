@@ -11,6 +11,7 @@ const fail2ban = require('./fail2ban');
 const migrateRenewalConfigs = require('./letsencrypt/migrate_renewal');
 const { command, mapCustomNginxConf, validateNginxConfig } = require("./utils.js");
 const { validateConfigEntry } = require("./validate.js");
+const { preflightEntry } = require("./preflight.js");
 
 // Base nginx config files
 const NGINX_CONF_FILES = [
@@ -56,12 +57,29 @@ const start = async () => {
         await dev();
         break;
       case 'prod':
-      case 'production':
+      case 'production': {
+        // Filesystem preflight for every production entry — after schema
+        // validation above, before any production handler (letsencrypt/
+        // custom/http) mutates certificate or nginx state (js/preflight.js).
+        // Development mode has its own dev.conf lifecycle (js/dev/index.js)
+        // and is intentionally not preflighted here.
+        const _config = require("./config.json");
+        for (const [id, entry] of Object.entries(_config)) {
+          try {
+            preflightEntry(id, entry);
+          } catch (err) {
+            fatal(`config.json entry "${id}" failed startup preflight: ${err.message}`);
+            process.exit(1);
+            return;
+          }
+        }
+
         await letsencrypt();
         await custom();
         await http();
 
         break;
+      }
       default:
         fatal(`invalid ENVIRONMENT value "${process.env.ENVIRONMENT}" — must be 'development'/'dev' or 'production'/'prod'`);
         process.exit(1);

@@ -113,7 +113,25 @@ New rules:
 - `mode: "custom"` now requires both `cert_file` and `privkey_file` to be set.
 - `mode: "letsencrypt"`/`"letsencrypt-staging"` now requires a usable email — the entry's `email`, or the `CERTBOT_EMAIL` environment variable — validated at startup instead of failing later at certificate issuance.
 
-This validates configuration shape only; it does not yet check whether referenced files (site configs, custom certificate files) exist on disk.
+This validates configuration shape only. See the next entry for the filesystem checks that were added on top of it.
+
+---
+
+#### Filesystem preflight for production sites
+
+In production (`ENVIRONMENT=production`/`prod`), every config.json entry's local files are now checked *before* any certificate or nginx handler runs, closing the gap left by the previous entry: a missing required file is now a fatal startup error, never a silent skip.
+
+New rules, enforced after schema validation and before any handler mutates certificate or nginx state:
+
+- Every entry now requires its site config, `/home/nginx/sites/<id>.conf`, to exist. Missing it is fatal, naming the site and the expected path.
+- A `custom` entry's `cert_file` and `privkey_file` must exist under `CUSTOM_CERTS_PATH` (default `/home/custom-certificates`). Missing either is fatal.
+- All entries are checked before any handler runs, so one site with a missing file aborts startup before any other site's certificate/nginx state is touched.
+
+This replaces the previous warn-and-skip behavior for a `custom` entry with a missing certificate/key file. It does not change:
+
+- the live-symlink behavior for HTTP-mode site files (added previously);
+- how a Certbot issuance/renewal failure is handled (unchanged — still governed by the existing self-signed fallback, not this preflight);
+- development mode, which has its own `dev.conf` lifecycle and is not covered by this preflight.
 
 ---
 

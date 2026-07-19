@@ -28,8 +28,12 @@ module.exports = async () => {
       // and treats a missing site file as a non-fatal skip, which would
       // silently change this mode's existing fatal-on-missing behavior.
       // `ln -sf` succeeds even when the source is missing (it creates a
-      // dangling symlink), unlike the `cp` it replaces, so the existence
-      // check below is required to keep a missing site file fatal here.
+      // dangling symlink), unlike the `cp` it replaces, so this existence
+      // check is required to keep a missing site file fatal here. js/preflight.js
+      // now also guarantees this file exists before any production handler
+      // runs, so in practice this is a defensive check for the file
+      // disappearing between preflight and this call — already fatal, so no
+      // behavior change was needed to satisfy that.
       const sitePath = `/home/nginx/sites/${id}.conf`;
       if (!fs.existsSync(sitePath)) {
         throw new Error(`HTTP site "${id}": missing site config ${sitePath}`);
