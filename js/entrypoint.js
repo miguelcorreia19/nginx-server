@@ -11,7 +11,7 @@ const fail2ban = require('./fail2ban');
 const migrateRenewalConfigs = require('./letsencrypt/migrate_renewal');
 const { command, mapCustomNginxConf, validateNginxConfig } = require("./utils.js");
 const { validateConfigEntry } = require("./validate.js");
-const { preflightEntry } = require("./preflight.js");
+const { preflightEntry, preflightDev } = require("./preflight.js");
 
 // Base nginx config files
 const NGINX_CONF_FILES = [
@@ -53,16 +53,29 @@ const start = async () => {
 
     switch (process.env.ENVIRONMENT) {
       case 'dev':
-      case 'development':
+      case 'development': {
+        // Filesystem preflight for development mode — before js/dev/index.js
+        // mutates certificate or nginx state (js/preflight.js). Distinct from
+        // production's per-config.json-entry preflight below: dev.conf is a
+        // single, fixed, whole-container requirement, not a config.json entry.
+        try {
+          preflightDev();
+        } catch (err) {
+          fatal(`development startup preflight failed: ${err.message}`);
+          process.exit(1);
+          return;
+        }
+
         await dev();
         break;
+      }
       case 'prod':
       case 'production': {
         // Filesystem preflight for every production entry — after schema
         // validation above, before any production handler (letsencrypt/
         // custom/http) mutates certificate or nginx state (js/preflight.js).
-        // Development mode has its own dev.conf lifecycle (js/dev/index.js)
-        // and is intentionally not preflighted here.
+        // Development mode has its own preflight above (preflightDev) and
+        // is not part of this per-config.json-entry loop.
         const _config = require("./config.json");
         for (const [id, entry] of Object.entries(_config)) {
           try {

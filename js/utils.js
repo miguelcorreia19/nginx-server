@@ -128,11 +128,13 @@ exports.configFiles = async (id, status, http_redirect, cert_domains) => {
     return;
   }
 
-  // js/preflight.js already guarantees this site config exists before any
-  // production handler runs (dev mode guarantees it itself — see
-  // js/dev/index.js). This is a defensive check only, for the file
-  // disappearing between preflight and this call: startup configuration is
-  // no longer satisfied, so it must fail rather than silently skip the site.
+  // js/preflight.js already guarantees this site config exists before the
+  // calling handler runs — preflightEntry() for production entries,
+  // preflightDev() for development's dev.conf — since js/entrypoint.js runs
+  // the relevant one before dispatching to any handler. This is a defensive
+  // check only, for the file disappearing between preflight and this call:
+  // startup configuration is no longer satisfied, so it must fail rather
+  // than silently skip the site.
   const sitePath = `/home/nginx/sites/${id}.conf`;
   if (!fs.existsSync(sitePath)) {
     throw new Error(`Site "${id}": missing site config ${sitePath} (present at preflight, now missing)`);

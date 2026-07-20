@@ -134,7 +134,7 @@ services:
 
 Generates a self-signed certificate locally. No CA contact, no public domain required. Intended for local development.
 
-**Requires** a `dev.conf` site file that includes the development SSL config:
+**Requires** a `dev.conf` site file that includes the development SSL config. This is checked at startup, before any certificate or nginx work begins — a missing `dev.conf` is a **fatal startup error**, not an optional or no-op state:
 
 ```nginx
 # nginx/sites/dev.conf

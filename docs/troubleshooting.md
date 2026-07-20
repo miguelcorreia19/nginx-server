@@ -11,7 +11,7 @@ The container includes a built-in Docker healthcheck that runs every 30 seconds:
 1. Reads `/var/run/nginx.pid` and verifies the nginx master process is alive (`kill -0 <pid>`).
 2. Runs `nginx -t` to confirm the on-disk configuration is valid.
 
-Both checks must pass for the container to report `healthy`. The check does not send any HTTP requests, so it works correctly in all modes (including development mode before a `dev.conf` is mounted).
+Both checks must pass for the container to report `healthy`. The check does not send any HTTP requests, so it works correctly in all modes.
 
 ```bash
 # Check container health status
@@ -106,7 +106,13 @@ Fix: ensure `config.json` is mounted at `/home/config.json`.
 ```
 2026-06-08 11:27:52 [entrypoint] Fatal: config.json entry "main" failed startup preflight: Entry "main": required site config /home/nginx/sites/main.conf does not exist
 ```
-Fix: every `config.json` entry needs a matching `/home/nginx/sites/<id>.conf` in the mounted `sites/` directory, and a `custom` entry's `cert_file`/`privkey_file` must exist under `CUSTOM_CERTS_PATH`. This check runs for every entry before any certificate work begins, so one missing file aborts startup before any other site is touched. Not run in development mode — see [Development mode](ssl-modes.md#development-mode-self-signed).
+Fix: every `config.json` entry needs a matching `/home/nginx/sites/<id>.conf` in the mounted `sites/` directory, and a `custom` entry's `cert_file`/`privkey_file` must exist under `CUSTOM_CERTS_PATH`. This check runs for every entry before any certificate work begins, so one missing file aborts startup before any other site is touched. Not run in development mode — see the next entry for that.
+
+**Missing `dev.conf`** (development mode only):
+```
+2026-06-08 11:27:52 [entrypoint] Fatal: development startup preflight failed: Development mode: required site config /home/nginx/sites/dev.conf does not exist
+```
+Fix: mount a `dev.conf` at `/home/nginx/sites/dev.conf` — see [Development mode](ssl-modes.md#development-mode-self-signed). This is checked before the development handler runs anything, so nginx is never started with an incomplete development setup.
 
 **Invalid nginx configuration**:
 ```

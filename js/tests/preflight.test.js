@@ -1,15 +1,21 @@
-// Filesystem preflight for production config.json entries (js/preflight.js).
+// Filesystem preflight (js/preflight.js): preflightEntry() for production
+// config.json entries, preflightDev() for development mode's dev.conf.
 //
-// Runs after schema validation (js/validate.js) and before any production
-// mode handler mutates certificate or nginx state. Distinct responsibility
-// from validate.js: this checks that the *local artifacts* a
-// schema-validated entry points to — the mounted site config, and for
-// "custom" mode the certificate files — actually exist on disk.
+// Runs after schema validation (js/validate.js) and before any mode handler
+// mutates certificate or nginx state. Distinct responsibility from
+// validate.js: this checks that the *local artifacts* a schema-validated
+// entry points to — the mounted site config(s), and for "custom" mode the
+// certificate files — actually exist on disk.
+//
+// requireFile()'s own file/directory/symlink semantics are exhaustively
+// exercised via preflightEntry() below, so the preflightDev() tests near the
+// bottom of this file stay focused on its own path and error message rather
+// than re-covering that ground.
 
 jest.mock('fs', () => ({ existsSync: jest.fn(), statSync: jest.fn() }));
 
 const fs = require('fs');
-const { preflightEntry, customCertsPath } = require('../preflight.js');
+const { preflightEntry, preflightDev, customCertsPath } = require('../preflight.js');
 
 const FILE_STAT = { isFile: () => true };
 const DIR_STAT = { isFile: () => false };
@@ -123,5 +129,31 @@ describe('preflightEntry — custom certificate files', () => {
 
     expect(() => preflightEntry('site-a', { mode: 'http', names: ['a.example.com'] })).not.toThrow();
     expect(fs.existsSync).not.toHaveBeenCalledWith(expect.stringContaining('/mnt/certs'));
+  });
+});
+
+// ──────────────────────────────────────────────
+//  preflightDev — development mode's dev.conf (F5)
+// ──────────────────────────────────────────────
+describe('preflightDev — development site config', () => {
+  it('passes when /home/nginx/sites/dev.conf exists', () => {
+    fs.existsSync.mockImplementation((p) => p === '/home/nginx/sites/dev.conf');
+    fs.statSync.mockReturnValue(FILE_STAT);
+
+    expect(() => preflightDev()).not.toThrow();
+  });
+
+  it('throws, naming development mode and the exact path, when dev.conf is missing', () => {
+    fs.existsSync.mockReturnValue(false);
+
+    expect(() => preflightDev())
+      .toThrow('Development mode: required site config /home/nginx/sites/dev.conf does not exist');
+  });
+
+  it('rejects a directory found at the dev.conf path', () => {
+    fs.existsSync.mockReturnValue(true);
+    fs.statSync.mockReturnValue(DIR_STAT);
+
+    expect(() => preflightDev()).toThrow(/exists but is not a file/);
   });
 });

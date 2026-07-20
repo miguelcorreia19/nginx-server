@@ -1,14 +1,20 @@
-// Filesystem preflight for production config.json entries (Step 2 of the
-// fail-fast startup contract). Runs in js/entrypoint.js after every entry has
-// already passed schema validation (js/validate.js) and before any
-// production mode handler (letsencrypt/custom/http) begins mutating
-// certificate or nginx state.
+// Filesystem preflight for startup (the fail-fast startup contract). Runs in
+// js/entrypoint.js after schema validation (js/validate.js) and before any
+// mode handler begins mutating certificate or nginx state:
+//   - preflightEntry() — one call per config.json entry, production only
+//     (letsencrypt/custom/http), after every entry has already passed
+//     validateConfigEntry.
+//   - preflightDev() — one call, development only, before js/dev/index.js
+//     runs. dev.conf is a single, fixed, whole-container requirement, not a
+//     config.json entry, so it doesn't fit preflightEntry()'s per-entry
+//     mode/cert-file model — kept as its own small function instead of
+//     forcing it through that shape.
 //
 // Kept separate from js/validate.js on purpose: that module validates
 // deterministic configuration *values* (fields, hostname syntax, supported
 // modes, cross-field rules) against parsed JSON alone and has no filesystem
 // or environment-path concerns. This module checks that the *local
-// artifacts* those values point to — the mounted site config, and for
+// artifacts* those values point to — the mounted site config(s), and for
 // "custom" mode the certificate files — actually exist on disk. Different
 // inputs (parsed JSON vs. the real filesystem), different failure class (a
 // typo in config.json vs. a missing bind mount), so kept as separate,
@@ -56,4 +62,13 @@ const preflightEntry = (id, entry) => {
   }
 };
 
-module.exports = { preflightEntry, customCertsPath };
+const DEV_SITE_PATH = "/home/nginx/sites/dev.conf";
+
+// Checks development mode's local filesystem prerequisite: dev.conf must
+// exist before js/dev/index.js runs. Throws a single-line Error naming
+// development mode and the missing path.
+const preflightDev = () => {
+  requireFile(DEV_SITE_PATH, 'Development mode: required site config');
+};
+
+module.exports = { preflightEntry, preflightDev, customCertsPath };

@@ -131,7 +131,23 @@ This replaces the previous warn-and-skip behavior for a `custom` entry with a mi
 
 - the live-symlink behavior for HTTP-mode site files (added previously);
 - how a Certbot issuance/renewal failure is handled (unchanged — still governed by the existing self-signed fallback, not this preflight);
-- development mode, which has its own `dev.conf` lifecycle and is not covered by this preflight.
+- development mode, which has its own preflight — see the next entry.
+
+---
+
+#### Development mode now requires `dev.conf` at startup
+
+Previously, a missing `/home/nginx/sites/dev.conf` in development mode (`ENVIRONMENT=development`/`dev`) logged a message and exited **successfully** (`exit 0`), which let `entrypoint.sh` continue on to start nginx anyway — with the custom nginx config override mapping, `nginx -t` validation, Fail2ban setup, and renewal-config migration all silently skipped as a side effect of that early exit.
+
+A missing `dev.conf` is now a **fatal startup error**, checked before the development handler does anything, exactly like production's per-entry preflight:
+
+```
+Fatal: development startup preflight failed: Development mode: required site config /home/nginx/sites/dev.conf does not exist
+```
+
+**This is a breaking change for any development setup that relied on omitting `dev.conf` and having the container start anyway.** Mount a `dev.conf` at `/home/nginx/sites/dev.conf` to continue — see [docs/ssl-modes.md → development mode](docs/ssl-modes.md#development-mode-self-signed).
+
+With a valid `dev.conf`, development startup is unchanged: the `dev` handler still runs, followed by the same nginx override mapping, `nginx -t`, Fail2ban, and renewal-migration steps as before.
 
 ---
 

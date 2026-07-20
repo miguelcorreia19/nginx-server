@@ -46,7 +46,7 @@ In **production** (`ENVIRONMENT=production`/`prod`), a further preflight runs af
 
 A missing required file is a **fatal startup error** naming the site and the missing path — it is never a silent skip. Every entry is preflighted before any mode handler runs, so one site with a missing file aborts startup before any other site's certificate or nginx state is touched.
 
-**Development mode** (`ENVIRONMENT=development`/`dev`) is not covered by this preflight — it has its own `dev.conf` lifecycle; see [SSL modes → development mode](ssl-modes.md#development-mode-self-signed).
+**Development mode** (`ENVIRONMENT=development`/`dev`) is not covered by this per-entry `config.json` preflight — it has its own filesystem preflight instead: `/home/nginx/sites/dev.conf` must exist before the development handler runs. Its absence is a **fatal startup error**, not an optional or no-op state. See [SSL modes → development mode](ssl-modes.md#development-mode-self-signed).
 
 ### Full `config.json` example
 

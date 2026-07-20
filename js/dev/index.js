@@ -1,8 +1,7 @@
 const { configFiles, command } = require("../utils.js");
 const path = require('path');
-const fs = require('fs');
 const { createLogger } = require("../logger.js");
-const { log, fatal } = createLogger("dev");
+const { fatal } = createLogger("dev");
 
 module.exports = async () => {
 
@@ -14,10 +13,12 @@ module.exports = async () => {
 
     await command(`cp ${path.join(__dirname, 'templates/ssl-dev-certificate.conf')} /etc/nginx/conf/dev.conf`);
 
-    if (!fs.existsSync(`/home/nginx/sites/dev.conf`)) {
-      log(`No dev.conf found — place one at /home/nginx/sites/dev.conf`);
-      process.exit(0);
-    }
+    // /home/nginx/sites/dev.conf is required and already confirmed to exist
+    // by js/entrypoint.js's development preflight (preflightDev() in
+    // js/preflight.js) before this handler ever runs. configFiles() below
+    // still defensively re-checks it (js/utils.js) — protection against the
+    // file disappearing between preflight and this call — and that check is
+    // fatal, not a silent skip.
     await configFiles("dev", "valid", true, ["localhost", "127.0.0.1"]);
 
   } catch (err) {
