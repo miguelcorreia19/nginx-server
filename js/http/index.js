@@ -1,5 +1,5 @@
 const fs = require("fs");
-const { command, commandSafe } = require("../utils.js");
+const { commandSafe } = require("../utils.js");
 const path = require("path");
 const { createLogger } = require("../logger.js");
 const { fatal } = createLogger("http");
@@ -41,11 +41,13 @@ module.exports = async () => {
       await commandSafe('ln', ['-sf', sitePath, `/etc/nginx/conf.d/80/${id}.conf`]);
     }
 
-    if(Object.keys(certs).length === 0) {
-      await command('cp /home/scripts/nginx/nginx.vh.default.80.conf /etc/nginx/conf.d/80/nginx.vh.default.80.conf');
-    }
-
-
+    // No default :80 vhost restoration here any more. Production startup
+    // restores it centrally before this handler runs (reconcileGeneratedConfig
+    // in ../reconcile.js), so it is present whether or not any HTTP site is
+    // configured — it is production-global infrastructure, not an artifact this
+    // mode owns. The old zero-entry branch here only ever fired when there were
+    // no HTTP sites, which left it missing after a development startup had
+    // removed it.
   } catch (err) {
     fatal("setup failed —", err);
     throw err;

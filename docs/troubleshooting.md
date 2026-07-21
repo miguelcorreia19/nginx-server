@@ -134,6 +134,22 @@ Fix: check your custom nginx config files for syntax errors. Run `nginx -t` loca
 - Use `letsencrypt-staging` mode first to validate your setup without consuming rate-limit quota.
 - Check `docker logs <container>` for certbot error output.
 
+### A removed or changed site is still being served
+
+Production startup rebuilds the generated nginx configuration from the current `config.json` on every start, so restarting the container applies removals, `mode` changes and `http_redirect` changes completely.
+
+If a site you removed still appears to be served, check in this order:
+
+- `docker logs <container>` for the `[reconcile] Reset generated nginx config: ...` line, which confirms the rebuild ran;
+- that you edited the `config.json` actually mounted at `/home/config.json`;
+- that the container was restarted (the file watcher reloads nginx on *site-file* changes, but a `config.json` change requires a restart to take effect).
+
+```bash
+docker exec <container> ls /etc/nginx/conf.d/443/ /etc/nginx/conf.d/80/
+```
+
+Only the default vhosts and your currently configured sites should be listed.
+
 ### Nginx not reloading after config change
 
 - Ensure you are modifying files inside the mounted `sites/` directory, not inside the container.

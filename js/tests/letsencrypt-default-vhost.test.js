@@ -1,15 +1,17 @@
-// Let's Encrypt handler — port-443 default-vhost restoration (F2 regression).
+// Let's Encrypt handler — conf.d ownership (carries the F2 regression forward).
 //
-// js/letsencrypt/index.js rebuilds /etc/nginx/conf.d/443 on every run that has
-// at least one applicable certificate: it wipes the directory (which also
-// removes the build-time default vhost, nginx.vh.default.443.conf), then must
-// put the default vhost back alongside each site's generated config.
-// Restoration used to be guarded by "Object.keys(certs).length === 0" — a
-// branch that could never run, because the function already returns earlier
-// for that exact condition ("if (Object.keys(certs).length == 0) return;").
-// The practical effect: whenever any Let's Encrypt certificate was active, the
-// default vhost was wiped and never restored, leaving port 443 with no
-// default_server for unmatched SNI/Host traffic.
+// F2 originally fixed an unreachable default-443 restoration *inside* this
+// handler. That responsibility has since moved: production startup owns
+// /etc/nginx/conf.d/80 and /etc/nginx/conf.d/443 and restores both default
+// vhosts before any handler runs (js/reconcile.js), because this handler only
+// ever cleaned those shared directories when it had at least one entry of its
+// own — which left removed custom/http/LE sites live after a restart.
+//
+// So the F2 guarantee itself now lives in reconcile.test.js ("restores the
+// default :443 vhost") and restart-reconciliation.test.js. What this file
+// pins is the other half of that move: the handler must no longer wipe the
+// shared directories or restore the default vhost, and must still create its
+// own sites' artifacts.
 //
 // Mocking mirrors letsencrypt-wildcard.test.js.
 
@@ -47,8 +49,10 @@ const setConfig = (entries) => {
   Object.assign(mockConfig, entries);
 };
 
-const CLEAR_CMD = 'rm -f /etc/nginx/conf.d/443/*';
-const RESTORE_CMD = 'cp /home/scripts/nginx/nginx.vh.default.443.conf /etc/nginx/conf.d/443/nginx.vh.default.443.conf';
+// Commands this handler used to own and must no longer issue.
+const CLEAR_443_CMD = 'rm -f /etc/nginx/conf.d/443/*';
+const CLEAR_REDIRECTS_CMD = 'rm -f /etc/nginx/conf.d/80/*-http-redirect.conf';
+const RESTORE_443_CMD = 'cp /home/scripts/nginx/nginx.vh.default.443.conf /etc/nginx/conf.d/443/nginx.vh.default.443.conf';
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -61,7 +65,7 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
-describe('letsencrypt handler — port-443 default vhost restoration', () => {
+describe('letsencrypt handler — no longer owns shared conf.d lifecycle', () => {
   const activeCert = {
     main: {
       cert_path: '/etc/letsencrypt/live/main/fullchain.pem',
@@ -71,29 +75,40 @@ describe('letsencrypt handler — port-443 default vhost restoration', () => {
     },
   };
 
-  it('restores the default vhost after clearing conf.d/443, even with an active certificate', async () => {
+  const withActiveCert = () => {
     parseCerts.mockResolvedValue(activeCert);
     checkCertFiles.mockReturnValue(true);
     setConfig({ main: { mode: 'letsencrypt', names: ['example.com'] } });
+  };
+
+  const shellCommands = () => command.mock.calls.map((call) => call[0]);
+
+  it('does not wipe conf.d/443 (production startup owns that directory now)', async () => {
+    withActiveCert();
 
     await letsencryptMode();
 
-    const calls = command.mock.calls.map((call) => call[0]);
-    const clearIndex = calls.indexOf(CLEAR_CMD);
-    const restoreIndex = calls.indexOf(RESTORE_CMD);
-
-    // Cleanup happened...
-    expect(clearIndex).toBeGreaterThan(-1);
-    // ...and restoration happened, in that order — not skipped merely because
-    // "main" has an active, valid certificate.
-    expect(restoreIndex).toBeGreaterThan(-1);
-    expect(restoreIndex).toBeGreaterThan(clearIndex);
+    expect(shellCommands()).not.toContain(CLEAR_443_CMD);
   });
 
-  it('keeps the applicable site linked alongside the restored default vhost', async () => {
-    parseCerts.mockResolvedValue(activeCert);
-    checkCertFiles.mockReturnValue(true);
-    setConfig({ main: { mode: 'letsencrypt', names: ['example.com'] } });
+  it('does not wipe other modes\' redirect files', async () => {
+    withActiveCert();
+
+    await letsencryptMode();
+
+    expect(shellCommands()).not.toContain(CLEAR_REDIRECTS_CMD);
+  });
+
+  it('does not restore the default :443 vhost', async () => {
+    withActiveCert();
+
+    await letsencryptMode();
+
+    expect(shellCommands()).not.toContain(RESTORE_443_CMD);
+  });
+
+  it('still links its own site after the centralized reset', async () => {
+    withActiveCert();
 
     await letsencryptMode();
 

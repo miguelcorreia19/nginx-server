@@ -152,18 +152,13 @@ module.exports = async () => {
     await command(`crond -bS -c /var/spool/cron/crontabs`);
 
 
-    // Link nginx site configs
-    // delete all redirect files from http to https
-    await command('rm -f /etc/nginx/conf.d/80/*-http-redirect.conf');
-    await command('rm -f /etc/nginx/conf.d/443/*');
-
-    // The rm above also removes the build-time default vhost, so it must always
-    // be restored here — unconditionally, regardless of how many certificates
-    // are active — or unmatched SNI/Host traffic on 443 falls through to
-    // whichever real site nginx promotes to default_server instead of the
-    // intended 444.
-    await command('cp /home/scripts/nginx/nginx.vh.default.443.conf /etc/nginx/conf.d/443/nginx.vh.default.443.conf');
-
+    // Link nginx site configs. This handler is purely additive here: production
+    // startup has already cleared /etc/nginx/conf.d/{80,443} and restored both
+    // default vhosts (reconcileGeneratedConfig in ../reconcile.js), so there is
+    // nothing to clean up and no default vhost to put back. Previously this
+    // handler wiped both directories on behalf of every mode — but only when it
+    // had at least one entry of its own, which left removed custom/http/LE
+    // sites still being served after a restart of the same container.
     if(Object.keys(final_certificates).length > 0)
       for (let id in certs) {
         if (!final_certificates[id]) continue;

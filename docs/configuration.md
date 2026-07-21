@@ -48,6 +48,20 @@ A missing required file is a **fatal startup error** naming the site and the mis
 
 **Development mode** (`ENVIRONMENT=development`/`dev`) is not covered by this per-entry `config.json` preflight — it has its own filesystem preflight instead: `/home/nginx/sites/dev.conf` must exist before the development handler runs. Its absence is a **fatal startup error**, not an optional or no-op state. See [SSL modes → development mode](ssl-modes.md#development-mode-self-signed).
 
+### Generated configuration is rebuilt on every production startup
+
+**Production startup rebuilds generated nginx configuration from the current `config.json`, so restarting the same container does not retain active site configuration from previous startups.**
+
+After preflight and before any site is configured, production startup clears the generated nginx directories and restores the default `:80` and `:443` vhosts; the per-mode handlers then add only the sites your current configuration asks for. In practice this means a restart applies your configuration changes completely:
+
+- removing a site from `config.json` stops it being served — it is not left over from the previous startup;
+- setting `http_redirect: false` removes the site's existing HTTP → HTTPS redirect;
+- changing a site's `mode` leaves only the new mode's configuration active;
+- removing a site *and* deleting its file in `sites/` is safe — no leftover reference to the deleted file can block startup;
+- switching a container from `development` back to `production` restores the production defaults and clears development leftovers.
+
+This makes a restarted container converge on the same state a freshly created one would. It does not remove old certificate files or unused per-site fragments under `/etc/nginx/conf/`, which are inert once nothing references them.
+
 ### Full `config.json` example
 
 ```json

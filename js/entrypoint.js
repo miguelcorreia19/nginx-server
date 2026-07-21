@@ -12,6 +12,7 @@ const migrateRenewalConfigs = require('./letsencrypt/migrate_renewal');
 const { command, mapCustomNginxConf, validateNginxConfig } = require("./utils.js");
 const { validateConfigEntry } = require("./validate.js");
 const { preflightEntry, preflightDev } = require("./preflight.js");
+const { reconcileGeneratedConfig } = require("./reconcile.js");
 
 // Base nginx config files
 const NGINX_CONF_FILES = [
@@ -87,6 +88,23 @@ const start = async () => {
           }
         }
 
+        // Production startup owns /etc/nginx/conf.d/80 and /etc/nginx/conf.d/443
+        // (js/reconcile.js): clear both and restore the default vhosts, so the
+        // handlers below rebuild active nginx state from the *current* config
+        // instead of inheriting whatever the previous startup of this container
+        // left in the writable layer. Runs unconditionally — a mode with zero
+        // entries still needs its removed sites cleaned up. Development mode is
+        // excluded (js/dev/index.js owns its own default-vhost semantics).
+        try {
+          reconcileGeneratedConfig();
+        } catch (err) {
+          fatal(`could not reset generated nginx configuration: ${err.message}`);
+          process.exit(1);
+          return;
+        }
+
+        // The handlers are additive with respect to those two directories:
+        // each adds only the sites its own mode currently has configured.
         await letsencrypt();
         await custom();
         await http();

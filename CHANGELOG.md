@@ -151,6 +151,24 @@ With a valid `dev.conf`, development startup is unchanged: the `dev` handler sti
 
 ---
 
+#### Generated nginx configuration is rebuilt on every production startup
+
+Production startup now owns `/etc/nginx/conf.d/80/` and `/etc/nginx/conf.d/443/`: after preflight and before any mode handler runs, it clears both and restores the default `:80` and `:443` vhosts. The `letsencrypt`, `custom` and `http` handlers are now purely additive — each adds only the sites its own mode currently has configured.
+
+Previously the only broad cleanup lived inside the Let's Encrypt handler and ran only when it had at least one entry of its own, so **restarting the same container could retain active site configuration from a previous startup**. Restarting now applies configuration changes completely:
+
+- a site removed from `config.json` is no longer served — in any mode, including when no Let's Encrypt sites remain to trigger the old cleanup;
+- setting `http_redirect: false` removes the site's existing HTTP → HTTPS redirect;
+- changing a site's `mode` leaves only the new mode's configuration active, instead of linking the same site from both port directories;
+- removing a site *and* deleting its file in `sites/` no longer leaves a dangling reference that failed `nginx -t` and prevented the container from starting;
+- switching a container from `development` back to `production` restores the production default vhosts and clears development leftovers.
+
+A restarted container now converges on the same state a freshly created one would. Reconciliation failure is fatal: startup aborts before any handler runs rather than continuing from a partially reset state.
+
+Not affected: development startup (which owns its own default-vhost semantics), Certbot issuance/renewal behaviour, unused per-site fragments under `/etc/nginx/conf/`, and old certificate material — all inert once nothing references them.
+
+---
+
 ### Internal
 
 - Simplified Let's Encrypt renewal implementation.

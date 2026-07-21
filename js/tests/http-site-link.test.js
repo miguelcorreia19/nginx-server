@@ -86,15 +86,27 @@ describe('http mode — missing site file stays fatal (no dangling symlink)', ()
   });
 });
 
-describe('http mode — default port-80 vhost restoration is unaffected', () => {
-  it('restores the default vhost when there are no HTTP sites, without attempting any link', async () => {
+// The default :80 vhost is no longer this handler's responsibility: production
+// startup restores it centrally before any handler runs (js/reconcile.js), so
+// it is present whether or not HTTP sites exist. The handler must now be
+// purely additive — with no HTTP sites it should do nothing at all.
+describe('http mode — no longer owns the default port-80 vhost', () => {
+  it('does nothing when there are no HTTP sites', async () => {
     setConfig({});
 
     await httpMode();
 
-    expect(command).toHaveBeenCalledWith(
-      'cp /home/scripts/nginx/nginx.vh.default.80.conf /etc/nginx/conf.d/80/nginx.vh.default.80.conf'
+    expect(commandSafe).not.toHaveBeenCalled();
+    expect(command).not.toHaveBeenCalled();
+  });
+
+  it('never restores the default :80 vhost itself', async () => {
+    setConfig({ site1: { mode: 'http', names: ['example.com'] } });
+
+    await httpMode();
+
+    expect(command).not.toHaveBeenCalledWith(
+      expect.stringContaining('nginx.vh.default.80.conf')
     );
-    expect(commandSafe).not.toHaveBeenCalledWith('ln', expect.anything());
   });
 });

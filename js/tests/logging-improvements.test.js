@@ -265,8 +265,8 @@ describe('js/http/index.js — quiet empty state', () => {
     expect(source).not.toMatch(/No HTTP certificates found in config\.json/);
   });
 
-  it('still copies the default :80 vhost when there are no http sites (behavior unchanged)', () => {
-    expect(source).toMatch(/cp \/home\/scripts\/nginx\/nginx\.vh\.default\.80\.conf/);
+  it('no longer copies the default :80 vhost itself (production startup restores it centrally)', () => {
+    expect(source).not.toMatch(/nginx\.vh\.default\.80\.conf/);
   });
 });
 
