@@ -136,11 +136,11 @@ Fix: check your custom nginx config files for syntax errors. Run `nginx -t` loca
 
 ### A removed or changed site is still being served
 
-Production startup rebuilds the generated nginx configuration from the current `config.json` on every start, so restarting the container applies removals, `mode` changes and `http_redirect` changes completely.
+Startup rebuilds the generated nginx configuration from the current environment on every start — in both production and development — so restarting the container applies removals, `mode` changes, `http_redirect` changes and `ENVIRONMENT` switches completely.
 
 If a site you removed still appears to be served, check in this order:
 
-- `docker logs <container>` for the `[reconcile] Reset generated nginx config: ...` line, which confirms the rebuild ran;
+- `docker logs <container>` for the `[reconcile] Reset generated nginx config for production: ...` (or `... for development: ...`) line, which confirms the rebuild ran;
 - that you edited the `config.json` actually mounted at `/home/config.json`;
 - that the container was restarted (the file watcher reloads nginx on *site-file* changes, but a `config.json` change requires a restart to take effect).
 
@@ -148,7 +148,7 @@ If a site you removed still appears to be served, check in this order:
 docker exec <container> ls /etc/nginx/conf.d/443/ /etc/nginx/conf.d/80/
 ```
 
-Only the default vhosts and your currently configured sites should be listed.
+In production only the default vhosts and your currently configured sites should be listed; in development only the `dev` site and its redirect (development deliberately has no default vhosts — its own generated fragment is the HTTPS default server).
 
 ### Nginx not reloading after config change
 

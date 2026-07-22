@@ -28,6 +28,16 @@ jest.mock('../utils.js', () => ({
 
 jest.mock('fs', () => ({ existsSync: jest.fn(), statSync: jest.fn() }));
 
+// Development startup also resets the generated conf.d directories
+// (js/reconcile.js) between preflight and dev(). Mocked here so this suite
+// stays focused on the preflight contract and never touches a real filesystem
+// — its ordering relative to preflightDev()/dev() is asserted in
+// entrypoint-reconcile-order.test.js.
+jest.mock('../reconcile.js', () => ({
+  reconcileProductionConfig: jest.fn(() => ({ removed: 0 })),
+  reconcileDevelopmentConfig: jest.fn(() => ({ removed: 0 })),
+}));
+
 const fs = require('fs');
 
 const FILE_STAT = { isFile: () => true };
@@ -78,6 +88,9 @@ describe('entrypoint — development preflight', () => {
     expect(exitSpy).not.toHaveBeenCalledWith(0);
 
     expect(mocks.dev).not.toHaveBeenCalled();
+    // Preflight runs before the destructive reset, so a missing dev.conf must
+    // not have cleared any working nginx state.
+    expect(require('../reconcile.js').reconcileDevelopmentConfig).not.toHaveBeenCalled();
     expect(mocks.letsencrypt).not.toHaveBeenCalled();
     expect(mocks.custom).not.toHaveBeenCalled();
     expect(mocks.http).not.toHaveBeenCalled();

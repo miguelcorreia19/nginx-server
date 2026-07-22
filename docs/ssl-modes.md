@@ -159,6 +159,7 @@ volumes:
 - **When to use:** local development and testing over HTTPS without a real CA.
 - **Advantages:** no CA contact, no public domain, instant certificate.
 - **Limitations:** the certificate is **self-signed** (browsers warn); **never use in production**.
+- **Switching environments:** development startup rebuilds the generated nginx configuration from scratch, so restarting an existing container into development leaves none of its previous production sites or redirects active (and the reverse holds too). See [Configuration → generated configuration is rebuilt on every startup](configuration.md#generated-configuration-is-rebuilt-on-every-startup).
 - **See:** [`examples/dev/`](../examples/dev/) for a complete Docker Compose example.
 
 ## Combining modes

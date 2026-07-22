@@ -1,30 +1,37 @@
-// Generated nginx configuration reconciliation for production startup.
+// Generated nginx configuration reconciliation.
 //
-// Runs in js/entrypoint.js on the production path only, after schema
-// validation (js/validate.js) and filesystem preflight (js/preflight.js), and
-// before any production mode handler (letsencrypt/custom/http) adds anything.
+// Runs in js/entrypoint.js after schema validation (js/validate.js) and the
+// relevant filesystem preflight (js/preflight.js), and before any mode handler
+// adds anything.
 //
 // Ownership model
 // ---------------
-// Production startup owns /etc/nginx/conf.d/80 and /etc/nginx/conf.d/443
-// outright. Both directories hold *only* the image's default vhosts plus
-// artifacts generated at startup — users mount their own inputs elsewhere
+// Startup owns /etc/nginx/conf.d/80 and /etc/nginx/conf.d/443 outright, in
+// both environments. Both directories hold *only* the image's default vhosts
+// plus artifacts generated at startup — users mount their own inputs elsewhere
 // (site files under /home/nginx/sites, base-config overrides under
 // CUSTOM_NGINX_CONFIG_FILES_PATH, certificates under CUSTOM_CERTS_PATH), so
 // nothing here is user-supplied and everything here can be rebuilt.
 //
-// So each production startup clears both directories, restores the two
-// default vhosts as the baseline, and then lets the handlers add exactly the
-// sites the *current* config.json asks for. The mode handlers are purely
-// additive with respect to these directories; none of them cleans up after
-// another (previously the Let's Encrypt handler wiped both directories on
-// behalf of every mode, but only when it had at least one entry of its own —
-// which left removed sites of every mode still being served after a restart
-// of the same container).
+// Each startup therefore clears both directories and establishes the baseline
+// for the environment it is about to run, then lets the handlers add exactly
+// what the *current* configuration asks for:
+//
+//   production   clear -> restore the default :80 and :443 vhosts
+//                      -> letsencrypt() / custom() / http() add their sites
+//   development  clear -> (no production defaults)
+//                      -> dev() adds the development site, whose own generated
+//                         fragment declares the HTTPS default_server
+//
+// The environments differ only in that baseline, which is why they share
+// clearGeneratedDirs() but not the default-vhost restore: restoring the
+// production defaults before dev() would collide with the development
+// fragment's own `default_server`.
 //
 // This makes a same-container restart converge on the same state a freshly
-// created container would produce, instead of inheriting whatever the
-// previous startup left in the writable layer.
+// created container would produce for the current ENVIRONMENT, instead of
+// inheriting whatever the previous startup left in the writable layer —
+// including when ENVIRONMENT itself changed between the two startups.
 //
 // Deliberately NOT in scope here:
 //   - /etc/nginx/conf/<id>.conf mode fragments. nginx.conf never globs that
@@ -34,10 +41,6 @@
 //     could not be cleared wholesale anyway.
 //   - Certificate material under /etc/ssl/certs and /etc/letsencrypt, which is
 //     inert once nothing references it.
-//
-// Development mode is intentionally excluded: js/dev/index.js deliberately
-// removes both default vhosts because its own generated fragment declares the
-// HTTPS default_server, so restoring them would conflict.
 
 const fs = require("fs");
 const path = require("path");
@@ -73,23 +76,47 @@ const clearDir = (dir) => {
   return entries.length;
 };
 
-// Clears both generated directories and restores the two default vhosts.
+// The half both environments share: empty both generated directories. Whatever
+// the previous startup wrote — Let's Encrypt, staging, custom, HTTP or
+// development artifacts, and the default vhosts themselves — is removed.
+const clearGeneratedDirs = ({ dir80, dir443 }) => clearDir(dir80) + clearDir(dir443);
+
+// Production baseline: cleared directories plus both default vhosts, ready for
+// the letsencrypt/custom/http handlers to add the currently configured sites.
 // Throws on any failure: this is deterministic local startup infrastructure,
 // and a partially reset tree must never reach the mode handlers or nginx.
-const reconcileGeneratedConfig = (overrides = {}) => {
+const reconcileProductionConfig = (overrides = {}) => {
   const { dir80, dir443, src80, src443 } = cfg(overrides);
 
-  const removed = clearDir(dir80) + clearDir(dir443);
+  const removed = clearGeneratedDirs({ dir80, dir443 });
 
   fs.copyFileSync(src80, path.join(dir80, "nginx.vh.default.80.conf"));
   fs.copyFileSync(src443, path.join(dir443, "nginx.vh.default.443.conf"));
 
   log(
-    `Reset generated nginx config: removed ${removed} artifact(s) from conf.d/80 and conf.d/443, ` +
-    `restored the default :80 and :443 vhosts`
+    `Reset generated nginx config for production: removed ${removed} artifact(s) from ` +
+    `conf.d/80 and conf.d/443, restored the default :80 and :443 vhosts`
   );
 
   return { removed };
 };
 
-module.exports = { reconcileGeneratedConfig };
+// Development baseline: cleared directories and nothing else. The production
+// default vhosts are deliberately NOT restored — js/dev/index.js installs a
+// fragment that declares its own `listen 443 ... default_server`, so a
+// restored default :443 vhost would be a duplicate default server. dev() then
+// adds the development site and its redirect.
+const reconcileDevelopmentConfig = (overrides = {}) => {
+  const { dir80, dir443 } = cfg(overrides);
+
+  const removed = clearGeneratedDirs({ dir80, dir443 });
+
+  log(
+    `Reset generated nginx config for development: removed ${removed} artifact(s) from ` +
+    `conf.d/80 and conf.d/443 (production default vhosts intentionally not restored)`
+  );
+
+  return { removed };
+};
+
+module.exports = { reconcileProductionConfig, reconcileDevelopmentConfig };

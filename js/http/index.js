@@ -42,7 +42,7 @@ module.exports = async () => {
     }
 
     // No default :80 vhost restoration here any more. Production startup
-    // restores it centrally before this handler runs (reconcileGeneratedConfig
+    // restores it centrally before this handler runs (reconcileProductionConfig
     // in ../reconcile.js), so it is present whether or not any HTTP site is
     // configured — it is production-global infrastructure, not an artifact this
     // mode owns. The old zero-entry branch here only ever fired when there were

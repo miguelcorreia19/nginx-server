@@ -1,8 +1,11 @@
 // Where centralized reconciliation sits in the startup sequence.
 //
 // Contract:
-//   production -> preflight (all entries) -> reconcileGeneratedConfig() -> handlers
-//   development -> preflightDev() -> dev()          [no production reconciliation]
+//   production  -> preflightEntry(all) -> reconcileProductionConfig()  -> handlers
+//   development -> preflightDev()      -> reconcileDevelopmentConfig() -> dev()
+//
+// In both cases preflight runs BEFORE the destructive reset, so a failed
+// preflight never leaves a half-cleared tree behind (the F4/F5 principle).
 //
 // js/entrypoint.js has no exports and calls its own start() at module load, so
 // its dependencies are mocked and the module is required to run it — the same
@@ -25,7 +28,8 @@ jest.mock('../preflight.js', () => ({
   preflightDev: jest.fn(),
 }));
 jest.mock('../reconcile.js', () => ({
-  reconcileGeneratedConfig: jest.fn(() => ({ removed: 0 })),
+  reconcileProductionConfig: jest.fn(() => ({ removed: 0 })),
+  reconcileDevelopmentConfig: jest.fn(() => ({ removed: 0 })),
 }));
 
 jest.mock('../utils.js', () => ({
@@ -43,7 +47,9 @@ const mocks = () => ({
   http: require('../http'),
   preflightEntry: require('../preflight.js').preflightEntry,
   preflightDev: require('../preflight.js').preflightDev,
-  reconcile: require('../reconcile.js').reconcileGeneratedConfig,
+  reconcile: require('../reconcile.js').reconcileProductionConfig,
+  reconcileDev: require('../reconcile.js').reconcileDevelopmentConfig,
+  mapCustomNginxConf: require('../utils.js').mapCustomNginxConf,
 });
 
 let exitSpy;
@@ -94,6 +100,16 @@ describe('entrypoint — production reconciliation ordering', () => {
     expect(exitSpy).not.toHaveBeenCalled();
   });
 
+  it('never uses the development reconciler', async () => {
+    process.env.ENVIRONMENT = 'production';
+    const m = mocks();
+
+    require('../entrypoint.js');
+    await flush();
+
+    expect(m.reconcileDev).not.toHaveBeenCalled();
+  });
+
   it('aborts fatally and runs no handler when reconciliation fails', async () => {
     process.env.ENVIRONMENT = 'production';
     const m = mocks();
@@ -109,19 +125,73 @@ describe('entrypoint — production reconciliation ordering', () => {
   });
 });
 
-describe('entrypoint — development does not run production reconciliation', () => {
-  it('runs the dev preflight and dev handler, never reconcileGeneratedConfig', async () => {
-    process.env.ENVIRONMENT = 'development';
+describe('entrypoint — development reconciliation ordering', () => {
+  beforeEach(() => { process.env.ENVIRONMENT = 'development'; });
+
+  it('runs preflightDev, then the development reconciler, then dev()', async () => {
     const m = mocks();
 
     require('../entrypoint.js');
     await flush();
 
     expect(m.preflightDev).toHaveBeenCalledTimes(1);
+    expect(m.reconcileDev).toHaveBeenCalledTimes(1);
     expect(m.dev).toHaveBeenCalledTimes(1);
-    // js/dev/index.js owns its own default-vhost semantics (its generated
-    // fragment declares the HTTPS default_server), so the production reset
-    // must not run on this path.
+
+    // preflightDev -> reconcileDevelopmentConfig -> dev()
+    expect(m.preflightDev.mock.invocationCallOrder[0])
+      .toBeLessThan(m.reconcileDev.mock.invocationCallOrder[0]);
+    expect(m.reconcileDev.mock.invocationCallOrder[0])
+      .toBeLessThan(m.dev.mock.invocationCallOrder[0]);
+  });
+
+  it('never uses the production reconciler and never runs a production handler', async () => {
+    const m = mocks();
+
+    require('../entrypoint.js');
+    await flush();
+
+    // The production reset restores the default vhosts, which would collide
+    // with the development fragment's own HTTPS default_server.
     expect(m.reconcile).not.toHaveBeenCalled();
+    expect(m.letsencrypt).not.toHaveBeenCalled();
+    expect(m.custom).not.toHaveBeenCalled();
+    expect(m.http).not.toHaveBeenCalled();
+  });
+
+  it('still reaches the common post-handler startup steps', async () => {
+    const m = mocks();
+
+    require('../entrypoint.js');
+    await flush();
+
+    expect(m.mapCustomNginxConf).toHaveBeenCalled();
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('a missing dev.conf fails before anything destructive runs (F5)', async () => {
+    const m = mocks();
+    m.preflightDev.mockImplementation(() => { throw new Error('dev.conf missing'); });
+
+    require('../entrypoint.js');
+    await flush();
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    // Nothing was cleared, so a working tree is left intact.
+    expect(m.reconcileDev).not.toHaveBeenCalled();
+    expect(m.dev).not.toHaveBeenCalled();
+  });
+
+  it('aborts fatally and never runs dev() when reconciliation fails', async () => {
+    const m = mocks();
+    m.reconcileDev.mockImplementation(() => { throw new Error('disk on fire'); });
+
+    require('../entrypoint.js');
+    await flush();
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(m.preflightDev).toHaveBeenCalledTimes(1);
+    expect(m.dev).not.toHaveBeenCalled();
+    expect(m.mapCustomNginxConf).not.toHaveBeenCalled();
   });
 });

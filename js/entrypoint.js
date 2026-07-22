@@ -12,7 +12,7 @@ const migrateRenewalConfigs = require('./letsencrypt/migrate_renewal');
 const { command, mapCustomNginxConf, validateNginxConfig } = require("./utils.js");
 const { validateConfigEntry } = require("./validate.js");
 const { preflightEntry, preflightDev } = require("./preflight.js");
-const { reconcileGeneratedConfig } = require("./reconcile.js");
+const { reconcileProductionConfig, reconcileDevelopmentConfig } = require("./reconcile.js");
 
 // Base nginx config files
 const NGINX_CONF_FILES = [
@@ -67,6 +67,22 @@ const start = async () => {
           return;
         }
 
+        // Development startup owns the same two generated directories as
+        // production (js/reconcile.js), so a container restarted into
+        // development never inherits the previous environment's active site
+        // links or redirects. Deliberately runs AFTER preflightDev(): a missing
+        // dev.conf must fail before anything destructive happens, never leaving
+        // a half-cleared tree behind. Unlike production this restores no
+        // default vhosts — dev()'s own fragment declares the HTTPS
+        // default_server, which a restored default :443 vhost would duplicate.
+        try {
+          reconcileDevelopmentConfig();
+        } catch (err) {
+          fatal(`could not reset generated nginx configuration: ${err.message}`);
+          process.exit(1);
+          return;
+        }
+
         await dev();
         break;
       }
@@ -92,11 +108,11 @@ const start = async () => {
         // (js/reconcile.js): clear both and restore the default vhosts, so the
         // handlers below rebuild active nginx state from the *current* config
         // instead of inheriting whatever the previous startup of this container
-        // left in the writable layer. Runs unconditionally — a mode with zero
-        // entries still needs its removed sites cleaned up. Development mode is
-        // excluded (js/dev/index.js owns its own default-vhost semantics).
+        // left in the writable layer — including a previous development
+        // startup. Runs unconditionally: a mode with zero entries still needs
+        // its removed sites cleaned up.
         try {
-          reconcileGeneratedConfig();
+          reconcileProductionConfig();
         } catch (err) {
           fatal(`could not reset generated nginx configuration: ${err.message}`);
           process.exit(1);

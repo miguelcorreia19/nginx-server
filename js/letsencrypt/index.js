@@ -154,7 +154,7 @@ module.exports = async () => {
 
     // Link nginx site configs. This handler is purely additive here: production
     // startup has already cleared /etc/nginx/conf.d/{80,443} and restored both
-    // default vhosts (reconcileGeneratedConfig in ../reconcile.js), so there is
+    // default vhosts (reconcileProductionConfig in ../reconcile.js), so there is
     // nothing to clean up and no default vhost to put back. Previously this
     // handler wiped both directories on behalf of every mode — but only when it
     // had at least one entry of its own, which left removed custom/http/LE

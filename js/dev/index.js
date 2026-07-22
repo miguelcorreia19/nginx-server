@@ -6,9 +6,12 @@ const { fatal } = createLogger("dev");
 module.exports = async () => {
 
   try {
-    // delete default 443 and 80 configs
-    await command('rm -f /etc/nginx/conf.d/443/nginx.vh.default.443.conf');
-    await command('rm -f /etc/nginx/conf.d/80/nginx.vh.default.80.conf');
+    // No default-vhost removal here any more. Development startup clears both
+    // /etc/nginx/conf.d/{80,443} before this handler runs and restores no
+    // production defaults (reconcileDevelopmentConfig in ../reconcile.js), so
+    // there is nothing left to delete — and that reset also removes any
+    // production site links and redirects a previous startup of this container
+    // left behind. This handler is purely additive.
     await command(`openssl req -x509 -newkey rsa:2048 -keyout /etc/ssl/certs/priv_dev.key -out /etc/ssl/certs/cert_dev.crt -days 365 -nodes -subj \"/C=UA\" 2>&1`);
 
     await command(`cp ${path.join(__dirname, 'templates/ssl-dev-certificate.conf')} /etc/nginx/conf/dev.conf`);

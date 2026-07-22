@@ -12,7 +12,8 @@
 // the writable layer a `docker restart` preserves — and asserts the state
 // after the second one.
 //
-// Scope of this harness: it exercises the real reconcileGeneratedConfig()
+// Scope of this harness: it exercises the real reconcileProductionConfig() /
+// reconcileDevelopmentConfig()
 // (the thing under test) and models the artifacts each handler creates via
 // `applyMode` below, which mirrors js/utils.js configFiles()/httpRedirect()
 // and js/http/index.js. The handlers write to hardcoded /etc/nginx paths and
@@ -25,7 +26,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { reconcileGeneratedConfig } = require('../reconcile.js');
+const { reconcileProductionConfig, reconcileDevelopmentConfig } = require('../reconcile.js');
 
 let tmp, dir80, dir443, src80, src443, sitesDir;
 
@@ -43,7 +44,7 @@ beforeEach(() => {
   fs.mkdirSync(sitesDir, { recursive: true });
   fs.writeFileSync(src80, 'DEFAULT-80-VHOST');
   fs.writeFileSync(src443, 'DEFAULT-443-VHOST');
-  for (const id of ['A', 'B']) fs.writeFileSync(path.join(sitesDir, `${id}.conf`), 'server { }');
+  for (const id of ['A', 'B', 'C', 'dev']) fs.writeFileSync(path.join(sitesDir, `${id}.conf`), 'server { }');
 
   jest.spyOn(console, 'log').mockImplementation(() => {});
 });
@@ -75,8 +76,16 @@ const applyMode = (id, mode, { http_redirect = true } = {}) => {
 
 // One production startup: centralized reset, then handlers add current sites.
 const startup = (sites) => {
-  reconcileGeneratedConfig(opts());
+  reconcileProductionConfig(opts());
   for (const s of sites) applyMode(s.id, s.mode, s);
+};
+
+// One development startup: reset with NO production defaults, then dev() links
+// its single fixed site and writes its redirect (mirrors js/dev/index.js).
+const devStartup = () => {
+  reconcileDevelopmentConfig(opts());
+  fs.symlinkSync(sitePath('dev'), path.join(dir443, 'dev.conf'));
+  fs.writeFileSync(path.join(dir80, 'dev-http-redirect.conf'), '301 for dev');
 };
 
 // ──────────────────────────────────────────────
@@ -172,25 +181,83 @@ describe('restart reconciliation — removed site with a deleted source file (B6
 });
 
 // ──────────────────────────────────────────────
-//  B7 — development residue cleared by a later production startup
+//  Environment transitions (both directions)
 // ──────────────────────────────────────────────
-describe('restart reconciliation — development residue (B7)', () => {
+describe('restart reconciliation — development -> production (B7)', () => {
   it('clears dev artifacts and restores BOTH production defaults', () => {
-    // js/dev/index.js removes both defaults and links its own dev site, whose
-    // fragment declares the HTTPS default_server.
-    fs.writeFileSync(path.join(sitesDir, 'dev.conf'), 'server { }');
-    fs.rmSync(path.join(dir443, 'nginx.vh.default.443.conf'), { force: true });
-    fs.rmSync(path.join(dir80, 'nginx.vh.default.80.conf'), { force: true });
-    fs.symlinkSync(path.join(sitesDir, 'dev.conf'), path.join(dir443, 'dev.conf'));
-    fs.writeFileSync(path.join(dir80, 'dev-http-redirect.conf'), '301 for dev');
+    devStartup();
+    expect(ls(dir443)).toEqual(['dev.conf']);
+    expect(ls(dir80)).toEqual(['dev-http-redirect.conf']);
 
-    // Next boot is production.
     startup([{ id: 'A', mode: 'http' }]);
 
     expect(ls(dir443)).toEqual(['nginx.vh.default.443.conf']);
     expect(ls(dir80)).toEqual(['A.conf', 'nginx.vh.default.80.conf']);
     expect(fs.readFileSync(path.join(dir443, 'nginx.vh.default.443.conf'), 'utf8'))
       .toBe('DEFAULT-443-VHOST');
+  });
+});
+
+describe('restart reconciliation — production -> development', () => {
+  // A development startup must leave exactly the dev site and its redirect,
+  // and no production default vhost (dev()'s fragment is the HTTPS default).
+  const DEV_443 = ['dev.conf'];
+  const DEV_80 = ['dev-http-redirect.conf'];
+
+  const cases = [
+    ['previous LE site',     [{ id: 'A', mode: 'letsencrypt' }]],
+    ['previous custom site', [{ id: 'A', mode: 'custom' }]],
+    ['previous HTTP site',   [{ id: 'A', mode: 'http' }]],
+    ['mixed production state', [
+      { id: 'A', mode: 'letsencrypt' },
+      { id: 'B', mode: 'custom' },
+      { id: 'C', mode: 'http' },
+    ]],
+  ];
+
+  test.each(cases)('%s is fully removed', (_label, productionSites) => {
+    startup(productionSites);
+    devStartup();
+
+    expect(ls(dir443)).toEqual(DEV_443);
+    expect(ls(dir80)).toEqual(DEV_80);
+  });
+
+  it('leaves no production default vhost behind for dev to collide with', () => {
+    startup([{ id: 'A', mode: 'letsencrypt' }]);
+    devStartup();
+
+    expect(fs.existsSync(path.join(dir443, 'nginx.vh.default.443.conf'))).toBe(false);
+    expect(fs.existsSync(path.join(dir80, 'nginx.vh.default.80.conf'))).toBe(false);
+  });
+
+  it('produces the same state as a development startup on a fresh container', () => {
+    devStartup();                       // fresh
+    const fresh = { d443: ls(dir443), d80: ls(dir80) };
+
+    fs.rmSync(dir443, { recursive: true, force: true });
+    fs.rmSync(dir80, { recursive: true, force: true });
+    fs.mkdirSync(dir443, { recursive: true });
+    fs.mkdirSync(dir80, { recursive: true });
+
+    startup([{ id: 'A', mode: 'letsencrypt' }, { id: 'C', mode: 'http' }]);
+    devStartup();                       // after production residue
+
+    expect({ d443: ls(dir443), d80: ls(dir80) }).toEqual(fresh);
+  });
+});
+
+describe('restart reconciliation — development -> development is idempotent', () => {
+  it('does not accumulate artifacts across repeated development startups', () => {
+    devStartup();
+    const after1 = { d443: ls(dir443), d80: ls(dir80) };
+
+    devStartup();
+    devStartup();
+
+    expect({ d443: ls(dir443), d80: ls(dir80) }).toEqual(after1);
+    expect(ls(dir443)).toEqual(['dev.conf']);
+    expect(ls(dir80)).toEqual(['dev-http-redirect.conf']);
   });
 });
 
