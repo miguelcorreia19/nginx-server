@@ -58,6 +58,7 @@ After preflight and before any site is configured, startup clears the generated 
 - setting `http_redirect: false` removes the site's existing HTTP → HTTPS redirect;
 - changing a site's `mode` leaves only the new mode's configuration active;
 - removing a site *and* deleting its file in `sites/` is safe — no leftover reference to the deleted file can block startup;
+- removing a `letsencrypt`/`letsencrypt-staging` site (or switching it to another mode) also **deletes its Let's Encrypt certificate** — see [Certificate lifecycle](letsencrypt.md#certificate-lifecycle-removing-a-site-deletes-its-certificate);
 - switching a container between `development` and `production` in either direction leaves only the new environment's configuration active.
 
 This makes a restarted container converge on the same state a freshly created one would. It does not remove old certificate files or unused per-site fragments under `/etc/nginx/conf/`, which are inert once nothing references them.

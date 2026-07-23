@@ -31,7 +31,14 @@ module.exports = async () => {
   // runs, since this image's built-in Let's Encrypt flow only implements
   // http-01 (no DNS-01).
 
-  if (Object.keys(certs).length == 0) return;
+  // NOTE: there is deliberately no early return here. config.json is the
+  // source of truth for the Certbot lineages this project manages, so a
+  // lineage with no matching letsencrypt/letsencrypt-staging entry has to be
+  // deleted even when that leaves zero configured entries — otherwise
+  // removing the *last* LE site would keep its lineage forever, while
+  // removing one of two already deletes it. The zero-entry return now sits
+  // after that cleanup (see below); everything past it needs actual current
+  // entries, so it stays gated.
 
   try {
     const certificates = await parseCerts(true);
@@ -81,7 +88,10 @@ module.exports = async () => {
       }
     }
 
-    // Delete certificates that are no longer in config.json
+    // Delete certificates that are no longer in config.json. `certs` holds only
+    // the current letsencrypt/letsencrypt-staging entries, so this covers both
+    // modes and can only ever match a lineage certbot itself issued — custom
+    // and http sites never have one.
     for (let id in certificates) {
       if (!certs[id]) {
         log(`Removing old certificate ${id} (no longer in config.json)`);
@@ -90,6 +100,15 @@ module.exports = async () => {
         if (deleted) log(`Certificate ${id} deleted`);
         else error(`Certificate ${id} deletion failed`);
       }
+    }
+
+    // Certificate lifecycle is now reconciled. With no configured LE site left
+    // there is nothing to issue, export, generate config for, or renew — and
+    // nginx state is rebuilt by production startup itself (../reconcile.js),
+    // not here — so stop before all of that.
+    if (Object.keys(certs).length === 0) {
+      log("No Let's Encrypt sites configured; certificate cleanup completed");
+      return;
     }
 
     // Verify and export certificate files

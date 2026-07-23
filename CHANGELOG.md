@@ -169,6 +169,18 @@ Not affected: Certbot issuance/renewal behaviour, unused per-site fragments unde
 
 ---
 
+#### Removing a Let's Encrypt site now deletes its certificate
+
+`config.json` is the source of truth for the Certbot certificates this image manages. On every startup, a certificate whose name no longer matches a `letsencrypt` or `letsencrypt-staging` entry is deleted with `certbot delete`.
+
+This already happened when *some* Let's Encrypt sites remained, but not when the configured set became empty — the handler returned before the cleanup, so removing the **last** Let's Encrypt site kept its certificate forever while removing one of two deleted it. Both transitions are now consistent, and the same rule applies when an entry's `mode` changes to `custom` or `http`.
+
+**This is destructive.** Removing a site from `config.json` and restarting discards its certificate; re-adding the site later requests a new one, which counts against Let's Encrypt rate limits. To take a site offline without losing its certificate, keep its entry and stop routing traffic to it. See [docs/letsencrypt.md → Certificate lifecycle](docs/letsencrypt.md#certificate-lifecycle-removing-a-site-deletes-its-certificate).
+
+A startup with no configured Let's Encrypt sites still issues nothing, generates no site configuration, and starts no renewal cron — it only reconciles certificates. Certificates supplied for `custom` sites are never touched.
+
+---
+
 ### Internal
 
 - Simplified Let's Encrypt renewal implementation.

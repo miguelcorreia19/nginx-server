@@ -150,6 +150,17 @@ docker exec <container> ls /etc/nginx/conf.d/443/ /etc/nginx/conf.d/80/
 
 In production only the default vhosts and your currently configured sites should be listed; in development only the `dev` site and its redirect (development deliberately has no default vhosts — its own generated fragment is the HTTPS default server).
 
+### A Let's Encrypt certificate disappeared after a restart
+
+This is intended: `config.json` is the source of truth for the certificates this image manages, so on every startup a Certbot certificate with no matching `letsencrypt`/`letsencrypt-staging` entry is deleted — including the last one, and including an entry whose `mode` changed to `custom` or `http`.
+
+```bash
+docker logs <container> | grep "no longer in config.json"
+docker exec <container> certbot certificates
+```
+
+Re-adding the site requests a **new** certificate, which counts against Let's Encrypt rate limits. To take a site offline without losing its certificate, keep its `config.json` entry and stop routing traffic to it. See [Certificate lifecycle](letsencrypt.md#certificate-lifecycle-removing-a-site-deletes-its-certificate).
+
 ### Nginx not reloading after config change
 
 - Ensure you are modifying files inside the mounted `sites/` directory, not inside the container.

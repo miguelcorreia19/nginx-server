@@ -113,6 +113,20 @@ Migration is also belt-and-suspenders, not a hard prerequisite: the renewal comm
 
 **Issuance is intentionally unchanged.** New certificates are obtained with `certbot certonly --standalone`, which runs during container startup **before nginx is listening** — port 80 is free, so standalone is the simplest reliable option and webroot is not yet servable. Immediately after issuance (still at startup), the new certificate's standalone renewal config is migrated to webroot, so it will **renew via webroot** like every other certificate. No reissue is ever required to move an existing certificate onto webroot renewal.
 
+## Certificate lifecycle (removing a site deletes its certificate)
+
+`config.json` is the source of truth for the certificates this image manages. On every startup, any Certbot certificate whose name no longer matches a `letsencrypt` or `letsencrypt-staging` entry is **deleted** with `certbot delete`.
+
+This applies whenever an entry stops being a managed Let's Encrypt site:
+
+- the entry is removed from `config.json`;
+- the entry's `mode` changes to `custom` or `http`;
+- **including when it was the last Let's Encrypt site** — removing all of them deletes all of their certificates.
+
+> ⚠️ **This is destructive and immediate.** Deleting a site from `config.json` and restarting discards its certificate. Re-adding the site later means requesting a brand-new certificate, which counts against [rate limits](#rate-limits). If you want to keep a certificate while taking a site offline, keep its `config.json` entry and stop routing traffic to it instead — or enable [certificate backup](#certificate-backup) before removing it.
+
+Only certificates Certbot issued under this image's management are affected. Certificates you supply yourself for `custom` sites live under `CUSTOM_CERTS_PATH` and are never touched.
+
 ## Rate limits
 
 Let's Encrypt imposes certificate-issuance rate limits. To avoid hitting them while iterating on your configuration, use `letsencrypt-staging` mode first to verify your setup, then switch to `letsencrypt`.
@@ -120,6 +134,8 @@ Let's Encrypt imposes certificate-issuance rate limits. To avoid hitting them wh
 ## Certificate backup
 
 Enable `CERTBOT_BACKUP=true` to persist Let's Encrypt state to `CERTBOT_BACKUP_PATH` (default `/home/letsencrypt`) — mount that path as a named volume. On the next startup, if a backup exists, certbot loads certificates from the backup instead of re-issuing them, which also helps you stay within rate limits across container replacements.
+
+Note that the backup is written from whatever certificates remain *after* [lifecycle reconciliation](#certificate-lifecycle-removing-a-site-deletes-its-certificate). A certificate whose site you removed is deleted first, so it will not be carried into the next backup.
 
 ## Relevant environment variables
 
