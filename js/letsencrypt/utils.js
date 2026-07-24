@@ -108,6 +108,65 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
   return found_certs;
 }
 
+// Cheap local check for "is there any Certbot state the reconciliation below
+// could possibly discover or delete?", used to let a startup with zero
+// configured letsencrypt/letsencrypt-staging entries skip `certbot
+// certificates` entirely — so an http/custom-only deployment does not depend
+// on Certbot being healthy just to learn it has nothing to do.
+//
+// Local state is keyed on /etc/letsencrypt/renewal/*.conf because that is what
+// Certbot actually enumerates: verified against this image's Certbot 5.6.0,
+// a live/<id> or archive/<id> left behind *without* a renewal config is not
+// reported by `certbot certificates`, while a renewal config with no live or
+// archive still is Certbot's (and `certbot delete`'s) business. A successful
+// `certbot delete` removes the renewal config, so its continued presence is
+// also exactly the signal that a previous cleanup has not succeeded yet — which
+// keeps failed deletions retryable on the next startup.
+//
+// Any *.conf entry counts, parseable or not: corrupt/partial renewal state must
+// stay on the Certbot path so Certbot can surface it, never be hidden here.
+//
+// Deliberately conservative: this answers "must the slow path run?", and every
+// uncertain answer is `true`. Skipping cleanup that was needed would be a real
+// defect; running discovery that turned out to be unnecessary costs one command.
+const RENEWAL_DIR = "/etc/letsencrypt/renewal";
+
+exports.hasManagedCertbotState = (overrides = {}) => {
+  const renewalDir = overrides.renewalDir || RENEWAL_DIR;
+  // Read straight from the environment exactly as the parseCerts() restore gate
+  // above does — same truthiness, same (absent) default — so the two can never
+  // disagree about whether a backup would be restored.
+  const backupEnabled = 'backupEnabled' in overrides ? overrides.backupEnabled : process.env.CERTBOT_BACKUP;
+  const backupPath = 'backupPath' in overrides ? overrides.backupPath : process.env.CERTBOT_BACKUP_PATH;
+
+  // Local renewal configs.
+  try {
+    if (fs.existsSync(renewalDir) && fs.readdirSync(renewalDir).some((name) => name.endsWith('.conf'))) {
+      return true;
+    }
+  } catch (err) {
+    // Could not prove the directory is empty (permissions, I/O, a racing
+    // change). Fall through to the Certbot path rather than assuming absence.
+    return true;
+  }
+
+  // Backup state, mirroring the parseCerts(true) restore gate: same truthiness
+  // test, same live/ requirement, same README filter. Including it keeps the
+  // existing restore -> rediscover -> delete behaviour reachable unchanged.
+  if (backupEnabled && backupPath) {
+    try {
+      if (fs.existsSync(backupPath) && fs.existsSync(`${backupPath}/live`)) {
+        const entries = fs.readdirSync(`${backupPath}/live`);
+        if (entries.filter((name) => name !== 'README').length > 0) return true;
+      }
+    } catch (err) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 exports.checkCertFiles = (id, { cert_path, cert_key_path, cert_domains, status }) => {
   const certs = require("../config.json");
 

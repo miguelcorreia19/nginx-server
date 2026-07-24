@@ -181,6 +181,16 @@ A startup with no configured Let's Encrypt sites still issues nothing, generates
 
 ---
 
+#### Startups with no Let's Encrypt sites no longer require Certbot
+
+A startup with zero `letsencrypt`/`letsencrypt-staging` entries now skips Certbot entirely when the local filesystem proves there is nothing to reconcile — no `/etc/letsencrypt/renewal/*.conf` and no populated certificate backup that would be restored.
+
+The previous entry made certificate cleanup run even with zero configured entries, which meant an `http`/`custom`-only deployment invoked `certbot certificates` on every startup purely to discover it had nothing to do — and would fail to start if Certbot were unhealthy. That dependency is gone for deployments that have never used Let's Encrypt.
+
+The cleanup policy itself is unchanged. Any sign of managed state keeps the full path: an existing renewal config (including a corrupt or partial one), a populated backup, or a directory that cannot be read. A failed deletion leaves its renewal config in place, so it is still retried on the next startup; only after a successful cleanup does a later zero-entry startup skip Certbot.
+
+---
+
 ### Internal
 
 - Simplified Let's Encrypt renewal implementation.

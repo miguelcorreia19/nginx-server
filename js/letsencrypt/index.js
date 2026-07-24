@@ -1,4 +1,4 @@
-const { parseCerts, checkCertFiles } = require("./utils.js");
+const { parseCerts, checkCertFiles, hasManagedCertbotState } = require("./utils.js");
 const fs = require("fs");
 const { command, commandSafe, configFiles } = require("../utils.js");
 const { validateCronExpression } = require("../validate.js");
@@ -39,6 +39,18 @@ module.exports = async () => {
   // removing one of two already deletes it. The zero-entry return now sits
   // after that cleanup (see below); everything past it needs actual current
   // entries, so it stays gated.
+
+  // The one exception, and only when the local filesystem *proves* the cleanup
+  // below could find nothing: no renewal config for Certbot to enumerate and no
+  // backup that would be restored. Then `certbot certificates` can only report
+  // nothing, so running it would be pure ceremony — and it would make an
+  // http/custom-only deployment fail to start whenever Certbot is unhealthy.
+  // Every uncertain case (any renewal *.conf, a populated backup, an
+  // unreadable directory) keeps the full path below.
+  if (Object.keys(certs).length === 0 && !hasManagedCertbotState()) {
+    log("No Let's Encrypt sites configured and no Certbot state to reconcile");
+    return;
+  }
 
   try {
     const certificates = await parseCerts(true);

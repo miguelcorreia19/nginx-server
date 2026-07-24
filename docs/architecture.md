@@ -103,6 +103,14 @@ These principles shape the optional features, most visibly Fail2ban (full detail
 
 Let's Encrypt renewal is a cron-driven shell script, `certbot_renew.sh`, registered by the `letsencrypt` handler (`js/letsencrypt/index.js`) on a schedule (default `0 5 * * *`, overridable via `CERTBOT_RENEW_CRONJOB`). It renews certificates via **webroot**, so **nginx keeps port 80 the entire time** — there is no port-80 disable/restore handoff. The description below reflects the current implementation only.
 
+### Certificate lifecycle at startup
+
+`config.json` is the source of truth for the Certbot lineages this image manages: on every startup, a lineage with no matching `letsencrypt`/`letsencrypt-staging` entry is deleted — including when that leaves zero configured entries. See [docs/letsencrypt.md → Certificate lifecycle](letsencrypt.md#certificate-lifecycle-removing-a-site-deletes-its-certificate).
+
+That reconciliation is skipped only when the local filesystem *proves* it could find nothing: zero configured entries, no `/etc/letsencrypt/renewal/*.conf`, and no populated backup that would be restored (`hasManagedCertbotState` in `js/letsencrypt/utils.js`). Certbot enumerates lineages from its renewal configs, so their absence is what makes the skip provable — a leftover `live/` or `archive/` directory is not, and neither is a corrupt renewal config, which stays on the Certbot path so Certbot can surface it. Any state that cannot be inspected is also treated as "state exists".
+
+The practical effect is that an `http`/`custom`-only deployment does not depend on Certbot being healthy just to establish that it has nothing to do.
+
 - **Renewal flow.** Acquire the lock → run the Node renewal step (`js/letsencrypt/certbot_renew.js`), which (a) ensures every renewal config is webroot (in-place migration, defensive) and (b) runs `certbot renew --webroot -w /var/www/certbot` → reload nginx **only if a certificate was actually renewed** → release the lock. certbot writes the http-01 challenge into `/var/www/certbot`, which nginx already serves at `/.well-known/acme-challenge/`.
 - **Conditional reload.** "Did anything renew?" is detected with certbot's `--deploy-hook`, the supported signal that runs only when a certificate is renewed/deployed (exit code can't distinguish — it's `0` whether or not anything was due). The hook touches a flag file; `certbot_renew.sh` reloads nginx only if the flag exists afterward, so a daily "not yet due" no-op skips the reload (and its log line).
 - **Locking.** Only one renewal runs at a time. The lock is a directory created with `mkdir` (POSIX-atomic) holding a PID file. If a second run finds the lock, it logs "already in progress" and exits cleanly. A stale lock (dead PID) from a hard kill is detected and cleared on the next run.

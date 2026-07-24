@@ -10,6 +10,10 @@
 // Everything past that return needs actual current entries (issuance, export,
 // site generation, cron), so a zero-entry startup must still do none of it.
 //
+// A zero-entry startup only reaches that reconciliation when there is Certbot
+// state to reconcile; with none at all it returns before `parseCerts` (see the
+// final describe block).
+//
 // Mocking mirrors letsencrypt-default-vhost.test.js.
 
 const mockConfig = {};
@@ -18,6 +22,7 @@ jest.mock('../config.json', () => mockConfig, { virtual: true });
 jest.mock('../letsencrypt/utils.js', () => ({
   parseCerts: jest.fn(),
   checkCertFiles: jest.fn(),
+  hasManagedCertbotState: jest.fn(),
 }));
 
 jest.mock('../utils.js', () => ({
@@ -34,7 +39,7 @@ jest.mock('../letsencrypt/manage_certs.js', () => ({
 
 jest.mock('fs', () => ({ appendFileSync: jest.fn() }));
 
-const { parseCerts, checkCertFiles } = require('../letsencrypt/utils.js');
+const { parseCerts, checkCertFiles, hasManagedCertbotState } = require('../letsencrypt/utils.js');
 const { command, commandSafe, configFiles } = require('../utils.js');
 const { createCert, deleteCert, createConf } = require('../letsencrypt/manage_certs.js');
 const letsencryptMode = require('../letsencrypt/index.js');
@@ -57,6 +62,11 @@ const crondStarted = () => shellCommands().some((c) => typeof c === 'string' && 
 beforeEach(() => {
   jest.clearAllMocks();
   checkCertFiles.mockReturnValue(true);
+  // These suites are about the reconciliation path itself, so they represent a
+  // container that HAS managed Certbot state (a renewal config on disk). The
+  // zero-state fast path that skips discovery entirely is covered separately,
+  // in its own describe block at the bottom of this file.
+  hasManagedCertbotState.mockReturnValue(true);
   jest.spyOn(console, 'log').mockImplementation(() => {});
   jest.spyOn(console, 'warn').mockImplementation(() => {});
   jest.spyOn(console, 'error').mockImplementation(() => {});
@@ -282,5 +292,90 @@ describe('letsencrypt handler — deletion failure keeps its existing (non-fatal
     setConfig({});
 
     await expect(letsencryptMode()).rejects.toBeDefined();
+  });
+});
+
+// ──────────────────────────────────────────────
+//  Zero-state fast path: nothing configured, nothing installed
+// ──────────────────────────────────────────────
+describe('letsencrypt handler — skips Certbot entirely when there is no state to reconcile', () => {
+  beforeEach(() => {
+    // No configured entries AND no local renewal config / applicable backup.
+    setConfig({});
+    hasManagedCertbotState.mockReturnValue(false);
+  });
+
+  it('never invokes certificate discovery', async () => {
+    await letsencryptMode();
+
+    // The whole point: an http/custom-only deployment must not depend on
+    // `certbot certificates` succeeding just to learn it has nothing to do.
+    expect(parseCerts).not.toHaveBeenCalled();
+  });
+
+  it('deletes nothing and issues nothing', async () => {
+    await letsencryptMode();
+
+    expect(deleteCert).not.toHaveBeenCalled();
+    expect(createCert).not.toHaveBeenCalled();
+  });
+
+  it('generates no configuration, exports nothing and starts no cron', async () => {
+    await letsencryptMode();
+
+    expect(createConf).not.toHaveBeenCalled();
+    expect(configFiles).not.toHaveBeenCalled();
+    expect(commandSafe).not.toHaveBeenCalled();
+    expect(crondStarted()).toBe(false);
+  });
+
+  it('resolves cleanly', async () => {
+    await expect(letsencryptMode()).resolves.toBeUndefined();
+  });
+
+  it('still runs discovery when Certbot state is present (renewal config on disk)', async () => {
+    hasManagedCertbotState.mockReturnValue(true);
+    parseCerts.mockResolvedValue({ A: lineage('A', ['a.example.com']) });
+
+    await letsencryptMode();
+
+    expect(parseCerts).toHaveBeenCalled();
+    expect(deleteCert).toHaveBeenCalledWith('A');
+  });
+});
+
+describe('letsencrypt handler — the fast path requires zero configured entries', () => {
+  it('never skips when a letsencrypt entry is configured, even with no local state', async () => {
+    hasManagedCertbotState.mockReturnValue(false);
+    parseCerts.mockResolvedValue({});
+    setConfig({ A: { mode: 'letsencrypt', names: ['a.example.com'] } });
+
+    await letsencryptMode();
+
+    expect(parseCerts).toHaveBeenCalled();
+    expect(createCert).toHaveBeenCalledWith('A');
+  });
+
+  it('never skips when a letsencrypt-staging entry is configured', async () => {
+    hasManagedCertbotState.mockReturnValue(false);
+    parseCerts.mockResolvedValue({});
+    setConfig({ S: { mode: 'letsencrypt-staging', names: ['s.example.com'] } });
+
+    await letsencryptMode();
+
+    expect(parseCerts).toHaveBeenCalled();
+    expect(createCert).toHaveBeenCalledWith('S');
+  });
+
+  it('does skip when the only entries are non-LE modes', async () => {
+    hasManagedCertbotState.mockReturnValue(false);
+    setConfig({
+      A: { mode: 'http', names: ['a.example.com'] },
+      B: { mode: 'custom', names: ['b.example.com'], cert_file: 'b.crt', privkey_file: 'b.key' },
+    });
+
+    await letsencryptMode();
+
+    expect(parseCerts).not.toHaveBeenCalled();
   });
 });
