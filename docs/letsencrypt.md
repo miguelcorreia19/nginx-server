@@ -137,6 +137,8 @@ Enable `CERTBOT_BACKUP=true` to persist Let's Encrypt state to `CERTBOT_BACKUP_P
 
 Note that the backup is written from whatever certificates remain *after* [lifecycle reconciliation](#certificate-lifecycle-removing-a-site-deletes-its-certificate). A certificate whose site you removed is deleted first, so it will not be carried into the next backup.
 
+Leaving `CERTBOT_BACKUP` unset, empty, or set to `false` disables the feature completely — no backup is written, and an existing backup is never restored.
+
 ## Relevant environment variables
 
 | Variable | Description | Default |

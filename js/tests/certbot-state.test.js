@@ -177,21 +177,20 @@ describe('hasManagedCertbotState — backup state', () => {
     expect(hasManagedCertbotState(opts())).toBe(false);
   });
 
-  // parseCerts()'s restore gate is a bare truthiness test on CERTBOT_BACKUP, so
-  // the string "false" enables it there. The predicate mirrors that exactly
-  // rather than "fixing" it — the read/write gate inconsistency is a separate
-  // decision, and diverging here could let the fast path skip a restore that
-  // parseCerts would actually have performed.
-  it('mirrors the existing truthiness semantics: the string "false" still counts as enabled', () => {
+  // Backup enablement is one shared decision (certbotBackupEnabled), used by
+  // this predicate, by the parseCerts() restore gate and by both write paths.
+  // With backup disabled there is nothing to restore, so a populated backup
+  // cannot keep the zero-entry fast path on the slow route.
+  it('ignores a populated backup when CERTBOT_BACKUP is the string "false"', () => {
     process.env.CERTBOT_BACKUP = 'false';
     process.env.CERTBOT_BACKUP_PATH = backupPath;
     mkBackupLive();
     fs.mkdirSync(path.join(backupPath, 'live', 'A'));
 
-    expect(hasManagedCertbotState(opts())).toBe(true);
+    expect(hasManagedCertbotState(opts())).toBe(false);
   });
 
-  it('treats the empty string as disabled, as a bare truthiness test does', () => {
+  it('treats the empty string as disabled', () => {
     process.env.CERTBOT_BACKUP = '';
     process.env.CERTBOT_BACKUP_PATH = backupPath;
     mkBackupLive();
@@ -248,5 +247,55 @@ describe('hasManagedCertbotState — an uninspectable directory chooses the slow
     expect(() => hasManagedCertbotState(opts())).not.toThrow();
 
     spy.mockRestore();
+  });
+});
+
+// ──────────────────────────────────────────────
+//  The shared enablement predicate
+// ──────────────────────────────────────────────
+describe('certbotBackupEnabled — one decision shared by restore, write and fast path', () => {
+  const { certbotBackupEnabled } = require('../letsencrypt/utils.js');
+
+  it('is disabled when CERTBOT_BACKUP is unset', () => {
+    delete process.env.CERTBOT_BACKUP;
+    expect(certbotBackupEnabled()).toBe(false);
+  });
+
+  it('is disabled for the empty string', () => {
+    process.env.CERTBOT_BACKUP = '';
+    expect(certbotBackupEnabled()).toBe(false);
+  });
+
+  // The bug this predicate exists to fix: environment values are strings, so a
+  // bare truthiness test made the documented "false" enable the feature.
+  it('is disabled for the literal string "false"', () => {
+    process.env.CERTBOT_BACKUP = 'false';
+    expect(certbotBackupEnabled()).toBe(false);
+  });
+
+  it('is enabled for "true"', () => {
+    process.env.CERTBOT_BACKUP = 'true';
+    expect(certbotBackupEnabled()).toBe(true);
+  });
+
+  it('is enabled for any other non-empty value', () => {
+    process.env.CERTBOT_BACKUP = '1';
+    expect(certbotBackupEnabled()).toBe(true);
+  });
+
+  // Only the exact documented literal is special-cased; no new boolean-string
+  // vocabulary is introduced.
+  it('does not invent new falsy spellings', () => {
+    for (const value of ['FALSE', 'False', '0', 'no', 'off']) {
+      process.env.CERTBOT_BACKUP = value;
+      expect(certbotBackupEnabled()).toBe(true);
+    }
+  });
+
+  it('accepts an explicit value argument, for callers holding an overridden one', () => {
+    delete process.env.CERTBOT_BACKUP;
+    expect(certbotBackupEnabled('true')).toBe(true);
+    expect(certbotBackupEnabled('false')).toBe(false);
+    expect(certbotBackupEnabled(undefined)).toBe(false);
   });
 });

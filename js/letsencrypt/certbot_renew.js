@@ -1,4 +1,4 @@
-const { parseCerts } = require("./utils.js");
+const { parseCerts, certbotBackupEnabled } = require("./utils.js");
 const { command, commandSafe } = require("../utils.js");
 const migrateRenewalConfigs = require("./migrate_renewal");
 
@@ -83,7 +83,7 @@ const start = async () => {
     }
 
     // Backup Let's Encrypt state if enabled (behavior unchanged).
-    if (process.env.CERTBOT_BACKUP && process.env.CERTBOT_BACKUP !== 'false') {
+    if (certbotBackupEnabled()) {
       log(`Backing up Let's Encrypt state to ${process.env.CERTBOT_BACKUP_PATH}`);
       await command(`cp -rf /etc/letsencrypt/* ${process.env.CERTBOT_BACKUP_PATH}`);
       log('Backup completed');

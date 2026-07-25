@@ -7,6 +7,22 @@ const { log, error } = createLogger("letsencrypt");
 
 let COUNT_PROTECTION = 200;
 
+// The single enablement decision for certificate backup, shared by every gate:
+// the restore path in parseCerts() below, the fast-path detection in
+// hasManagedCertbotState(), and the two write paths (letsencrypt/index.js and
+// letsencrypt/certbot_renew.js).
+//
+// Environment variables are strings, so a bare truthiness test makes the
+// documented value CERTBOT_BACKUP=false *enable* the feature. The restore path
+// used to do exactly that while the write paths did not, so `false` disabled
+// writing but still permitted restoring. All four now share this predicate.
+//
+// Deliberately only the exact literal "false" — no "FALSE"/"0"/"no"/"off" —
+// matching the documented `true`/`false` values and the exact test the write
+// paths already used.
+exports.certbotBackupEnabled = certbotBackupEnabled = (value = process.env.CERTBOT_BACKUP) =>
+  !!value && value !== 'false';
+
 exports.parseCerts = parseCerts = async (copy_files = false) => {
 
   let output = undefined;
@@ -84,7 +100,7 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
     }
   } else if (
     copy_files &&
-    process.env.CERTBOT_BACKUP
+    certbotBackupEnabled()
   ) {
     log("Checking backup certificates...");
     if (fs.existsSync(process.env.CERTBOT_BACKUP_PATH) &&
@@ -133,10 +149,12 @@ const RENEWAL_DIR = "/etc/letsencrypt/renewal";
 
 exports.hasManagedCertbotState = (overrides = {}) => {
   const renewalDir = overrides.renewalDir || RENEWAL_DIR;
-  // Read straight from the environment exactly as the parseCerts() restore gate
-  // above does — same truthiness, same (absent) default — so the two can never
-  // disagree about whether a backup would be restored.
-  const backupEnabled = 'backupEnabled' in overrides ? overrides.backupEnabled : process.env.CERTBOT_BACKUP;
+  // Runs the raw value through the same certbotBackupEnabled() predicate the
+  // parseCerts() restore gate above uses, so the two can never disagree about
+  // whether a backup would actually be restored.
+  const backupEnabled = certbotBackupEnabled(
+    'backupEnabled' in overrides ? overrides.backupEnabled : process.env.CERTBOT_BACKUP
+  );
   const backupPath = 'backupPath' in overrides ? overrides.backupPath : process.env.CERTBOT_BACKUP_PATH;
 
   // Local renewal configs.
@@ -150,9 +168,11 @@ exports.hasManagedCertbotState = (overrides = {}) => {
     return true;
   }
 
-  // Backup state, mirroring the parseCerts(true) restore gate: same truthiness
-  // test, same live/ requirement, same README filter. Including it keeps the
-  // existing restore -> rediscover -> delete behaviour reachable unchanged.
+  // Backup state, mirroring the parseCerts(true) restore gate: same enablement
+  // predicate, same live/ requirement, same README filter. Including it keeps
+  // the restore -> rediscover -> delete behaviour reachable unchanged — and
+  // when backup is disabled there is nothing to restore, so it cannot block
+  // the fast path.
   if (backupEnabled && backupPath) {
     try {
       if (fs.existsSync(backupPath) && fs.existsSync(`${backupPath}/live`)) {

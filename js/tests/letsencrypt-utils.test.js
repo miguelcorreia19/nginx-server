@@ -61,6 +61,26 @@ describe('parseCerts — backup restore logic (live dir contents)', () => {
     expect(result).toEqual({});
   });
 
+  // Environment values are strings, so the restore gate used to treat the
+  // documented CERTBOT_BACKUP=false as enabled while the write paths treated it
+  // as disabled — `false` disabled writing but still permitted restoring. All
+  // the gates now share certbotBackupEnabled(), so "false" disables restore too.
+  it('does not restore when CERTBOT_BACKUP is the string "false", even with a populated backup', async () => {
+    process.env.CERTBOT_BACKUP = 'false';
+    process.env.CERTBOT_BACKUP_PATH = '/backup';
+    fs.existsSync.mockReturnValue(true);
+    fs.readdirSync.mockReturnValue(['README', 'example.com']);
+    command.mockResolvedValueOnce(NO_CERTS_OUTPUT);
+
+    const result = await parseCerts(true);
+
+    expect(fs.readdirSync).not.toHaveBeenCalled();
+    expect(command).not.toHaveBeenCalledWith(expect.stringContaining('cp -rf'));
+    // Discovery ran exactly once — no recursive re-parse after a restore.
+    expect(command).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({});
+  });
+
   it('discards the backup when the live directory contains only README', async () => {
     setupBackupEnv();
     fs.existsSync.mockReturnValue(true);

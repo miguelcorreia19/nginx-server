@@ -191,6 +191,19 @@ The cleanup policy itself is unchanged. Any sign of managed state keeps the full
 
 ---
 
+#### Fixed: `CERTBOT_BACKUP=false` now disables backups completely
+
+`CERTBOT_BACKUP=false` disabled *writing* the certificate backup but still allowed an existing backup to be *restored*, because environment values are strings and the restore path used a bare truthiness test (`Boolean("false") === true`) while the write paths tested `!== 'false'`.
+
+All the backup gates — restore, write, and the startup state check — now share one enablement predicate, so `CERTBOT_BACKUP` means the same thing everywhere:
+
+- unset, empty, or `false` — disabled: nothing is written and nothing is restored;
+- any other non-empty value — enabled, exactly as before.
+
+Only the documented literal `false` is special-cased; no new spellings (`FALSE`, `0`, `no`, `off`) were introduced, and `CERTBOT_BACKUP_PATH` is unchanged. As a side effect, a startup with no Let's Encrypt sites and backups disabled is no longer held on the slow path by a populated backup directory it would never have restored.
+
+---
+
 ### Internal
 
 - Simplified Let's Encrypt renewal implementation.

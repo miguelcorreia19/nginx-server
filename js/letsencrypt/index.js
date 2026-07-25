@@ -1,4 +1,4 @@
-const { parseCerts, checkCertFiles, hasManagedCertbotState } = require("./utils.js");
+const { parseCerts, checkCertFiles, hasManagedCertbotState, certbotBackupEnabled } = require("./utils.js");
 const fs = require("fs");
 const { command, commandSafe, configFiles } = require("../utils.js");
 const { validateCronExpression } = require("../validate.js");
@@ -158,7 +158,7 @@ module.exports = async () => {
     }
 
     // Back up Let's Encrypt state (optional)
-    if (process.env.CERTBOT_BACKUP && process.env.CERTBOT_BACKUP !== 'false') {
+    if (certbotBackupEnabled()) {
       log(`Backing up Let's Encrypt state to ${process.env.CERTBOT_BACKUP_PATH}`);
       await command(`cp -rf /etc/letsencrypt/* ${process.env.CERTBOT_BACKUP_PATH}`);
       log('Backup completed');
