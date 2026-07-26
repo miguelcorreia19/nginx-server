@@ -204,6 +204,16 @@ Only the documented literal `false` is special-cased; no new spellings (`FALSE`,
 
 ---
 
+#### Fixed: compatibility with Certbot's `Identifiers:` certificate output
+
+Current Certbot releases — including the 5.6.0 this image ships — label a certificate's domain list `Identifiers:`, where earlier versions printed `Domains:`. The startup parser recognised only `Domains:`, so a discovered certificate came back without its domain list and startup aborted with `TypeError: Cannot read properties of undefined (reading 'filter')`.
+
+The practical effect was that a fresh deployment started normally and every restart after that failed, because the first startup issued the certificate the next startup could not parse.
+
+Both labels are now accepted, so one image works against old and new Certbot output alike. Certbot output containing neither label now fails inside the certificate parser with a message naming the affected certificate, instead of resurfacing later as an unrelated error.
+
+---
+
 ### Internal
 
 - Simplified Let's Encrypt renewal implementation.

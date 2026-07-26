@@ -38,7 +38,12 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
   if (!output.match(regex)) {
 
     const CERT_NAME = 'Certificate Name:';
-    const CERT_DOMAINS = 'Domains:';
+    // Certbot renamed this field from "Domains:" to "Identifiers:" when
+    // certificates gained support for non-DNS identifiers; the 5.6.0 this image
+    // ships emits "Identifiers:", while older images emit "Domains:". Both are
+    // accepted so one parser works across image versions, and neither spelling
+    // is dropped — the first label present in the block wins.
+    const CERT_DOMAIN_LABELS = ['Identifiers:', 'Domains:'];
     const CERT_PATH = 'Certificate Path:';
     const CERT_KEY_PATH = 'Private Key Path:';
     const CERT_VALID = 'Expiry Date:';
@@ -67,14 +72,42 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
         error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_KEY_PATH}"`);
       }
 
-      // Get cert domains
-      if ((index = output.indexOf(CERT_DOMAINS, last_index)) !== -1) {
-        new_line = output.indexOf('\n', index);
-        new_cert.cert_domains = output.substring(index + CERT_DOMAINS.length + 1/* white space */, new_line);
-        new_cert.cert_domains = new_cert.cert_domains.split(' ').filter(c => c.length > 0);
-      } else {
-        error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_DOMAINS}"`);
+      // Get cert domains. The search is bounded to this certificate's own block
+      // so a block missing the field can never silently inherit the *next*
+      // certificate's identifiers — which would hand checkCertFiles() a wrong
+      // domain list instead of a detectable failure.
+      const next_name = output.indexOf(CERT_NAME, last_index + CERT_NAME.length);
+      const block_end = next_name === -1 ? output.length : next_name;
+
+      let domains_index = -1, domains_label = '';
+      for (const label of CERT_DOMAIN_LABELS) {
+        const at = output.indexOf(label, last_index);
+        if (at !== -1 && at < block_end && (domains_index === -1 || at < domains_index)) {
+          domains_index = at;
+          domains_label = label;
+        }
       }
+
+      if (domains_index === -1) {
+        // Fail here rather than logging and continuing. Every consumer treats
+        // cert_domains as an array (checkCertFiles, configFiles, the status
+        // summaries), so letting an incomplete certificate escape turns an
+        // unsupported Certbot output format into an unrelated TypeError much
+        // further downstream.
+        throw new Error(
+          `Failed to parse "certbot certificates" output for "${cert_id}": no ` +
+          `${CERT_DOMAIN_LABELS.map(label => `"${label}"`).join(' or ')} field in its block`
+        );
+      }
+
+      // Tolerant of the field's indentation and of any run of whitespace between
+      // identifiers, but only for the two labels recognised above.
+      new_line = output.indexOf('\n', domains_index);
+      new_cert.cert_domains = output
+        .substring(domains_index + domains_label.length, new_line === -1 ? output.length : new_line)
+        .trim()
+        .split(/\s+/)
+        .filter(c => c.length > 0);
 
       // Get cert status
       if ((index = output.indexOf(CERT_VALID, last_index)) !== -1) {
