@@ -204,13 +204,29 @@ Only the documented literal `false` is special-cased; no new spellings (`FALSE`,
 
 ---
 
-#### Fixed: compatibility with Certbot's `Identifiers:` certificate output
+#### Changed: pinned runtime version contract
 
-Current Certbot releases — including the 5.6.0 this image ships — label a certificate's domain list `Identifiers:`, where earlier versions printed `Domains:`. The startup parser recognised only `Domains:`, so a discovered certificate came back without its domain list and startup aborted with `TypeError: Cannot read properties of undefined (reading 'filter')`.
+The image now targets one explicit, tested runtime stack instead of whatever the floating `nginx:alpine` tag happened to resolve to at build time:
+
+| Component | Pinned to |
+| --- | --- |
+| nginx | 1.31.4 |
+| Alpine | 3.24 |
+| Certbot | 5.6.0-r0 |
+
+Both build stages use `nginx:1.31.4-alpine3.24`, and Certbot is installed as `certbot=5.6.0-r0` rather than resolved by name. Tags such as `nginx:1.31-alpine` or `nginx:alpine3.24` were not used, since they still leave the nginx patch selection floating.
+
+The Certbot pin is load-bearing rather than cosmetic: startup parses `certbot certificates` output, so a silent Certbot upgrade is a startup risk and not merely a dependency change. If the pinned package ever stops being available, the build now fails rather than quietly installing a different version. This does not pin every transitive Alpine package, and no base-image digest is used.
+
+---
+
+#### Fixed: startup aborted once a certificate existed
+
+Certbot 5.6 labels a certificate's domain list `Identifiers:`; the startup parser looked for the older `Domains:` label, so a discovered certificate came back without its domain list and startup aborted with `TypeError: Cannot read properties of undefined (reading 'filter')`.
 
 The practical effect was that a fresh deployment started normally and every restart after that failed, because the first startup issued the certificate the next startup could not parse.
 
-Both labels are now accepted, so one image works against old and new Certbot output alike. Certbot output containing neither label now fails inside the certificate parser with a message naming the affected certificate, instead of resurfacing later as an unrelated error.
+The parser now reads `Identifiers:`, matching the pinned Certbot version above. Consistent with the version contract, pre-5.6 `Domains:` output is deliberately *not* accepted — unrecognised output fails inside the certificate parser with a message naming the affected certificate, instead of resurfacing later as an unrelated error. Each certificate block is also parsed within its own bounds, so a block missing the field cannot pick up the next certificate's identifiers.
 
 ---
 

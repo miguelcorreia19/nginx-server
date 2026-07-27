@@ -12,7 +12,7 @@ const dockerfile  = fs.readFileSync(path.join(root, 'Dockerfile'), 'utf8');
 // Split the Dockerfile at the runtime stage boundary (second FROM, no AS).
 // The builder stage is used only to produce node_modules; the runtime stage
 // is what actually runs in production.
-const runtimeStageMatch = dockerfile.search(/^FROM nginx:alpine\s*$/m);
+const runtimeStageMatch = dockerfile.search(/^FROM nginx:1\.31\.4-alpine3\.24\s*$/m);
 const runtimeStage = runtimeStageMatch >= 0 ? dockerfile.slice(runtimeStageMatch) : dockerfile;
 
 // Strip comment lines so assertions on package names are not tripped by
@@ -62,7 +62,7 @@ describe('Dockerfile — build-time dependency install', () => {
 
 describe('Dockerfile — multi-stage build isolates build tools from runtime', () => {
   it('has a builder stage (node-builder) for npm ci', () => {
-    expect(dockerfile).toMatch(/FROM nginx:alpine AS node-builder/);
+    expect(dockerfile).toMatch(/FROM nginx:1\.31\.4-alpine3\.24 AS node-builder/);
   });
 
   it('copies pre-built node_modules from the builder stage', () => {
@@ -97,6 +97,33 @@ describe('Dockerfile — required runtime packages are installed', () => {
 
   it('installs bash (all shell scripts require bash for pushd/trap/etc.)', () => {
     expect(runtimeNoComments).toMatch(/\bbash\b/);
+  });
+});
+
+// The project supports one explicit runtime stack rather than an undefined
+// range of nginx/Alpine/Certbot versions. The Certbot pin in particular is
+// load-bearing: js/letsencrypt/utils.js parses `certbot certificates` output
+// and targets the 5.6 format, so an unnoticed Certbot bump is a startup risk,
+// not merely a dependency change.
+describe('Dockerfile — pinned runtime version contract', () => {
+  it('pins the base image to an exact nginx and Alpine version', () => {
+    expect(dockerfile).toMatch(/FROM nginx:1\.31\.4-alpine3\.24/);
+  });
+
+  it('leaves no floating base tag', () => {
+    // nginx:alpine, nginx:1.31-alpine and nginx:alpine3.24 all still let the
+    // nginx patch/minor selection drift between rebuilds.
+    expect(dockerfile).not.toMatch(/FROM nginx:alpine/);
+    expect(dockerfile).not.toMatch(/FROM nginx:[0-9]+\.[0-9]+-alpine/);
+    expect(dockerfile).not.toMatch(/FROM nginx:alpine3/);
+  });
+
+  it('pins certbot to the exact Alpine package revision the parser targets', () => {
+    expect(runtimeNoComments).toMatch(/\bcertbot=5\.6\.0-r0\b/);
+  });
+
+  it('does not install certbot unpinned', () => {
+    expect(runtimeNoComments).not.toMatch(/^\s*certbot\s*\\?\s*$/m);
   });
 });
 

@@ -1,15 +1,24 @@
-# 1.29.3-alpine
+# Runtime version contract — one explicit, tested stack rather than an
+# undefined range of nginx/Alpine/Certbot versions:
+#   nginx    1.31.4
+#   Alpine   3.24
+#   certbot  5.6.0-r0
+# Both the base tag and the certbot package version are pinned explicitly, so
+# neither can drift on a rebuild. The Certbot pin is load-bearing beyond the
+# binary itself: js/letsencrypt/utils.js parses `certbot certificates` output,
+# and 5.6 labels a certificate's domain list `Identifiers:`.
+#
 # ---- Build stage: install Node dependencies --------------------------------
 # npm is only needed here; the binary is intentionally absent from the
 # runtime image below.
-FROM nginx:alpine AS node-builder
+FROM nginx:1.31.4-alpine3.24 AS node-builder
 
 RUN apk add --no-cache nodejs npm
 COPY js/package*.json /home/scripts/js/
 RUN cd /home/scripts/js && npm ci --omit=dev
 
 # ---- Runtime image ---------------------------------------------------------
-FROM nginx:alpine
+FROM nginx:1.31.4-alpine3.24
 
 LABEL maintainer="Miguel Correia <miguelcorreia19@hotmail.com>"
 
@@ -23,7 +32,11 @@ ENV CUSTOM_CERTS_PATH=/home/custom-certificates
 ENV CUSTOM_NGINX_CONFIG_FILES_PATH=/home/nginx/configs
 
 # Install runtime dependencies in a single layer.
-# - certbot: Let's Encrypt certificate management (also brings python3 as a dep)
+# - certbot: Let's Encrypt certificate management (also brings python3 as a dep).
+#            Pinned exactly: the startup parser targets 5.6's certificate
+#            output format, so an unnoticed Certbot bump is a startup risk,
+#            not just a dependency change. A pin that can no longer be
+#            resolved must fail the build rather than be loosened.
 # - openssl: self-signed cert generation in dev mode and certbot letsencrypt fallback
 # - nodejs: runs entrypoint.js and all mode-handler scripts
 # - inotify-tools: inotifywait used by reload.sh to watch config-file changes
@@ -39,7 +52,7 @@ ENV CUSTOM_NGINX_CONFIG_FILES_PATH=/home/nginx/configs
 #   python3   — pulled in transitively by certbot/fail2ban; no need to list explicitly
 RUN apk upgrade --no-cache --available \
     && apk add --no-cache \
-        certbot \
+        certbot=5.6.0-r0 \
         openssl \
         nodejs \
         inotify-tools \

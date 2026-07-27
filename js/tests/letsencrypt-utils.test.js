@@ -175,48 +175,54 @@ describe('parseCerts — backup restore logic (live dir contents)', () => {
 });
 
 // ──────────────────────────────────────────────
-//  Certificate block parsing — real Certbot output
+//  Certificate block parsing — Certbot 5.6 output
 // ──────────────────────────────────────────────
 //
-// These exercise the real parseCerts() against output shaped like what the
-// image's Certbot actually prints. The bug they exist to prevent survived
-// precisely because every handler test mocks parseCerts() and hands the handler
-// a ready-made object, so no test ever compared the parser to reality: Certbot
-// renamed the domain field to "Identifiers:", the parser still looked for
-// "Domains:", and cert_domains silently became undefined until something
-// downstream called .filter() on it.
+// The image pins certbot=5.6.0-r0 (see Dockerfile), so there is exactly one
+// supported `certbot certificates` output format and these exercise the real
+// parseCerts() against it.
 //
-// The fixture below is transcribed from `certbot certificates` run against
-// Certbot 5.6.0 in this project's own image (two lineages, one of them with two
+// They exist because the parser previously went untested against reality:
+// every handler test mocks parseCerts() and hands the handler a ready-made
+// object, so when Certbot renamed the domain field to "Identifiers:" nothing
+// noticed that the parser still looked for the older "Domains:" — cert_domains
+// silently became undefined until something downstream called .filter() on it.
+//
+// The fixture is transcribed from `certbot certificates` run against Certbot
+// 5.6.0 in this project's own image (two lineages, one of them with two
 // identifiers), not from what the parser expects to receive.
 
-const certbotOutput = (label, blocks) => `
+const certbotOutput = (blocks) => `
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 Found the following certs:
-${blocks.map(({ name, domains, serial }) => `  Certificate Name: ${name}
+${blocks.map(({ name, identifiers, serial }) => `  Certificate Name: ${name}
     Serial Number: ${serial}
     Key Type: RSA
-    ${label} ${domains}
+    Identifiers: ${identifiers}
     Expiry Date: 2026-09-26 23:25:50+00:00 (VALID: 29 days)
     Certificate Path: /etc/letsencrypt/live/${name}/fullchain.pem
     Private Key Path: /etc/letsencrypt/live/${name}/privkey.pem`).join('\n')}
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 `;
 
-const EXAMPLE = { name: 'example', domains: 'example.com www.example.com', serial: '3d8b2f29c9fa34921b3037ebdb6d5a1cad080173' };
-const OTHER = { name: 'other', domains: 'other.example.org', serial: '1f90126eda799af7ad67455af687c7116666a53f' };
+const EXAMPLE = { name: 'example', identifiers: 'example.com www.example.com', serial: '3d8b2f29c9fa34921b3037ebdb6d5a1cad080173' };
+const OTHER = { name: 'other', identifiers: 'other.example.org', serial: '1f90126eda799af7ad67455af687c7116666a53f' };
 
-describe('parseCerts — Certbot 5.6.0 "Identifiers:" output', () => {
+// Strips the identifier field from the first block only.
+const withoutIdentifiers = (blocks) =>
+  certbotOutput(blocks).replace(/^ *Identifiers:.*$/m, '    Key Usage: Digital Signature');
+
+describe('parseCerts — Certbot 5.6 "Identifiers:" output', () => {
   it('parses the identifier list into cert_domains', async () => {
-    command.mockResolvedValueOnce(certbotOutput('Identifiers:', [EXAMPLE]));
+    command.mockResolvedValueOnce(certbotOutput([EXAMPLE]));
 
     const result = await parseCerts();
 
     expect(result.example.cert_domains).toEqual(['example.com', 'www.example.com']);
   });
 
-  it('parses every other field alongside it, unchanged', async () => {
-    command.mockResolvedValueOnce(certbotOutput('Identifiers:', [EXAMPLE]));
+  it('parses every other field alongside it', async () => {
+    command.mockResolvedValueOnce(certbotOutput([EXAMPLE]));
 
     const result = await parseCerts();
 
@@ -230,31 +236,9 @@ describe('parseCerts — Certbot 5.6.0 "Identifiers:" output', () => {
   });
 });
 
-describe('parseCerts — historical "Domains:" output stays supported', () => {
-  it('parses the domain list from the old label', async () => {
-    command.mockResolvedValueOnce(certbotOutput('Domains:', [EXAMPLE]));
-
-    const result = await parseCerts();
-
-    expect(result.example.cert_domains).toEqual(['example.com', 'www.example.com']);
-  });
-
-  // Fixing the current image must not break older ones, so both spellings have
-  // to produce byte-identical parse results.
-  it('produces identical results to the new label', async () => {
-    command.mockResolvedValueOnce(certbotOutput('Identifiers:', [EXAMPLE, OTHER]));
-    const fromIdentifiers = await parseCerts();
-
-    command.mockResolvedValueOnce(certbotOutput('Domains:', [EXAMPLE, OTHER]));
-    const fromDomains = await parseCerts();
-
-    expect(fromDomains).toEqual(fromIdentifiers);
-  });
-});
-
 describe('parseCerts — multiple certificate blocks', () => {
-  it.each(['Identifiers:', 'Domains:'])('keeps each block\'s domains to itself (%s)', async (label) => {
-    command.mockResolvedValueOnce(certbotOutput(label, [EXAMPLE, OTHER]));
+  it('keeps each block\'s identifiers to itself', async () => {
+    command.mockResolvedValueOnce(certbotOutput([EXAMPLE, OTHER]));
 
     const result = await parseCerts();
 
@@ -268,7 +252,7 @@ describe('parseCerts — multiple certificate blocks', () => {
 describe('parseCerts — indentation and separator tolerance', () => {
   it('does not depend on an exact number of spaces before the field', async () => {
     command.mockResolvedValueOnce(
-      certbotOutput('Identifiers:', [EXAMPLE]).replace('    Identifiers:', '        Identifiers:')
+      certbotOutput([EXAMPLE]).replace('    Identifiers:', '        Identifiers:')
     );
 
     const result = await parseCerts();
@@ -278,7 +262,7 @@ describe('parseCerts — indentation and separator tolerance', () => {
 
   it('splits identifiers on any run of whitespace', async () => {
     command.mockResolvedValueOnce(
-      certbotOutput('Identifiers:', [EXAMPLE]).replace('example.com www.example.com', 'example.com   www.example.com')
+      certbotOutput([EXAMPLE]).replace('example.com www.example.com', 'example.com   www.example.com')
     );
 
     const result = await parseCerts();
@@ -287,31 +271,27 @@ describe('parseCerts — indentation and separator tolerance', () => {
   });
 });
 
-describe('parseCerts — a block with neither supported label fails at the parser', () => {
-  // The whole point of the fix: an unsupported output format must surface as a
-  // clear parser error, never as an undefined field that becomes a TypeError in
-  // checkCertFiles() several steps later.
-  const withoutDomainField = (blocks = [{ ...EXAMPLE, name: 'broken' }]) =>
-    certbotOutput('Identifiers:', blocks).replace(/^ *Identifiers:.*$/m, '    Key Usage: Digital Signature');
-
+describe('parseCerts — a block without "Identifiers:" fails at the parser', () => {
+  // Unsupported output must surface as a clear parser error, never as an
+  // undefined field that becomes a TypeError in checkCertFiles() several steps
+  // later.
   it('rejects, naming the affected certificate', async () => {
-    command.mockResolvedValueOnce(withoutDomainField());
+    command.mockResolvedValueOnce(withoutIdentifiers([{ ...EXAMPLE, name: 'broken' }]));
 
     await expect(parseCerts()).rejects.toThrow(/broken/);
   });
 
-  it('says which labels it looked for', async () => {
-    command.mockResolvedValueOnce(withoutDomainField());
+  it('says which field it looked for', async () => {
+    command.mockResolvedValueOnce(withoutIdentifiers([{ ...EXAMPLE, name: 'broken' }]));
 
-    await expect(parseCerts()).rejects.toThrow(/"Identifiers:" or "Domains:"/);
+    await expect(parseCerts()).rejects.toThrow(/no "Identifiers:" field/);
   });
 
   it('is a parser error, not a downstream TypeError', async () => {
-    command.mockResolvedValueOnce(withoutDomainField());
-
+    command.mockResolvedValueOnce(withoutIdentifiers([{ ...EXAMPLE, name: 'broken' }]));
     await expect(parseCerts()).rejects.toThrow(/Failed to parse "certbot certificates" output/);
 
-    command.mockResolvedValueOnce(withoutDomainField());
+    command.mockResolvedValueOnce(withoutIdentifiers([{ ...EXAMPLE, name: 'broken' }]));
     await expect(parseCerts()).rejects.not.toBeInstanceOf(TypeError);
   });
 
@@ -320,15 +300,29 @@ describe('parseCerts — a block with neither supported label fails at the parse
   // identifiers — a wrong domain list is worse than a detected failure, because
   // checkCertFiles() would act on it and needlessly recreate the certificate.
   it('does not inherit the following block\'s identifiers', async () => {
-    command.mockResolvedValueOnce(withoutDomainField([{ ...EXAMPLE, name: 'broken' }, OTHER]));
+    command.mockResolvedValueOnce(withoutIdentifiers([{ ...EXAMPLE, name: 'broken' }, OTHER]));
 
     await expect(parseCerts()).rejects.toThrow(/broken/);
   });
 });
 
+describe('parseCerts — the supported Certbot version is a contract, not a guess', () => {
+  // Pre-5.6 Certbot labelled this field "Domains:". The image pins
+  // certbot=5.6.0-r0, so that output is out of contract: it must fail visibly
+  // at the parser rather than be quietly accommodated. This is the deliberate
+  // reversal of the temporary dual-label compatibility.
+  it('rejects pre-5.6 "Domains:" output instead of accepting it', async () => {
+    const legacy = certbotOutput([EXAMPLE]).replace('Identifiers:', 'Domains:');
+
+    command.mockResolvedValueOnce(legacy);
+
+    await expect(parseCerts()).rejects.toThrow(/no "Identifiers:" field/);
+  });
+});
+
 describe('parseCerts — cert_domains is always usable on a successful parse', () => {
-  it.each(['Identifiers:', 'Domains:'])('returns an array for every entry (%s)', async (label) => {
-    command.mockResolvedValueOnce(certbotOutput(label, [EXAMPLE, OTHER]));
+  it('returns a populated array for every entry', async () => {
+    command.mockResolvedValueOnce(certbotOutput([EXAMPLE, OTHER]));
 
     const result = await parseCerts();
 

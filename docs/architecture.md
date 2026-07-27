@@ -8,6 +8,8 @@ For user-facing usage, see the [README](../README.md) and the guides under [`doc
 
 `nginx-server` is an Alpine-based Docker image that wraps **nginx** with a small **Node.js configuration layer**. At container start, the Node layer reads a mounted `config.json`, validates it, generates the appropriate nginx server-block and SSL configuration for each site, validates the assembled config with `nginx -t`, and then hands off to nginx as the foreground process. Two background helpers run alongside nginx: a file watcher that reloads nginx on config changes, and (optionally) Fail2ban.
 
+The image targets one explicit, tested runtime stack rather than a floating base tag: **nginx 1.31.4** on **Alpine 3.24**, with **Certbot 5.6.0-r0**. The Certbot pin is more than reproducibility housekeeping — startup parses `certbot certificates` output, whose domain-list field is labelled `Identifiers:` in Certbot 5.6 (earlier releases printed `Domains:`). The parser targets that one supported format and fails loudly on output it does not recognise, rather than guessing across versions.
+
 The pieces:
 
 - **nginx** — the actual web server / reverse proxy; the long-running foreground process (PID 1).
