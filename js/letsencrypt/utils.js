@@ -213,6 +213,44 @@ exports.hasManagedCertbotState = (overrides = {}) => {
   return false;
 }
 
+// The renewal configs Certbot enumerates lineages from, by filename stem
+// (`A.conf` -> `A`). The stem *is* the Certbot cert-name — verified against the
+// pinned Certbot 5.6.0, where `certbot delete --cert-name A` looks for
+// /etc/letsencrypt/renewal/A.conf — which is what makes a stem directly usable
+// with deleteCert().
+//
+// Same directory and same `*.conf` rule as hasManagedCertbotState() above, so
+// the two can never disagree about what counts as managed renewal state.
+//
+// Contents are deliberately not parsed here. Whether Certbot can actually *use*
+// a renewal config is Certbot's answer to give, and it gives it by enumerating
+// the lineage or not; re-deriving that in Node would mean reimplementing
+// Certbot's own validity rules.
+const RENEWAL_CONF_SUFFIX = '.conf';
+
+exports.renewalConfigPath = (stem, overrides = {}) =>
+  `${overrides.renewalDir || RENEWAL_DIR}/${stem}${RENEWAL_CONF_SUFFIX}`;
+
+exports.listRenewalStems = (overrides = {}) => {
+  const renewalDir = overrides.renewalDir || RENEWAL_DIR;
+
+  let entries;
+  try {
+    entries = fs.readdirSync(renewalDir);
+  } catch (err) {
+    // Certbot creates this directory lazily, so a missing one genuinely means
+    // "no lineages". Every other failure leaves the answer unknown and is
+    // raised to the caller: treating an unreadable directory as empty would
+    // silently downgrade "cannot tell" into "nothing to reconcile".
+    if (err.code === 'ENOENT') return [];
+    throw err;
+  }
+
+  return entries
+    .filter((name) => name.endsWith(RENEWAL_CONF_SUFFIX))
+    .map((name) => name.slice(0, -RENEWAL_CONF_SUFFIX.length));
+};
+
 exports.checkCertFiles = (id, { cert_path, cert_key_path, cert_domains, status }) => {
   const certs = require("../config.json");
 

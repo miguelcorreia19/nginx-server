@@ -127,6 +127,17 @@ This applies whenever an entry stops being a managed Let's Encrypt site:
 
 Only certificates Certbot issued under this image's management are affected. Certificates you supply yourself for `custom` sites live under `CUSTOM_CERTS_PATH` and are never touched.
 
+### Lineages Certbot cannot list
+
+Certbot enumerates certificates from its renewal configs in `/etc/letsencrypt/renewal/`. If one of those configs becomes unreadable — a damaged file, a partial restore, a hand-edit — Certbot skips it, and the certificate stops appearing in `certbot certificates` at all. Startup detects these by comparing the renewal filenames against what Certbot actually reported.
+
+The same source-of-truth rule then applies, with one deliberate exception:
+
+- **No longer a managed Let's Encrypt site** — deleted, exactly like any other stale lineage. This is the case the reconciliation above would otherwise miss forever, because the certificate is invisible to it.
+- **Still configured as `letsencrypt` or `letsencrypt-staging`** — **kept**, and reported with a warning naming the site and its renewal config. It is not deleted, because the certificate files may still be perfectly usable and discarding them would force a new issuance against [rate limits](#rate-limits). Startup then continues with the normal flow for that site.
+
+For an unreadable config, Certbot may report the deletion as failed while still removing the renewal config itself; any leftover files under `live/` and `archive/` are inert once that config is gone, and startup says so rather than reporting a clean deletion. See [troubleshooting](troubleshooting.md#a-certificate-is-not-listed-by-certbot).
+
 ## Rate limits
 
 Let's Encrypt imposes certificate-issuance rate limits. To avoid hitting them while iterating on your configuration, use `letsencrypt-staging` mode first to verify your setup, then switch to `letsencrypt`.

@@ -161,6 +161,28 @@ docker exec <container> certbot certificates
 
 Re-adding the site requests a **new** certificate, which counts against Let's Encrypt rate limits. To take a site offline without losing its certificate, keep its `config.json` entry and stop routing traffic to it. See [Certificate lifecycle](letsencrypt.md#certificate-lifecycle-removing-a-site-deletes-its-certificate).
 
+### A certificate is not listed by Certbot
+
+If `certbot certificates` does not show a site you expect, its renewal config in `/etc/letsencrypt/renewal/` is likely unreadable, and Certbot is skipping it. Startup detects this by comparing renewal filenames against what Certbot reported, and logs one of two things.
+
+For a site **still configured** as `letsencrypt`/`letsencrypt-staging`, it warns and changes nothing:
+
+```bash
+docker logs <container> | grep "did not enumerate"
+docker exec <container> certbot certificates
+docker exec <container> ls /etc/letsencrypt/renewal/
+```
+
+The certificate is deliberately **not** deleted, since its files may still be usable and discarding them would force a new issuance against rate limits. The site continues through the normal startup flow, so it may fall back to a self-signed certificate until the renewal config is fixed. Repairing or replacing that file restores normal renewal.
+
+For a lineage **no longer** configured as a Let's Encrypt site, it is deleted like any other stale one:
+
+```bash
+docker logs <container> | grep "undiscoverable"
+```
+
+Certbot may report that deletion as failed while still removing the renewal config; leftover `live/`/`archive/` directories are inert at that point and are left alone. See [Lineages Certbot cannot list](letsencrypt.md#lineages-certbot-cannot-list).
+
 ### Nginx not reloading after config change
 
 - Ensure you are modifying files inside the mounted `sites/` directory, not inside the container.

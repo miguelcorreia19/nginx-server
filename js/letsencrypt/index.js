@@ -1,4 +1,4 @@
-const { parseCerts, checkCertFiles, hasManagedCertbotState, certbotBackupEnabled } = require("./utils.js");
+const { parseCerts, checkCertFiles, hasManagedCertbotState, certbotBackupEnabled, listRenewalStems, renewalConfigPath } = require("./utils.js");
 const fs = require("fs");
 const { command, commandSafe, configFiles } = require("../utils.js");
 const { validateCronExpression } = require("../validate.js");
@@ -64,6 +64,73 @@ module.exports = async () => {
     //  }
     // }
 
+    // Renewal configs Certbot did not enumerate. Certbot lists lineages from
+    // /etc/letsencrypt/renewal/*.conf, so a stem with no matching discovery
+    // result is managed state the reconciliation below can never see — it is
+    // absent from `certificates`, which is what every existing loop iterates.
+    //
+    // Called "undiscoverable" rather than "corrupt" on purpose: the set
+    // difference proves only that Certbot did not enumerate the lineage, not
+    // why. Every audited example is an unparseable renewal config, but the
+    // detection makes no claim beyond non-enumeration.
+    //
+    // Deliberately computed *after* parseCerts(true): that call can restore a
+    // certificate backup and so change the renewal directory. Snapshotting the
+    // stems beforehand would miss whatever this startup restored.
+    let undiscoverable = [];
+    // Unresolved managed state still present after this pass.
+    let cleanupIncomplete = false;
+    // Renewal metadata gone, but Certbot reported failure and inert files may
+    // remain. Nothing is left to reconcile, so this is not "incomplete" — but
+    // the summary should not read as an unqualified success either.
+    let cleanupPartial = false;
+    try {
+      undiscoverable = listRenewalStems().filter((stem) => !certificates[stem]);
+    } catch (err) {
+      // Absence was not proven, so nothing may be deleted on this evidence.
+      // The discovered-lineage workflow below is unaffected and still runs.
+      cleanupIncomplete = true;
+      warn(`Could not enumerate renewal configs (${err.message}) — skipping undiscoverable-lineage cleanup this startup`);
+    }
+
+    // Split by the same source-of-truth rule the discovered lineages use:
+    // `certs` is already the effective letsencrypt/letsencrypt-staging set,
+    // with an omitted mode defaulted to letsencrypt above. A stem can only fall
+    // into one of these branches, and never into the discovered-lineage cleanup
+    // further down, which iterates the parse result these stems are absent from.
+    for (const stem of undiscoverable) {
+      if (certs[stem]) {
+        // Still configured for Let's Encrypt. The lineage may well be sitting
+        // on usable certificate material, so deleting it here would destroy
+        // state the operator still wants and force a fresh issuance. Surface
+        // it instead — making the condition visible is the whole remit.
+        cleanupIncomplete = true;
+        warn(`Certificate "${stem}" has a renewal config (${renewalConfigPath(stem)}) that Certbot did not enumerate, so it is invisible to certificate reconciliation`);
+        warn(`  Left in place: "${stem}" is still configured as mode "${certs[stem].mode}". Startup continues with the normal flow for this site below.`);
+        continue;
+      }
+
+      log(`Removing undiscoverable certificate ${stem} (no longer in config.json)`);
+
+      const deleted = await deleteCert(stem);
+      if (deleted) {
+        log(`Certificate ${stem} deleted`);
+        continue;
+      }
+
+      // Certbot 5.6 fails on a structurally unparseable renewal config yet
+      // still removes that config, leaving live/ and archive/ behind. Those are
+      // inert once the renewal config is gone — Certbot no longer enumerates
+      // them — so they are deliberately left alone rather than removed by hand.
+      if (!fs.existsSync(renewalConfigPath(stem))) {
+        cleanupPartial = true;
+        warn(`Certificate ${stem} deletion reported failure, but its renewal config was removed — inert files may remain under /etc/letsencrypt/{live,archive}/${stem}`);
+      } else {
+        cleanupIncomplete = true;
+        error(`Certificate ${stem} deletion failed and its renewal config remains — cleanup will be retried on the next startup`);
+      }
+    }
+
     // Manage certificates
     for (let id in certs) {
 
@@ -119,7 +186,9 @@ module.exports = async () => {
     // nginx state is rebuilt by production startup itself (../reconcile.js),
     // not here — so stop before all of that.
     if (Object.keys(certs).length === 0) {
-      log("No Let's Encrypt sites configured; certificate cleanup completed");
+      if (cleanupIncomplete) warn("No Let's Encrypt sites configured; certificate cleanup incomplete (see warnings above)");
+      else if (cleanupPartial) log("No Let's Encrypt sites configured; certificate cleanup completed with warnings");
+      else log("No Let's Encrypt sites configured; certificate cleanup completed");
       return;
     }
 

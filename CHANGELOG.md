@@ -204,6 +204,21 @@ Only the documented literal `false` is special-cased; no new spellings (`FALSE`,
 
 ---
 
+#### Changed: certificate lineages Certbot cannot list are now reconciled
+
+Certbot enumerates certificates from its renewal configs, so a renewal config it cannot read makes that certificate invisible to `certbot certificates` — and therefore invisible to startup reconciliation, which iterates exactly that list. Such a lineage was previously never cleaned up when its site was removed, and never mentioned when its site was kept.
+
+Startup now finds them by comparing the `renewal/*.conf` filename stems against what Certbot actually reported. The comparison runs after discovery, so anything a backup restore added during the same startup is included. The same `config.json`-is-source-of-truth rule then applies, with one deliberate exception:
+
+- a lineage that is **no longer** a configured `letsencrypt`/`letsencrypt-staging` site is deleted through the existing `certbot delete` path, like any other stale certificate;
+- a lineage that is **still configured** is **kept** and reported with a warning naming the site and its renewal config. Deleting it would discard certificate material that may still be usable and force a new issuance against rate limits, so startup only makes the condition visible and continues with the normal flow for that site.
+
+An omitted `mode` counts as `letsencrypt`, so those entries are protected too. Certbot can report such a deletion as failed while still removing the renewal config; startup reports that honestly as a partial cleanup instead of a clean deletion, and leaves the inert `live/`/`archive/` files alone rather than removing them by hand. The zero-site completion message no longer claims cleanup finished when unresolved state remains.
+
+Detection is a filename set difference, not a reading of Certbot's warning text or exit status — Certbot exits `0` whether or not a renewal config was skipped. It proves only that a lineage was not enumerated, not why, which is why the logs call these lineages *undiscoverable* rather than corrupt.
+
+---
+
 #### Changed: pinned runtime version contract
 
 The image now targets one explicit, tested runtime stack instead of whatever the floating `nginx:alpine` tag happened to resolve to at build time:
