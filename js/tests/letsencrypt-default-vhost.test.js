@@ -21,6 +21,11 @@ jest.mock('../config.json', () => mockConfig, { virtual: true });
 jest.mock('../letsencrypt/utils.js', () => ({
   parseCerts: jest.fn(),
   checkCertFiles: jest.fn(),
+  hasManagedCertbotState: jest.fn(() => true),
+  certbotBackupEnabled: jest.fn(() => false),
+  listRenewalStems: jest.fn(() => []),
+  renewalConfigPath: jest.fn((stem) => `/etc/letsencrypt/renewal/${stem}.conf`),
+  backupCertbotState: jest.fn(() => Promise.resolve()),
 }));
 
 jest.mock('../utils.js', () => ({

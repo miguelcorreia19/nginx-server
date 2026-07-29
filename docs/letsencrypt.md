@@ -148,6 +148,10 @@ Enable `CERTBOT_BACKUP=true` to persist Let's Encrypt state to `CERTBOT_BACKUP_P
 
 Note that the backup is written from whatever certificates remain *after* [lifecycle reconciliation](#certificate-lifecycle-removing-a-site-deletes-its-certificate). A certificate whose site you removed is deleted first, so it will not be carried into the next backup.
 
+One lineage is deliberately excluded from every backup write: a certificate that is [still configured but which Certbot cannot list](#lineages-certbot-cannot-list). Its local state is suspect, so whatever the backup already holds for that certificate — its renewal config, `live/` and `archive/` together — is left exactly as it is rather than being overwritten, and if the backup has no copy, none is created from the suspect state. Every other certificate continues to back up normally.
+
+This preserves the last known-good copy instead of replacing it on the first restart after the problem appears. It is a safeguard, not a repair: restoring such a copy is still a manual decision, and nothing is restored automatically.
+
 Leaving `CERTBOT_BACKUP` unset, empty, or set to `false` disables the feature completely — no backup is written, and an existing backup is never restored.
 
 ## Relevant environment variables

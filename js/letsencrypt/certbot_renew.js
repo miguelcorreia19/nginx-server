@@ -1,4 +1,4 @@
-const { parseCerts, certbotBackupEnabled } = require("./utils.js");
+const { parseCerts, certbotBackupEnabled, listRenewalStems, isDesiredLetsencryptEntry, backupCertbotState } = require("./utils.js");
 const { command, commandSafe } = require("../utils.js");
 const migrateRenewalConfigs = require("./migrate_renewal");
 
@@ -82,11 +82,36 @@ const start = async () => {
       log(`    chain:     ${chainDest}`);
     }
 
-    // Backup Let's Encrypt state if enabled (behavior unchanged).
+    // Backup Let's Encrypt state if enabled.
+    //
+    // This runs from cron, so it repeats daily for as long as a damaged lineage
+    // exists — it poisons a healthy backup just as the startup write did, and
+    // more often. It has no access to the handler's in-memory entry set, so the
+    // protected lineages are recomputed here from the same three inputs the
+    // handler uses: the renewal stems, this run's discovery result, and
+    // config.json read through the shared desired-entry rule.
     if (certbotBackupEnabled()) {
-      log(`Backing up Let's Encrypt state to ${process.env.CERTBOT_BACKUP_PATH}`);
-      await command(`cp -rf /etc/letsencrypt/* ${process.env.CERTBOT_BACKUP_PATH}`);
-      log('Backup completed');
+      let protectedLineages = null;
+      try {
+        const configured = require("../config.json");
+        protectedLineages = listRenewalStems().filter(
+          (stem) => !final_certificates[stem] && isDesiredLetsencryptEntry(configured[stem])
+        );
+      } catch (err) {
+        // Same stance as startup: an unknown protected set means the backup
+        // cannot be updated safely, and skipping one write is the harmless half
+        // of that trade.
+        warn(`Skipping backup: could not determine which lineages to protect (${err.message})`);
+      }
+
+      if (protectedLineages) {
+        log(`Backing up Let's Encrypt state to ${process.env.CERTBOT_BACKUP_PATH}`);
+        if (protectedLineages.length > 0) {
+          log(`Preserving the existing backup for ${protectedLineages.length} lineage(s) Certbot could not enumerate: ${protectedLineages.join(', ')}`);
+        }
+        await backupCertbotState({ protectedLineages });
+        log('Backup completed');
+      }
     }
   } catch (err) {
     error(`certbot renewal failed: ${err.error || err.message || err}`);

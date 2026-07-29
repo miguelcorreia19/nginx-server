@@ -1,6 +1,6 @@
 const fs = require("fs");
 const { DateTime } = require("luxon");
-const { command } = require("../utils.js");
+const { command, commandSafe } = require("../utils.js");
 
 const { createLogger } = require("../logger.js");
 const { log, error } = createLogger("letsencrypt");
@@ -249,6 +249,76 @@ exports.listRenewalStems = (overrides = {}) => {
   return entries
     .filter((name) => name.endsWith(RENEWAL_CONF_SUFFIX))
     .map((name) => name.slice(0, -RENEWAL_CONF_SUFFIX.length));
+};
+
+// Is this config.json entry a certificate this image manages?
+//
+// This is the rule the Let's Encrypt handler applies when it builds its
+// effective entry set (js/letsencrypt/index.js): an omitted mode defaults to
+// letsencrypt — matching validateConfigEntry in ../validate.js — and only
+// letsencrypt/letsencrypt-staging are managed. It lives here so the renewal
+// process, which has no access to the handler's in-memory set, can classify a
+// lineage the same way rather than inventing its own reading of "desired".
+const LETSENCRYPT_MODES = ['letsencrypt', 'letsencrypt-staging'];
+
+exports.isDesiredLetsencryptEntry = (entry) =>
+  !!entry && LETSENCRYPT_MODES.includes(entry.mode === undefined ? 'letsencrypt' : entry.mode);
+
+// Copy Certbot state into the backup, leaving protected lineages alone.
+//
+// A lineage Certbot cannot enumerate but config.json still wants is preserved
+// locally rather than deleted (see index.js). The backup write used to copy it
+// over its own backed-up counterpart anyway, so one startup was enough to
+// replace the last known-good copy with the suspect state — and every restart
+// re-did it. Protected lineages are therefore skipped here: whatever the backup
+// already holds for them, present or absent, is left exactly as it is.
+//
+// Protection covers renewal/<id>.conf, live/<id> and archive/<id> together.
+// They are one recovery unit; copying the parts that still look healthy would
+// leave a lineage whose config and material came from different points in time.
+const LETSENCRYPT_DIR = "/etc/letsencrypt";
+// Certbot's per-lineage directories. Everything else under /etc/letsencrypt
+// (accounts/, renewal-hooks/, ...) is global and is copied wholesale as before.
+const LINEAGE_DIRS = ['renewal', 'live', 'archive'];
+
+exports.backupCertbotState = async (options = {}) => {
+  const source = options.sourceDir || LETSENCRYPT_DIR;
+  const backupPath = 'backupPath' in options ? options.backupPath : process.env.CERTBOT_BACKUP_PATH;
+  const protectedLineages = new Set(options.protectedLineages || []);
+
+  // With nothing to protect this is byte-for-byte the copy it has always been,
+  // so the ordinary path keeps its exact previous semantics.
+  if (protectedLineages.size === 0) {
+    await command(`cp -rf ${source}/* ${backupPath}`);
+    return;
+  }
+
+  // `${source}/*` above is a shell glob, which never matches dotfiles. The walk
+  // below skips them for the same reason: otherwise enabling protection would
+  // silently start backing up files the bulk copy never included, such as
+  // migrate_renewal.js's .nginx-server-renewal-schema marker.
+  const visible = (dir) => fs.readdirSync(dir).filter((name) => !name.startsWith('.'));
+
+  for (const entry of visible(source)) {
+    if (!LINEAGE_DIRS.includes(entry)) {
+      // `cp -rf <dir> <backup>` merges into an existing directory of the same
+      // name, exactly as the bulk copy did.
+      await commandSafe('cp', ['-rf', `${source}/${entry}`, backupPath]);
+      continue;
+    }
+
+    const destDir = `${backupPath}/${entry}`;
+    fs.mkdirSync(destDir, { recursive: true });
+
+    for (const child of visible(`${source}/${entry}`)) {
+      // renewal/ holds <id>.conf files; live/ and archive/ hold <id> directories.
+      const id = entry === 'renewal' ? child.replace(/\.conf$/, '') : child;
+      if (protectedLineages.has(id)) continue;
+      // Same `cp -rf` as before, so live/<id>'s symlinks into archive/<id> stay
+      // symlinks rather than being dereferenced into regular files.
+      await commandSafe('cp', ['-rf', `${source}/${entry}/${child}`, destDir]);
+    }
+  }
 };
 
 exports.checkCertFiles = (id, { cert_path, cert_key_path, cert_domains, status }) => {

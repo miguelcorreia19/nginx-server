@@ -204,6 +204,16 @@ Only the documented literal `false` is special-cased; no new spellings (`FALSE`,
 
 ---
 
+#### Fixed: a damaged certificate no longer overwrites its own backup
+
+When Certbot cannot list a certificate that `config.json` still configures, startup preserves it locally and warns rather than deleting it. The backup write then copied that suspect state over its backed-up counterpart anyway, so a single startup replaced the last known-good copy — and every restart repeated it, leaving the backup useless as a recovery source after one restart. The daily renewal job did the same, more often.
+
+Both backup writes now skip such a certificate. Its `renewal/<id>.conf`, `live/<id>` and `archive/<id>` are protected together as one recovery unit: whatever the backup already holds is left untouched, and if the backup has no copy, none is created from the suspect state. Every other certificate — and Certbot's non-certificate state, such as account data — continues to back up exactly as before, including certificates that changed in the same run.
+
+This preserves recovery material; it does not restore anything. Automatic recovery from a backup remains a separate decision.
+
+---
+
 #### Changed: certificate lineages Certbot cannot list are now reconciled
 
 Certbot enumerates certificates from its renewal configs, so a renewal config it cannot read makes that certificate invisible to `certbot certificates` — and therefore invisible to startup reconciliation, which iterates exactly that list. Such a lineage was previously never cleaned up when its site was removed, and never mentioned when its site was kept.

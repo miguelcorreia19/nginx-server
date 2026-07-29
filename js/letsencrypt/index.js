@@ -1,4 +1,4 @@
-const { parseCerts, checkCertFiles, hasManagedCertbotState, certbotBackupEnabled, listRenewalStems, renewalConfigPath } = require("./utils.js");
+const { parseCerts, checkCertFiles, hasManagedCertbotState, certbotBackupEnabled, listRenewalStems, renewalConfigPath, backupCertbotState } = require("./utils.js");
 const fs = require("fs");
 const { command, commandSafe, configFiles } = require("../utils.js");
 const { validateCronExpression } = require("../validate.js");
@@ -78,6 +78,14 @@ module.exports = async () => {
     // certificate backup and so change the renewal directory. Snapshotting the
     // stems beforehand would miss whatever this startup restored.
     let undiscoverable = [];
+    // Lineages Certbot could not enumerate that config.json still wants. They
+    // are preserved locally, so the backup write below must preserve whatever
+    // the backup already holds for them rather than copying this state over it.
+    const protectedLineages = [];
+    // False once renewal configs could not be enumerated: the protected set is
+    // then unknown, and a backup write could overwrite good state for a lineage
+    // that was never checked.
+    let lineagesClassified = true;
     // Unresolved managed state still present after this pass.
     let cleanupIncomplete = false;
     // Renewal metadata gone, but Certbot reported failure and inert files may
@@ -90,6 +98,7 @@ module.exports = async () => {
       // Absence was not proven, so nothing may be deleted on this evidence.
       // The discovered-lineage workflow below is unaffected and still runs.
       cleanupIncomplete = true;
+      lineagesClassified = false;
       warn(`Could not enumerate renewal configs (${err.message}) — skipping undiscoverable-lineage cleanup this startup`);
     }
 
@@ -105,6 +114,7 @@ module.exports = async () => {
         // state the operator still wants and force a fresh issuance. Surface
         // it instead — making the condition visible is the whole remit.
         cleanupIncomplete = true;
+        protectedLineages.push(stem);
         warn(`Certificate "${stem}" has a renewal config (${renewalConfigPath(stem)}) that Certbot did not enumerate, so it is invisible to certificate reconciliation`);
         warn(`  Left in place: "${stem}" is still configured as mode "${certs[stem].mode}". Startup continues with the normal flow for this site below.`);
         continue;
@@ -228,9 +238,19 @@ module.exports = async () => {
 
     // Back up Let's Encrypt state (optional)
     if (certbotBackupEnabled()) {
-      log(`Backing up Let's Encrypt state to ${process.env.CERTBOT_BACKUP_PATH}`);
-      await command(`cp -rf /etc/letsencrypt/* ${process.env.CERTBOT_BACKUP_PATH}`);
-      log('Backup completed');
+      if (!lineagesClassified) {
+        // Which lineages need protecting is unknown, and a backup is an
+        // optimisation — skipping one write is harmless, while overwriting the
+        // last good copy of a lineage that could not be checked is not.
+        warn('Skipping backup: renewal configs could not be enumerated, so the existing backup cannot be updated safely');
+      } else {
+        log(`Backing up Let's Encrypt state to ${process.env.CERTBOT_BACKUP_PATH}`);
+        if (protectedLineages.length > 0) {
+          log(`Preserving the existing backup for ${protectedLineages.length} lineage(s) Certbot could not enumerate: ${protectedLineages.join(', ')}`);
+        }
+        await backupCertbotState({ protectedLineages });
+        log('Backup completed');
+      }
     }
 
     // Set up automatic renewal

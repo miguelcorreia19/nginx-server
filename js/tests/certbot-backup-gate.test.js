@@ -24,6 +24,11 @@ jest.mock('../letsencrypt/utils.js', () => {
     checkCertFiles: jest.fn(),
     hasManagedCertbotState: jest.fn(),
     certbotBackupEnabled: actual.certbotBackupEnabled,
+    // The real writer, so these assertions still check the command actually
+    // issued. Its `command` dependency resolves to the mock below.
+    backupCertbotState: actual.backupCertbotState,
+    listRenewalStems: jest.fn(() => []),
+    renewalConfigPath: actual.renewalConfigPath,
   };
 });
 
