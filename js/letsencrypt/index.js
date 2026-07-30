@@ -78,10 +78,11 @@ module.exports = async () => {
     // certificate backup and so change the renewal directory. Snapshotting the
     // stems beforehand would miss whatever this startup restored.
     let undiscoverable = [];
-    // Lineages Certbot could not enumerate that config.json still wants. They
-    // are preserved locally, so the backup write below must preserve whatever
-    // the backup already holds for them rather than copying this state over it.
-    const protectedLineages = [];
+    // Lineages Certbot could not enumerate that config.json still wants. This
+    // one set drives two decisions: their existing backup is preserved rather
+    // than overwritten with this state, and issuance for them is suppressed
+    // (see the loop below for why reissuing cannot repair them).
+    const desiredUndiscoverable = [];
     // False once renewal configs could not be enumerated: the protected set is
     // then unknown, and a backup write could overwrite good state for a lineage
     // that was never checked.
@@ -114,9 +115,10 @@ module.exports = async () => {
         // state the operator still wants and force a fresh issuance. Surface
         // it instead — making the condition visible is the whole remit.
         cleanupIncomplete = true;
-        protectedLineages.push(stem);
+        desiredUndiscoverable.push(stem);
         warn(`Certificate "${stem}" has a renewal config (${renewalConfigPath(stem)}) that Certbot did not enumerate, so it is invisible to certificate reconciliation`);
-        warn(`  Left in place: "${stem}" is still configured as mode "${certs[stem].mode}". Startup continues with the normal flow for this site below.`);
+        warn(`  Left in place: "${stem}" is still configured as mode "${certs[stem].mode}", so its certificate files are preserved and its existing backup is protected.`);
+        warn(`  Issuance suppressed: Certbot cannot reissue into a cert-name whose renewal config it cannot read — it would create "${stem}-0001" instead, which this image would then delete as an orphan. Repair or restore ${renewalConfigPath(stem)} to resume normal operation.`);
         continue;
       }
 
@@ -141,8 +143,22 @@ module.exports = async () => {
       }
     }
 
+    // Verified against the pinned Certbot 5.6: `certonly --cert-name <id>` on a
+    // lineage whose renewal config cannot be read does not repair it. Certbot
+    // cannot construct the existing lineage, so it takes the new-certificate
+    // path, finds <id>.conf already occupying the name, and persists the result
+    // as <id>-0001 — which matches no configured site and is deleted as an
+    // orphan on the next startup. Issuing therefore spends a real certificate
+    // to produce something this image immediately throws away, so these sites
+    // are skipped until their lineage is repaired or restored.
+    const suppressed = new Set(desiredUndiscoverable);
+
     // Manage certificates
     for (let id in certs) {
+
+      // Only ever true for a site absent from `certificates`, since that
+      // absence is what put it in the set — the branch below cannot apply.
+      if (suppressed.has(id)) continue;
 
       if (certificates[id]) {
         log(`Certificate ${id} found`);
@@ -217,6 +233,11 @@ module.exports = async () => {
           await commandSafe('cp', [cert_key_path.replace('privkey', 'chain'), `/etc/ssl/certs/${id}_chain.pem`]);
         }
         await createConf(id, final_certificates[id]);
+      } else if (suppressed.has(id)) {
+        // No fallback: the site has real certificate material on disk that
+        // Certbot cannot currently see, and writing a self-signed fragment
+        // would neither serve it (nothing links this site while it has no
+        // parsed certificate) nor reflect what is actually there.
       } else {
         await createConf(id, { status: 'invalid', cert_path: '', cert_key_path: '' });
       }
@@ -227,7 +248,7 @@ module.exports = async () => {
     log(`Certificate status summary: ${ids.length} certificate(s)`);
     for (const id of ids) {
       if (!final_certificates[id]) {
-        log(`- ${id}: invalid`);
+        log(`- ${id}: ${suppressed.has(id) ? 'undiscoverable — issuance suppressed, existing lineage preserved' : 'invalid'}`);
         log(`  domains: ${certs[id].names.join(', ')}`);
       } else {
         const { cert_domains, status } = final_certificates[id];
@@ -245,10 +266,10 @@ module.exports = async () => {
         warn('Skipping backup: renewal configs could not be enumerated, so the existing backup cannot be updated safely');
       } else {
         log(`Backing up Let's Encrypt state to ${process.env.CERTBOT_BACKUP_PATH}`);
-        if (protectedLineages.length > 0) {
-          log(`Preserving the existing backup for ${protectedLineages.length} lineage(s) Certbot could not enumerate: ${protectedLineages.join(', ')}`);
+        if (desiredUndiscoverable.length > 0) {
+          log(`Preserving the existing backup for ${desiredUndiscoverable.length} lineage(s) Certbot could not enumerate: ${desiredUndiscoverable.join(', ')}`);
         }
-        await backupCertbotState({ protectedLineages });
+        await backupCertbotState({ protectedLineages: desiredUndiscoverable });
         log('Backup completed');
       }
     }

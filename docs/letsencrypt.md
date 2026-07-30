@@ -134,7 +134,9 @@ Certbot enumerates certificates from its renewal configs in `/etc/letsencrypt/re
 The same source-of-truth rule then applies, with one deliberate exception:
 
 - **No longer a managed Let's Encrypt site** — deleted, exactly like any other stale lineage. This is the case the reconciliation above would otherwise miss forever, because the certificate is invisible to it.
-- **Still configured as `letsencrypt` or `letsencrypt-staging`** — **kept**, and reported with a warning naming the site and its renewal config. It is not deleted, because the certificate files may still be perfectly usable and discarding them would force a new issuance against [rate limits](#rate-limits). Startup then continues with the normal flow for that site.
+- **Still configured as `letsencrypt` or `letsencrypt-staging`** — **kept**, and reported with a warning naming the site and its renewal config. It is not deleted, because the certificate files may still be perfectly usable and discarding them would force a new issuance against [rate limits](#rate-limits).
+
+  Automatic issuance for that site is also **suppressed**. Certbot cannot reissue into a certificate name whose renewal config it cannot read: instead of repairing it, it would create a second lineage called `<id>-0001`, which matches no configured site and would be cleaned up as stale on the next startup — spending a certificate to produce something that is immediately discarded. The site therefore stays unavailable until its renewal config is repaired or replaced, rather than quietly consuming your rate limit. Its existing backup copy is preserved throughout.
 
 For an unreadable config, Certbot may report the deletion as failed while still removing the renewal config itself; any leftover files under `live/` and `archive/` are inert once that config is gone, and startup says so rather than reporting a clean deletion. See [troubleshooting](troubleshooting.md#a-certificate-is-not-listed-by-certbot).
 

@@ -47,8 +47,8 @@ jest.mock('fs', () => ({
 
 const fs = require('fs');
 const { parseCerts, checkCertFiles, hasManagedCertbotState, listRenewalStems } = require('../letsencrypt/utils.js');
-const { command } = require('../utils.js');
-const { createCert, deleteCert } = require('../letsencrypt/manage_certs.js');
+const { command, configFiles } = require('../utils.js');
+const { createCert, deleteCert, createConf } = require('../letsencrypt/manage_certs.js');
 const letsencryptMode = require('../letsencrypt/index.js');
 
 const lineage = (domains) => ({
@@ -413,5 +413,174 @@ describe('discovered-lineage orphan cleanup is unchanged', () => {
 
     expect(deletedNames().sort()).toEqual(['broken', 'old']);
     expect(deleteCert).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ──────────────────────────────────────────────
+//  Issuance suppression
+// ──────────────────────────────────────────────
+//
+// Verified against the pinned Certbot 5.6: `certonly --cert-name <id>` cannot
+// repair a lineage whose renewal config it cannot read. Certbot fails to
+// construct the existing lineage, takes the new-certificate path, finds
+// <id>.conf already holding the name, and persists the result as <id>-0001 —
+// which matches no configured site and is deleted as an orphan on the next
+// startup. Issuing therefore spends a real certificate on something this image
+// immediately discards, so these sites are skipped entirely.
+
+const suppressionWarned = () => logged(warnSpy, /Issuance suppressed/);
+const fallbackWritten = (id) =>
+  createConf.mock.calls.some(([certId, arg]) => certId === id && arg && arg.status === 'invalid');
+
+describe('a desired undiscoverable lineage does not trigger issuance', () => {
+  beforeEach(() => {
+    parseCerts.mockResolvedValue({});
+    listRenewalStems.mockReturnValue(['A']);
+  });
+
+  it.each([
+    ['letsencrypt', { mode: 'letsencrypt', names: ['a.example.com'] }],
+    ['letsencrypt-staging', { mode: 'letsencrypt-staging', names: ['a.example.com'] }],
+    // An omitted mode defaults to letsencrypt, so it is suppressed too.
+    ['omitted mode', { names: ['a.example.com'] }],
+  ])('never calls createCert for a %s site', async (_label, entry) => {
+    setConfig({ A: entry });
+
+    await letsencryptMode();
+
+    expect(createCert).not.toHaveBeenCalled();
+  });
+
+  it('does not delete the lineage either', async () => {
+    setConfig({ A: { mode: 'letsencrypt', names: ['a.example.com'] } });
+
+    await letsencryptMode();
+
+    expect(deleteCert).not.toHaveBeenCalled();
+  });
+
+  it('explains why issuance was suppressed', async () => {
+    setConfig({ A: { mode: 'letsencrypt', names: ['a.example.com'] } });
+
+    await letsencryptMode();
+
+    expect(suppressionWarned()).toBe(true);
+    expect(logged(warnSpy, /A-0001/)).toBe(true);
+  });
+
+  it('no longer claims the certificate is being created', async () => {
+    // "does not exist — creating" is now known to be misleading here: the
+    // lineage does exist, Certbot just cannot read it.
+    setConfig({ A: { mode: 'letsencrypt', names: ['a.example.com'] } });
+
+    await letsencryptMode();
+
+    expect(logged(logSpy, /Certificate A does not exist — creating/)).toBe(false);
+  });
+
+  it('does not write a self-signed fallback as a side effect', async () => {
+    // The fallback is never linked into nginx for a site with no parsed
+    // certificate, so writing one would only misrepresent what is on disk.
+    setConfig({ A: { mode: 'letsencrypt', names: ['a.example.com'] } });
+
+    await letsencryptMode();
+
+    expect(fallbackWritten('A')).toBe(false);
+    expect(createConf).not.toHaveBeenCalled();
+  });
+
+  it('reports the site honestly in the summary', async () => {
+    setConfig({ A: { mode: 'letsencrypt', names: ['a.example.com'] } });
+
+    await letsencryptMode();
+
+    expect(logged(logSpy, /- A: undiscoverable — issuance suppressed/)).toBe(true);
+  });
+
+  it('completes startup rather than failing', async () => {
+    setConfig({ A: { mode: 'letsencrypt', names: ['a.example.com'] } });
+
+    await expect(letsencryptMode()).resolves.not.toThrow();
+  });
+});
+
+describe('suppression does not reach sites it should not', () => {
+  // The critical regression: "certificate does not exist" must not become
+  // "never issue certificates". Only local renewal state proving the cert-name
+  // is already occupied suppresses issuance.
+  it('still issues for a genuinely new site with no renewal state', async () => {
+    setConfig({ A: { mode: 'letsencrypt', names: ['a.example.com'] } });
+    parseCerts.mockResolvedValue({});
+    listRenewalStems.mockReturnValue([]);
+
+    await letsencryptMode();
+
+    expect(createCert).toHaveBeenCalledWith('A');
+    expect(suppressionWarned()).toBe(false);
+  });
+
+  it('leaves a healthy discoverable site untouched', async () => {
+    setConfig({ A: { mode: 'letsencrypt', names: ['a.example.com'] } });
+    parseCerts.mockResolvedValue({ A: lineage(['a.example.com']) });
+    listRenewalStems.mockReturnValue(['A']);
+
+    await letsencryptMode();
+
+    expect(createCert).not.toHaveBeenCalled();
+    expect(deleteCert).not.toHaveBeenCalled();
+    expect(suppressionWarned()).toBe(false);
+    expect(createConf).toHaveBeenCalledWith('A', expect.objectContaining({ status: 'valid' }));
+  });
+
+  it('still deletes an undiscoverable lineage that is no longer desired', async () => {
+    // Option D is unchanged: suppression only covers sites still configured.
+    setConfig({});
+    parseCerts.mockResolvedValue({});
+    listRenewalStems.mockReturnValue(['broken']);
+
+    await letsencryptMode();
+
+    expect(deletedNames()).toEqual(['broken']);
+    expect(suppressionWarned()).toBe(false);
+  });
+});
+
+describe('suppression is per site', () => {
+  it('suppresses the damaged site while the healthy one proceeds', async () => {
+    setConfig({
+      good: { mode: 'letsencrypt', names: ['good.example.com'] },
+      broken: { mode: 'letsencrypt', names: ['b.example.com'] },
+    });
+    parseCerts.mockResolvedValue({ good: lineage(['good.example.com']) });
+    listRenewalStems.mockReturnValue(['good', 'broken']);
+
+    await letsencryptMode();
+
+    expect(createCert).not.toHaveBeenCalled();
+    expect(deleteCert).not.toHaveBeenCalled();
+    expect(suppressionWarned()).toBe(true);
+    // good still completes its normal path.
+    expect(createConf).toHaveBeenCalledWith('good', expect.objectContaining({ status: 'valid' }));
+    expect(configFiles).toHaveBeenCalledWith('good', 'valid', undefined, ['good.example.com']);
+    // broken gets neither a fallback nor a link.
+    expect(fallbackWritten('broken')).toBe(false);
+    expect(configFiles).not.toHaveBeenCalledWith('broken', expect.anything(), expect.anything(), expect.anything());
+  });
+});
+
+describe('a lineage left over from the historical issue-then-delete cycle', () => {
+  // A deployment that already ran the old code may hold a healthy A-0001
+  // alongside the corrupt A. Cleanup of the sibling is unchanged, and no
+  // replacement is issued to take its place.
+  it('cleans up the suffixed orphan without issuing a replacement', async () => {
+    setConfig({ A: { mode: 'letsencrypt', names: ['a.example.com'] } });
+    parseCerts.mockResolvedValue({ 'A-0001': lineage(['a.example.com']) });
+    listRenewalStems.mockReturnValue(['A', 'A-0001']);
+
+    await letsencryptMode();
+
+    expect(deletedNames()).toEqual(['A-0001']);
+    expect(createCert).not.toHaveBeenCalled();
+    expect(suppressionWarned()).toBe(true);
   });
 });

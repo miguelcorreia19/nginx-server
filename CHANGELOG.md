@@ -204,6 +204,16 @@ Only the documented literal `false` is special-cased; no new spellings (`FALSE`,
 
 ---
 
+#### Fixed: a certificate Certbot cannot list no longer consumes issuances
+
+When Certbot cannot enumerate a certificate that is still configured, startup used to fall through to its ordinary "this certificate does not exist, create it" path. That does not repair anything: Certbot cannot reissue into a certificate name whose renewal config it cannot read, so it creates a second lineage called `<id>-0001` instead. That name matches no configured site, so the next startup removed it as stale — and then tried again. Each cycle spent a real certificate and threw it away, while the site stayed unavailable throughout.
+
+Issuance is now suppressed for these sites. Their local certificate files and their protected backup copy are left untouched, the warning explains why nothing is being issued, and no self-signed fallback is written, since one was never linked for such a site anyway. The site remains unavailable until its renewal config is repaired or replaced — the same outcome as before, without the repeated certificate requests.
+
+Suppression applies only where local renewal state proves the name is already taken. A genuinely new site with no renewal config still issues normally, healthy sites are unaffected, and any `<id>-0001` left behind by an earlier version is still cleaned up as stale.
+
+---
+
 #### Fixed: a damaged certificate no longer overwrites its own backup
 
 When Certbot cannot list a certificate that `config.json` still configures, startup preserves it locally and warns rather than deleting it. The backup write then copied that suspect state over its backed-up counterpart anyway, so a single startup replaced the last known-good copy — and every restart repeated it, leaving the backup useless as a recovery source after one restart. The daily renewal job did the same, more often.
