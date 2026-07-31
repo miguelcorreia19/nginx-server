@@ -267,6 +267,9 @@ The parser now reads `Identifiers:`, matching the pinned Certbot version above. 
 
 ### Internal
 
+- Added an internal, standalone validator that can check whether the backup for a single certificate is usable recovery material, without touching any live state: it copies just that certificate's backup into a throwaway directory, points the copy at itself, and asks Certbot to enumerate it there. It reports whether the certificate is enumerable under the expected name, covers the configured names, is unexpired, and belongs to the configured environment. **Nothing calls it yet and no behaviour changes** — automatic recovery from a backup is still not implemented, and restoring a backup remains a manual decision.
+- Extracted the `certbot certificates` output parser into a pure function shared by startup discovery and the validator above, so there is still exactly one parser for the pinned Certbot 5.6 output format. No parsing behaviour changed.
+
 - Simplified Let's Encrypt renewal implementation.
 - Removed obsolete standalone-renewal migration staging infrastructure.
 - Improved renewal logging and operational visibility.

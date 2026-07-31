@@ -334,3 +334,44 @@ describe('parseCerts — cert_domains is always usable on a successful parse', (
     }
   });
 });
+
+// ──────────────────────────────────────────────
+//  The parser as a standalone function
+// ──────────────────────────────────────────────
+//
+// parseCerts() delegates its block scraping to this pure function so the
+// sandbox backup validator can reuse the one parser instead of growing a second
+// reading of the same Certbot output. The tests above already pin the behaviour
+// through parseCerts(); these pin the extracted function directly, since it is
+// now a shared surface.
+describe('parseCertbotCertificatesOutput — the shared parser', () => {
+  const { parseCertbotCertificatesOutput, certbotReportedNoCertificates } =
+    require('../letsencrypt/utils.js');
+
+  it('parses without executing anything', () => {
+    const result = parseCertbotCertificatesOutput(certbotOutput([EXAMPLE, OTHER]));
+
+    expect(Object.keys(result)).toEqual(['example', 'other']);
+    expect(result.example.cert_domains).toEqual(['example.com', 'www.example.com']);
+    expect(result.other.cert_domains).toEqual(['other.example.org']);
+    expect(command).not.toHaveBeenCalled();
+  });
+
+  it('keeps the strict Identifiers: contract', () => {
+    const legacy = certbotOutput([EXAMPLE]).replace('Identifiers:', 'Domains:');
+
+    expect(() => parseCertbotCertificatesOutput(legacy)).toThrow(/no "Identifiers:" field/);
+  });
+
+  it('keeps the block-bounded lookup', () => {
+    const broken = certbotOutput([{ ...EXAMPLE, name: 'broken' }, OTHER])
+      .replace(/^ *Identifiers:.*$/m, '    Key Usage: Digital Signature');
+
+    expect(() => parseCertbotCertificatesOutput(broken)).toThrow(/broken/);
+  });
+
+  it('recognises the no-certificates report separately', () => {
+    expect(certbotReportedNoCertificates('No certificates found.')).toBe(true);
+    expect(certbotReportedNoCertificates(certbotOutput([EXAMPLE]))).toBe(false);
+  });
+});

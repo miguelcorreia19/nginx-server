@@ -23,6 +23,110 @@ let COUNT_PROTECTION = 200;
 exports.certbotBackupEnabled = certbotBackupEnabled = (value = process.env.CERTBOT_BACKUP) =>
   !!value && value !== 'false';
 
+// Parse the output of `certbot certificates` into the certificate map the rest
+// of this module works with. Pure: no command execution, no filesystem, no
+// backup behaviour — so the sandbox validator can reuse the one parser rather
+// than growing a second reading of the same format.
+//
+// The image pins certbot=5.6.0-r0 (see Dockerfile), so there is exactly one
+// supported output format. Certbot 5.6 labels a certificate's domain list
+// "Identifiers:"; older releases called the same field "Domains:", which is
+// deliberately not accepted. Output this parser does not recognise fails loudly
+// rather than being guessed at.
+exports.parseCertbotCertificatesOutput = parseCertbotCertificatesOutput = (output) => {
+  const found_certs = {};
+
+  const CERT_NAME = 'Certificate Name:';
+  const CERT_IDENTIFIERS = 'Identifiers:';
+  const CERT_PATH = 'Certificate Path:';
+  const CERT_KEY_PATH = 'Private Key Path:';
+  const CERT_VALID = 'Expiry Date:';
+  let last_index = 0, index = 0;
+
+  let count = 0;
+  while ((last_index = output.indexOf(CERT_NAME, index)) !== -1 && count < COUNT_PROTECTION) {
+    count++;
+    const new_cert = {};
+    let new_line = output.indexOf('\n', last_index);
+    const cert_id = output.substring(last_index + CERT_NAME.length + 1/* white space */, new_line)
+
+    // Get cert path
+    if ((index = output.indexOf(CERT_PATH, last_index)) !== -1) {
+      new_line = output.indexOf('\n', index);
+      new_cert.cert_path = output.substring(index + CERT_PATH.length + 1/* white space */, new_line);
+    } else {
+      error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_PATH}"`);
+    }
+
+    // Get cert private key path
+    if ((index = output.indexOf(CERT_KEY_PATH, last_index)) !== -1) {
+      new_line = output.indexOf('\n', index);
+      new_cert.cert_key_path = output.substring(index + CERT_KEY_PATH.length + 1/* white space */, new_line);
+    } else {
+      error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_KEY_PATH}"`);
+    }
+
+    // Get cert domains. The search is bounded to this certificate's own block
+    // so a block missing the field can never silently inherit the *next*
+    // certificate's identifiers — which would hand checkCertFiles() a wrong
+    // domain list instead of a detectable failure.
+    const next_name = output.indexOf(CERT_NAME, last_index + CERT_NAME.length);
+    const block_end = next_name === -1 ? output.length : next_name;
+
+    const identifiers_index = output.indexOf(CERT_IDENTIFIERS, last_index);
+
+    if (identifiers_index === -1 || identifiers_index >= block_end) {
+      // Fail here rather than logging and continuing. Every consumer treats
+      // cert_domains as an array (checkCertFiles, configFiles, the status
+      // summaries), so letting an incomplete certificate escape turns an
+      // unsupported Certbot output format into an unrelated TypeError much
+      // further downstream.
+      throw new Error(
+        `Failed to parse "certbot certificates" output for "${cert_id}": ` +
+        `no "${CERT_IDENTIFIERS}" field in its block`
+      );
+    }
+
+    // Tolerant of the field's indentation and of any run of whitespace between
+    // identifiers, but only for the label recognised above.
+    new_line = output.indexOf('\n', identifiers_index);
+    new_cert.cert_domains = output
+      .substring(identifiers_index + CERT_IDENTIFIERS.length, new_line === -1 ? output.length : new_line)
+      .trim()
+      .split(/\s+/)
+      .filter(c => c.length > 0);
+
+    // Get cert status
+    if ((index = output.indexOf(CERT_VALID, last_index)) !== -1) {
+      new_line = output.indexOf('\n', index);
+      const expiry = output.substring(index + CERT_VALID.length + 1/* white space */, new_line);
+      // valid | invalid | staging
+
+      new_cert.status = expiry.includes('INVALID') ? expiry.includes('TEST_CERT') ? 'staging' : 'invalid' : 'valid';
+    } else {
+      error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_VALID}" (status)`);
+    }
+
+    // Get cert validity
+    if ((index = output.indexOf(CERT_VALID, last_index)) !== -1) {
+      new_line = output.indexOf('(', index);
+      new_cert.validity = DateTime.fromJSDate(new Date(output.substring(index + CERT_VALID.length + 1/* white space */, new_line - 1)));
+      // valid | invalid | staging
+    } else {
+      error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_VALID}" (validity)`);
+    }
+
+    found_certs[cert_id] = new_cert;
+  }
+
+  return found_certs;
+};
+
+// True when Certbot reported that it holds no certificates at all. Kept beside
+// the parser because both read the same output.
+exports.certbotReportedNoCertificates = certbotReportedNoCertificates = (output) =>
+  /no.*cert.*found/i.test(output);
+
 exports.parseCerts = parseCerts = async (copy_files = false) => {
 
   let output = undefined;
@@ -31,99 +135,11 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
   } catch (err) {
     throw new Error(`Failed to query certbot certificates: ${err.error || err.message || err}`);
   }
-  
-  const found_certs = {};
-  const regex = /no.*cert.*found/i
-  
-  if (!output.match(regex)) {
 
-    const CERT_NAME = 'Certificate Name:';
-    // The label Certbot 5.6 gives a certificate's domain list. The image pins
-    // certbot=5.6.0-r0 (see Dockerfile), so this is the one supported output
-    // format — older Certbot releases called the same field "Domains:", which is
-    // deliberately not accepted here. Output this parser does not recognise must
-    // fail loudly rather than be guessed at.
-    const CERT_IDENTIFIERS = 'Identifiers:';
-    const CERT_PATH = 'Certificate Path:';
-    const CERT_KEY_PATH = 'Private Key Path:';
-    const CERT_VALID = 'Expiry Date:';
-    let last_index = 0, index = 0;
+  let found_certs = {};
 
-    let count = 0;
-    while ((last_index = output.indexOf(CERT_NAME, index)) !== -1 && count < COUNT_PROTECTION) {
-      count++;
-      const new_cert = {};
-      let new_line = output.indexOf('\n', last_index);
-      const cert_id = output.substring(last_index + CERT_NAME.length + 1/* white space */, new_line)
-
-      // Get cert path
-      if ((index = output.indexOf(CERT_PATH, last_index)) !== -1) {
-        new_line = output.indexOf('\n', index);
-        new_cert.cert_path = output.substring(index + CERT_PATH.length + 1/* white space */, new_line);
-      } else {
-        error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_PATH}"`);
-      }
-
-      // Get cert private key path
-      if ((index = output.indexOf(CERT_KEY_PATH, last_index)) !== -1) {
-        new_line = output.indexOf('\n', index);
-        new_cert.cert_key_path = output.substring(index + CERT_KEY_PATH.length + 1/* white space */, new_line);
-      } else {
-        error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_KEY_PATH}"`);
-      }
-
-      // Get cert domains. The search is bounded to this certificate's own block
-      // so a block missing the field can never silently inherit the *next*
-      // certificate's identifiers — which would hand checkCertFiles() a wrong
-      // domain list instead of a detectable failure.
-      const next_name = output.indexOf(CERT_NAME, last_index + CERT_NAME.length);
-      const block_end = next_name === -1 ? output.length : next_name;
-
-      const identifiers_index = output.indexOf(CERT_IDENTIFIERS, last_index);
-
-      if (identifiers_index === -1 || identifiers_index >= block_end) {
-        // Fail here rather than logging and continuing. Every consumer treats
-        // cert_domains as an array (checkCertFiles, configFiles, the status
-        // summaries), so letting an incomplete certificate escape turns an
-        // unsupported Certbot output format into an unrelated TypeError much
-        // further downstream.
-        throw new Error(
-          `Failed to parse "certbot certificates" output for "${cert_id}": ` +
-          `no "${CERT_IDENTIFIERS}" field in its block`
-        );
-      }
-
-      // Tolerant of the field's indentation and of any run of whitespace between
-      // identifiers, but only for the label recognised above.
-      new_line = output.indexOf('\n', identifiers_index);
-      new_cert.cert_domains = output
-        .substring(identifiers_index + CERT_IDENTIFIERS.length, new_line === -1 ? output.length : new_line)
-        .trim()
-        .split(/\s+/)
-        .filter(c => c.length > 0);
-
-      // Get cert status
-      if ((index = output.indexOf(CERT_VALID, last_index)) !== -1) {
-        new_line = output.indexOf('\n', index);
-        const expiry = output.substring(index + CERT_VALID.length + 1/* white space */, new_line);
-        // valid | invalid | staging
-
-        new_cert.status = expiry.includes('INVALID') ? expiry.includes('TEST_CERT') ? 'staging' : 'invalid' : 'valid';
-      } else {
-        error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_VALID}" (status)`);
-      }
-
-      // Get cert validity
-      if ((index = output.indexOf(CERT_VALID, last_index)) !== -1) {
-        new_line = output.indexOf('(', index);
-        new_cert.validity = DateTime.fromJSDate(new Date(output.substring(index + CERT_VALID.length + 1/* white space */, new_line - 1)));
-        // valid | invalid | staging
-      } else {
-        error(`Failed to parse "certbot certificates" output for "${cert_id}": missing "${CERT_VALID}" (validity)`);
-      }
-
-      found_certs[cert_id] = new_cert;
-    }
+  if (!certbotReportedNoCertificates(output)) {
+    found_certs = parseCertbotCertificatesOutput(output);
   } else if (
     copy_files &&
     certbotBackupEnabled()
