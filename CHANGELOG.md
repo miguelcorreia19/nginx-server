@@ -204,6 +204,18 @@ Only the documented literal `false` is special-cased; no new spellings (`FALSE`,
 
 ---
 
+#### Added: automatic recovery of a certificate Certbot cannot read
+
+When a still-configured certificate becomes unreadable to Certbot, startup now tries to recover it from its backup instead of only reporting the problem. This uses the existing `CERTBOT_BACKUP` opt-in — there is no new setting, and with backups disabled nothing changes.
+
+The backup copy is checked in isolation first, in a temporary directory with nothing live touched, and is installed only when Certbot can read it there *and* it matches the site's certificate name, configured domains, environment and validity. The installed result is then checked against live Certbot state before the previous copy is discarded; if anything fails, the original is put back and the site is left exactly as it was, with issuance still suppressed. Recovery is per certificate — no other certificate is replaced — and the backup itself is only ever read.
+
+Installation is crash-safe. The certificate is hidden from Certbot before its material is touched and made visible again by a single final step, so an interruption leaves either the original or the recovered certificate, never a mixture. A restore interrupted by a crash is resolved on the next startup before anything else inspects certificate state; one that cannot be resolved deterministically stops startup rather than risking what may be the only remaining copy.
+
+A certificate recovered during a startup keeps its previous backup copy for that startup; the next healthy startup updates it normally.
+
+---
+
 #### Fixed: a certificate Certbot cannot list no longer consumes issuances
 
 When Certbot cannot enumerate a certificate that is still configured, startup used to fall through to its ordinary "this certificate does not exist, create it" path. That does not repair anything: Certbot cannot reissue into a certificate name whose renewal config it cannot read, so it creates a second lineage called `<id>-0001` instead. That name matches no configured site, so the next startup removed it as stale — and then tried again. Each cycle spent a real certificate and threw it away, while the site stayed unavailable throughout.

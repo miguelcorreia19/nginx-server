@@ -173,7 +173,9 @@ docker exec <container> certbot certificates
 docker exec <container> ls /etc/letsencrypt/renewal/
 ```
 
-The certificate is deliberately **not** deleted, since its files may still be usable and discarding them would force a new issuance against rate limits. Issuance for that site is also suppressed, because Certbot would create a second `<id>-0001` lineage rather than repair the existing name — so the site stays unavailable until you repair or replace the renewal config, instead of consuming a certificate on every startup. Its existing backup copy is preserved meanwhile.
+The certificate is deliberately **not** deleted, since its files may still be usable and discarding them would force a new issuance against rate limits. Issuance for that site is also suppressed, because Certbot would create a second `<id>-0001` lineage rather than repair the existing name.
+
+If `CERTBOT_BACKUP` is enabled, startup first tries to recover that certificate from its backup — validating the backup in isolation, installing it only if it matches this site, and putting the original back if the installed result does not verify. Look for `valid backup found` / `restored from the Certbot backup`, or a line explaining why the backup was not usable. Without a usable backup the site stays unavailable until you repair or replace the renewal config.
 
 For a lineage **no longer** configured as a Let's Encrypt site, it is deleted like any other stale one:
 

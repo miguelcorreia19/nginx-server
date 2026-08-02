@@ -229,7 +229,7 @@ exports.recoverInterruptedRestore = (id, overrides = {}) => {
     // and say so.
     if (exists(p.displaced.archive) || exists(p.displaced.live)) {
       warn(`Unrecognised restore state for "${id}" at ${p.txn}: displaced material without a displaced renewal config. Leaving it untouched for inspection.`);
-      return { id, action: 'unrecognised' };
+      return { id, action: 'unrecognised', transactionDir: p.txn };
     }
     // Never reached M1, so no live path was touched.
     discardTransaction(id, overrides);
@@ -269,8 +269,9 @@ exports.recoverInterruptedRestores = (overrides = {}) => {
     } catch (err) {
       // One unusable leftover must not stop the others being resolved, and it
       // is left in place rather than guessed at.
-      warn(`Could not recover the interrupted restore for "${id}" at ${path.join(transactionRoot, id)}: ${err.message}`);
-      results.push({ id, action: 'failed', error: err.message });
+      const transactionDir = path.join(transactionRoot, id);
+      warn(`Could not recover the interrupted restore for "${id}" at ${transactionDir}: ${err.message}`);
+      results.push({ id, action: 'failed', error: err.message, transactionDir });
     }
   }
   return results;

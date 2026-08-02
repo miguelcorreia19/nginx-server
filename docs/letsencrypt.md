@@ -136,7 +136,11 @@ The same source-of-truth rule then applies, with one deliberate exception:
 - **No longer a managed Let's Encrypt site** — deleted, exactly like any other stale lineage. This is the case the reconciliation above would otherwise miss forever, because the certificate is invisible to it.
 - **Still configured as `letsencrypt` or `letsencrypt-staging`** — **kept**, and reported with a warning naming the site and its renewal config. It is not deleted, because the certificate files may still be perfectly usable and discarding them would force a new issuance against [rate limits](#rate-limits).
 
-  Automatic issuance for that site is also **suppressed**. Certbot cannot reissue into a certificate name whose renewal config it cannot read: instead of repairing it, it would create a second lineage called `<id>-0001`, which matches no configured site and would be cleaned up as stale on the next startup — spending a certificate to produce something that is immediately discarded. The site therefore stays unavailable until its renewal config is repaired or replaced, rather than quietly consuming your rate limit. Its existing backup copy is preserved throughout.
+  Automatic issuance for that site is also **suppressed**. Certbot cannot reissue into a certificate name whose renewal config it cannot read: instead of repairing it, it would create a second lineage called `<id>-0001`, which matches no configured site and would be cleaned up as stale on the next startup — spending a certificate to produce something that is immediately discarded. Its existing backup copy is preserved throughout.
+
+  With [`CERTBOT_BACKUP`](#certificate-backup) enabled, startup then tries to **recover that certificate from its backup**. The backup copy is checked in isolation first — in a temporary directory, with nothing live touched — and is only installed when Certbot can read it there *and* it matches the site's certificate name, its configured domains, its environment (production or staging), and is not expired. The installed result is checked again against the live Certbot state before the previous copy is discarded; if anything fails, the original is put back and the site is left exactly as it was.
+
+  Recovery is per certificate: no other certificate is replaced, and the backup itself is only ever read. If it succeeds the site is served normally in that same startup. If no usable backup exists — or `CERTBOT_BACKUP` is disabled — the site simply stays unavailable, with issuance still suppressed, until its renewal config is repaired or replaced.
 
 For an unreadable config, Certbot may report the deletion as failed while still removing the renewal config itself; any leftover files under `live/` and `archive/` are inert once that config is gone, and startup says so rather than reporting a clean deletion. See [troubleshooting](troubleshooting.md#a-certificate-is-not-listed-by-certbot).
 
@@ -152,7 +156,7 @@ Note that the backup is written from whatever certificates remain *after* [lifec
 
 One lineage is deliberately excluded from every backup write: a certificate that is [still configured but which Certbot cannot list](#lineages-certbot-cannot-list). Its local state is suspect, so whatever the backup already holds for that certificate — its renewal config, `live/` and `archive/` together — is left exactly as it is rather than being overwritten, and if the backup has no copy, none is created from the suspect state. Every other certificate continues to back up normally.
 
-This preserves the last known-good copy instead of replacing it on the first restart after the problem appears. It is a safeguard, not a repair: restoring such a copy is still a manual decision, and nothing is restored automatically.
+This preserves the last known-good copy instead of replacing it on the first restart after the problem appears — which is also what makes automatic recovery possible: see [Lineages Certbot cannot list](#lineages-certbot-cannot-list). A certificate recovered during a startup keeps its previous backup copy for that startup; the next healthy startup updates it normally.
 
 Leaving `CERTBOT_BACKUP` unset, empty, or set to `false` disables the feature completely — no backup is written, and an existing backup is never restored.
 

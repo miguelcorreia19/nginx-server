@@ -28,6 +28,15 @@ jest.mock('../letsencrypt/utils.js', () => ({
   renewalConfigPath: jest.fn((stem) => `/etc/letsencrypt/renewal/${stem}.conf`),
 }));
 
+jest.mock('../letsencrypt/restore_lineage.js', () => ({
+  recoverInterruptedRestores: jest.fn(() => []),
+  restoreLineageFromBackup: jest.fn(),
+}));
+
+jest.mock('../letsencrypt/validate_backup.js', () => ({
+  validateBackupLineage: jest.fn(),
+}));
+
 jest.mock('../utils.js', () => ({
   command: jest.fn(() => Promise.resolve('')),
   commandSafe: jest.fn(() => Promise.resolve()),

@@ -3,6 +3,8 @@ const fs = require("fs");
 const { command, commandSafe, configFiles } = require("../utils.js");
 const { validateCronExpression } = require("../validate.js");
 const { createCert, deleteCert, createConf } = require("./manage_certs.js");
+const { validateBackupLineage } = require("./validate_backup.js");
+const { restoreLineageFromBackup, recoverInterruptedRestores } = require("./restore_lineage.js");
 
 const { createLogger } = require("../logger.js");
 const { log, warn, error, fatal } = createLogger("letsencrypt");
@@ -40,6 +42,37 @@ module.exports = async () => {
   // after that cleanup (see below); everything past it needs actual current
   // entries, so it stays gated.
 
+  // Resolve any restore transaction a previous startup left half-applied. This
+  // has to be the first thing that reads Certbot state at all: a crash partway
+  // through a restore leaves renewal/<id>.conf absent while the original
+  // lineage sits safely in the transaction directory, and every check below —
+  // the fast path, discovery, even the legacy bulk backup restore — would read
+  // that as "this lineage does not exist".
+  let recovered;
+  try {
+    recovered = recoverInterruptedRestores();
+  } catch (err) {
+    fatal("could not resolve an interrupted certificate restore —", err);
+    throw err;
+  }
+
+  // A leftover the recovery rule cannot classify is an integrity problem, not
+  // an ordinary missing-backup one. Continuing could issue against a partially
+  // moved lineage or overwrite the only remaining copy of its material, so
+  // startup stops here — before discovery, issuance, the backup write or cron.
+  const unresolved = recovered.filter(({ action }) => action === 'unrecognised' || action === 'failed');
+  if (unresolved.length > 0) {
+    for (const { id, error: reason, transactionDir } of unresolved) {
+      error(`Interrupted certificate restore for "${id}" could not be resolved${reason ? `: ${reason}` : ''}; its state is preserved at ${transactionDir}`);
+    }
+    const err = new Error(
+      `Unresolved certificate restore state for: ${unresolved.map(({ id }) => id).join(', ')}. ` +
+      `Refusing to continue — the preserved copy may be the only one left.`
+    );
+    fatal("setup failed —", err);
+    throw err;
+  }
+
   // The one exception, and only when the local filesystem *proves* the cleanup
   // below could find nothing: no renewal config for Certbot to enumerate and no
   // backup that would be restored. Then `certbot certificates` can only report
@@ -53,7 +86,7 @@ module.exports = async () => {
   }
 
   try {
-    const certificates = await parseCerts(true);
+    let certificates = await parseCerts(true);
     // certificates = {
     //  id: {
     //    cert_path: string
@@ -110,15 +143,11 @@ module.exports = async () => {
     // further down, which iterates the parse result these stems are absent from.
     for (const stem of undiscoverable) {
       if (certs[stem]) {
-        // Still configured for Let's Encrypt. The lineage may well be sitting
-        // on usable certificate material, so deleting it here would destroy
-        // state the operator still wants and force a fresh issuance. Surface
-        // it instead — making the condition visible is the whole remit.
-        cleanupIncomplete = true;
+        // Still configured for Let's Encrypt. Never deleted: the lineage may be
+        // sitting on usable certificate material. Recovery from the backup is
+        // attempted below, and only what is still broken afterwards is warned
+        // about — warning here would contradict a restore that then succeeds.
         desiredUndiscoverable.push(stem);
-        warn(`Certificate "${stem}" has a renewal config (${renewalConfigPath(stem)}) that Certbot did not enumerate, so it is invisible to certificate reconciliation`);
-        warn(`  Left in place: "${stem}" is still configured as mode "${certs[stem].mode}", so its certificate files are preserved and its existing backup is protected.`);
-        warn(`  Issuance suppressed: Certbot cannot reissue into a cert-name whose renewal config it cannot read — it would create "${stem}-0001" instead, which this image would then delete as an orphan. Repair or restore ${renewalConfigPath(stem)} to resume normal operation.`);
         continue;
       }
 
@@ -143,6 +172,97 @@ module.exports = async () => {
       }
     }
 
+    // One classification, two lifetimes. Backup protection stays frozen as it
+    // was at discovery — a lineage restored during this startup keeps its
+    // previous backup copy untouched until a later, cleanly healthy startup
+    // updates it. Issuance suppression is lifted the moment a restore is
+    // verified, so the site can be served in this same startup.
+    const backupProtectedLineages = [...desiredUndiscoverable];
+    const suppressed = new Set(desiredUndiscoverable);
+
+    // Recover a still-configured lineage from its protected backup, but only
+    // when the backup feature is on: CERTBOT_BACKUP is the single opt-in for
+    // both keeping backups and using them. Nothing here mutates live state
+    // unless the backup has first been proven, in isolation, to be a usable
+    // replacement for this exact site.
+    for (const id of desiredUndiscoverable) {
+      if (!certbotBackupEnabled()) break;
+
+      let verdict;
+      try {
+        verdict = await validateBackupLineage(id);
+      } catch (err) {
+        // Being unable to check is not a verdict on the backup, and it happens
+        // before any live mutation — degrade this site and carry on.
+        error(`Certificate ${id}: could not check the backup (${err.message})`);
+        continue;
+      }
+
+      if (!verdict.valid) {
+        warn(`Certificate ${id}: backup is not usable recovery material (${verdict.reason}${verdict.detail ? `: ${verdict.detail}` : ''})`);
+        continue;
+      }
+
+      log(`Certificate ${id}: valid backup found — attempting recovery`);
+
+      let transaction;
+      try {
+        transaction = restoreLineageFromBackup(id);
+      } catch (err) {
+        // The transaction rolls itself back before throwing. If its rollback
+        // also failed it says so and leaves deterministic state behind, which
+        // the next startup's recovery resolves — never cleaned up by hand here.
+        error(`Certificate ${id}: restore failed — ${err.message}`);
+        continue;
+      }
+
+      if (!transaction.committed) {
+        warn(`Certificate ${id}: restore not attempted (${transaction.reason}${transaction.detail ? `: ${transaction.detail}` : ''})`);
+        continue;
+      }
+
+      // Verify what was actually installed, against the live tree and the
+      // application's own rules. parseCerts() without arguments on purpose: the
+      // legacy bulk backup restore must never be triggered by a verification.
+      let restored;
+      try {
+        restored = await parseCerts();
+        if (!restored[id]) throw new Error(`Certbot did not enumerate "${id}" after restore`);
+        if (!checkCertFiles(id, restored[id])) throw new Error('the restored certificate does not satisfy this site\'s configuration');
+      } catch (err) {
+        try {
+          transaction.rollback();
+          error(`Certificate ${id}: the backup validated in isolation but the installed lineage failed verification (${err.message}) — the original lineage has been put back`);
+        } catch (rollbackErr) {
+          error(`Certificate ${id}: verification failed (${err.message}) and the rollback failed (${rollbackErr.message}) — state is preserved at ${transaction.transactionDir} and will be resolved on the next startup`);
+        }
+        // Either way the site stays suppressed and backup-protected, so nothing
+        // downstream can issue for it or overwrite its backup.
+        continue;
+      }
+
+      const { finalized, transactionDir } = transaction.finalize();
+      if (!finalized) {
+        // A verified lineage is not un-restored over inert leftovers.
+        warn(`Certificate ${id}: restored, but its transaction state at ${transactionDir} could not be removed; the next startup will clean it up`);
+      }
+
+      log(`Certificate ${id}: restored from the Certbot backup`);
+      // The fresh discovery is authoritative for everything downstream — no
+      // synthetic entry is spliced into the previous result.
+      certificates = restored;
+      suppressed.delete(id);
+    }
+
+    // Whatever is still undiscoverable after recovery is preserved and left
+    // alone, exactly as before automatic restore existed.
+    for (const id of suppressed) {
+      cleanupIncomplete = true;
+      warn(`Certificate "${id}" has a renewal config (${renewalConfigPath(id)}) that Certbot did not enumerate, so it is invisible to certificate reconciliation`);
+      warn(`  Left in place: "${id}" is still configured as mode "${certs[id].mode}", so its certificate files are preserved and its existing backup is protected.`);
+      warn(`  Issuance suppressed: Certbot cannot reissue into a cert-name whose renewal config it cannot read — it would create "${id}-0001" instead, which this image would then delete as an orphan. Repair or restore ${renewalConfigPath(id)} to resume normal operation.`);
+    }
+
     // Verified against the pinned Certbot 5.6: `certonly --cert-name <id>` on a
     // lineage whose renewal config cannot be read does not repair it. Certbot
     // cannot construct the existing lineage, so it takes the new-certificate
@@ -151,8 +271,7 @@ module.exports = async () => {
     // orphan on the next startup. Issuing therefore spends a real certificate
     // to produce something this image immediately throws away, so these sites
     // are skipped until their lineage is repaired or restored.
-    const suppressed = new Set(desiredUndiscoverable);
-
+    //
     // Manage certificates
     for (let id in certs) {
 
@@ -266,10 +385,10 @@ module.exports = async () => {
         warn('Skipping backup: renewal configs could not be enumerated, so the existing backup cannot be updated safely');
       } else {
         log(`Backing up Let's Encrypt state to ${process.env.CERTBOT_BACKUP_PATH}`);
-        if (desiredUndiscoverable.length > 0) {
-          log(`Preserving the existing backup for ${desiredUndiscoverable.length} lineage(s) Certbot could not enumerate: ${desiredUndiscoverable.join(', ')}`);
+        if (backupProtectedLineages.length > 0) {
+          log(`Preserving the existing backup for ${backupProtectedLineages.length} lineage(s) Certbot could not enumerate at startup: ${backupProtectedLineages.join(', ')}`);
         }
-        await backupCertbotState({ protectedLineages: desiredUndiscoverable });
+        await backupCertbotState({ protectedLineages: backupProtectedLineages });
         log('Backup completed');
       }
     }
