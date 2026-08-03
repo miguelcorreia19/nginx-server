@@ -29,12 +29,15 @@ const path = require("path");
 const { createLogger } = require("../logger.js");
 const { log, warn } = createLogger("letsencrypt");
 
-const LETSENCRYPT_DIR = "/etc/letsencrypt";
-const TRANSACTION_DIR = ".nginx-server-restore";
+const {
+  LETSENCRYPT_DIR,
+  checkCanonicalPaths,
+  copyTree,
+  exists,
+  removeIfPresent,
+} = require("./lineage_files.js");
 
-// The renewal-config keys whose values are absolute paths into the Certbot tree.
-const PATH_KEYS = ['archive_dir', 'cert', 'privkey', 'chain', 'fullchain'];
-const PATH_LINE = new RegExp(`^\\s*(${PATH_KEYS.join('|')})\\s*=\\s*(.*)$`);
+const TRANSACTION_DIR = ".nginx-server-restore";
 
 const paths = (id, overrides = {}) => {
   const root = overrides.letsencryptDir || LETSENCRYPT_DIR;
@@ -50,46 +53,6 @@ const paths = (id, overrides = {}) => {
     backup: backup && { archive: path.join(backup, 'archive', id), live: path.join(backup, 'live', id), renewal: path.join(backup, 'renewal', `${id}.conf`) },
   };
 };
-
-// Every path-valued key in the backup's renewal config must already name this
-// lineage's canonical location. A backup produced some other way can carry
-// paths into a temp dir or another cert-name, and restoring it byte-for-byte
-// would install a config pointing outside the tree — checked before any live
-// mutation, never by rewriting the backup.
-const canonicalPathsFor = (id, root) => ({
-  archive_dir: path.join(root, 'archive', id),
-  cert: path.join(root, 'live', id, 'cert.pem'),
-  privkey: path.join(root, 'live', id, 'privkey.pem'),
-  chain: path.join(root, 'live', id, 'chain.pem'),
-  fullchain: path.join(root, 'live', id, 'fullchain.pem'),
-});
-
-const checkCanonicalPaths = (content, id, root) => {
-  const expected = canonicalPathsFor(id, root);
-  const seen = new Set();
-  for (const line of content.split('\n')) {
-    const match = line.match(PATH_LINE);
-    if (!match) continue;
-    const [, key, value] = match;
-    seen.add(key);
-    if (value.trim() !== expected[key]) {
-      return { ok: false, detail: `${key} = ${value.trim()} (expected ${expected[key]})` };
-    }
-  }
-  const missing = PATH_KEYS.filter((key) => !seen.has(key));
-  return missing.length > 0
-    ? { ok: false, detail: `missing ${missing.join(', ')}` }
-    : { ok: true };
-};
-
-// `verbatimSymlinks` is required, not cosmetic: without it Node rewrites
-// live/<id>'s relative links into absolute paths pointing back at the source,
-// so a restored lineage would reference the backup mount instead of its own
-// archive.
-const copyTree = (from, to) => fs.cpSync(from, to, { recursive: true, verbatimSymlinks: true });
-
-const exists = (p) => fs.existsSync(p) || fs.lstatSync(p, { throwIfNoEntry: false }) !== undefined;
-const removeIfPresent = (p) => fs.rmSync(p, { recursive: true, force: true });
 
 // Restore the pre-transaction state from whatever the filesystem currently holds.
 //
