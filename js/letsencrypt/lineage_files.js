@@ -47,6 +47,15 @@ const checkCanonicalPaths = (content, id, root) => {
     : { ok: true };
 };
 
+// The three paths one lineage occupies in a Certbot tree. Startup uses this to
+// tell an empty cert-name slot from one holding residue, without parsing
+// anything.
+const localLineagePaths = (id, root = LETSENCRYPT_DIR) => ({
+  renewal: path.join(root, 'renewal', `${id}.conf`),
+  live: path.join(root, 'live', id),
+  archive: path.join(root, 'archive', id),
+});
+
 // `verbatimSymlinks` is required, not cosmetic: without it Node rewrites
 // live/<id>'s relative links into absolute paths pointing back at the source,
 // so an installed lineage would reference the backup mount instead of its own
@@ -64,6 +73,7 @@ module.exports = {
   PATH_KEYS,
   canonicalPathsFor,
   checkCanonicalPaths,
+  localLineagePaths,
   copyTree,
   exists,
   removeIfPresent,

@@ -5,6 +5,8 @@ const { validateCronExpression } = require("../validate.js");
 const { createCert, deleteCert, createConf } = require("./manage_certs.js");
 const { validateBackupLineage } = require("./validate_backup.js");
 const { restoreLineageFromBackup, recoverInterruptedRestores } = require("./restore_lineage.js");
+const { bootstrapLineageFromBackup, recoverInterruptedBootstraps } = require("./bootstrap_lineage.js");
+const { exists, localLineagePaths } = require("./lineage_files.js");
 
 const { createLogger } = require("../logger.js");
 const { log, warn, error, fatal } = createLogger("letsencrypt");
@@ -48,11 +50,15 @@ module.exports = async () => {
   // lineage sits safely in the transaction directory, and every check below —
   // the fast path, discovery, even the legacy bulk backup restore — would read
   // that as "this lineage does not exist".
+  //
+  // Both transaction namespaces are independent, so their leftovers cannot
+  // interact; replacement is resolved first only because it is the older of the
+  // two and nothing depends on the order.
   let recovered;
   try {
-    recovered = recoverInterruptedRestores();
+    recovered = [...recoverInterruptedRestores(), ...recoverInterruptedBootstraps()];
   } catch (err) {
-    fatal("could not resolve an interrupted certificate restore —", err);
+    fatal("could not resolve an interrupted certificate transaction —", err);
     throw err;
   }
 
@@ -63,10 +69,10 @@ module.exports = async () => {
   const unresolved = recovered.filter(({ action }) => action === 'unrecognised' || action === 'failed');
   if (unresolved.length > 0) {
     for (const { id, error: reason, transactionDir } of unresolved) {
-      error(`Interrupted certificate restore for "${id}" could not be resolved${reason ? `: ${reason}` : ''}; its state is preserved at ${transactionDir}`);
+      error(`Interrupted certificate transaction for "${id}" could not be resolved${reason ? `: ${reason}` : ''}; its state is preserved at ${transactionDir}`);
     }
     const err = new Error(
-      `Unresolved certificate restore state for: ${unresolved.map(({ id }) => id).join(', ')}. ` +
+      `Unresolved certificate transaction state for: ${unresolved.map(({ id }) => id).join(', ')}. ` +
       `Refusing to continue — the preserved copy may be the only one left.`
     );
     fatal("setup failed —", err);
@@ -86,7 +92,11 @@ module.exports = async () => {
   }
 
   try {
-    let certificates = await parseCerts(true);
+    // Pure discovery: no arguments, so the legacy bulk backup restore inside
+    // parseCerts() is not reached. Recovery from a backup is now decided
+    // per-lineage below, after classification, against a validated source —
+    // rather than by copying the whole backup over whatever is here.
+    let certificates = await parseCerts();
     // certificates = {
     //  id: {
     //    cert_path: string
@@ -107,9 +117,9 @@ module.exports = async () => {
     // why. Every audited example is an unparseable renewal config, but the
     // detection makes no claim beyond non-enumeration.
     //
-    // Deliberately computed *after* parseCerts(true): that call can restore a
-    // certificate backup and so change the renewal directory. Snapshotting the
-    // stems beforehand would miss whatever this startup restored.
+    // Computed after discovery so the two describe the same moment. Discovery
+    // no longer mutates anything, but per-lineage recovery below does, and it
+    // reads this classification.
     let undiscoverable = [];
     // Lineages Certbot could not enumerate that config.json still wants. This
     // one set drives two decisions: their existing backup is preserved rather
@@ -256,11 +266,145 @@ module.exports = async () => {
 
     // Whatever is still undiscoverable after recovery is preserved and left
     // alone, exactly as before automatic restore existed.
-    for (const id of suppressed) {
+    for (const id of desiredUndiscoverable) {
+      if (!suppressed.has(id)) continue;
       cleanupIncomplete = true;
       warn(`Certificate "${id}" has a renewal config (${renewalConfigPath(id)}) that Certbot did not enumerate, so it is invisible to certificate reconciliation`);
       warn(`  Left in place: "${id}" is still configured as mode "${certs[id].mode}", so its certificate files are preserved and its existing backup is protected.`);
       warn(`  Issuance suppressed: Certbot cannot reissue into a cert-name whose renewal config it cannot read — it would create "${id}-0001" instead, which this image would then delete as an orphan. Repair or restore ${renewalConfigPath(id)} to resume normal operation.`);
+    }
+
+    // The remaining desired sites have no certificate in the discovery result
+    // and no renewal config either. They split by what the cert-name slot
+    // actually holds, which decides whether issuing into it is even possible:
+    //
+    //   locally absent  nothing at all -> may bootstrap, else issue normally
+    //   local residue   live/ or archive/ present -> neither is safe
+    //
+    // Classified straight from the filesystem rather than from the renewal
+    // stems, so a site is still placed correctly even when stem enumeration
+    // failed above.
+    const locallyAbsent = [];
+    const localResidue = new Set();
+    for (const id in certs) {
+      if (certificates[id] || suppressed.has(id)) continue;
+      const slot = localLineagePaths(id);
+      if (exists(slot.renewal)) {
+        // A renewal config Certbot did not enumerate, found without the stem
+        // list — same condition as above, so the same conservative answer.
+        suppressed.add(id);
+        cleanupIncomplete = true;
+        warn(`Certificate "${id}" has a renewal config (${renewalConfigPath(id)}) that Certbot did not enumerate — issuance suppressed`);
+        continue;
+      }
+      if (exists(slot.live) || exists(slot.archive)) localResidue.add(id);
+      else locallyAbsent.push(id);
+    }
+
+    // Residue: certificate files under this cert-name with no renewal config to
+    // describe them. Verified against the pinned Certbot 5.6 — issuing here
+    // completes the ACME exchange and only *then* fails to store the result
+    // ("archive directory exists for <id>"), spending a certificate that cannot
+    // be kept, and leaving behind a zero-byte renewal config Certbot itself
+    // then rejects. So neither issuance nor bootstrap is attempted, and the
+    // files are left exactly as they are: they may be the only copy of a key.
+    //
+    // Deliberately stricter than Certbot, which tolerates an *empty* archive
+    // directory: any existing path counts, rather than re-deriving Certbot's
+    // internal emptiness test.
+    for (const id of localResidue) {
+      suppressed.add(id);
+      const slot = localLineagePaths(id);
+      const present = [
+        exists(slot.live) ? slot.live : null,
+        exists(slot.archive) ? slot.archive : null,
+      ].filter(Boolean).join(', ');
+      warn(`Certificate "${id}" has leftover certificate files (${present}) but no renewal config, so Certbot does not manage it`);
+      warn(`  Issuance suppressed: Certbot would obtain a certificate and then fail to store it, because those paths already occupy the name "${id}" — the certificate would be spent and lost.`);
+      warn(`  Recovery from backup was not attempted either, so nothing here is overwritten. Inspect those paths, keep anything you still need, then remove or rename them to return "${id}" to the normal issuance path.`);
+    }
+
+    // Bootstrap: a desired site with a completely empty slot may take its
+    // certificate from the backup instead of asking the CA for a new one —
+    // the container-replacement case. Gated on CERTBOT_BACKUP like every other
+    // use of the backup, and only ever from a backup proven valid in isolation.
+    // Unlike the undiscoverable path, a site that cannot be bootstrapped falls
+    // through to ordinary issuance: an empty slot is exactly what a brand-new
+    // site looks like.
+    for (const id of locallyAbsent) {
+      if (!certbotBackupEnabled()) break;
+
+      const slotStillEmpty = () => {
+        const slot = localLineagePaths(id);
+        return !exists(slot.renewal) && !exists(slot.live) && !exists(slot.archive);
+      };
+
+      let verdict;
+      try {
+        verdict = await validateBackupLineage(id);
+      } catch (err) {
+        error(`Certificate ${id}: could not check the backup (${err.message})`);
+        // Validation does not mutate, but only issue if that is still provable.
+        if (!slotStillEmpty()) suppressed.add(id);
+        continue;
+      }
+
+      if (!verdict.valid) {
+        log(`Certificate ${id}: no usable backup (${verdict.reason}${verdict.detail ? `: ${verdict.detail}` : ''}) — continuing with normal issuance`);
+        continue;
+      }
+
+      log(`Certificate ${id}: valid backup found — installing it instead of requesting a new certificate`);
+
+      let transaction;
+      try {
+        transaction = bootstrapLineageFromBackup(id);
+      } catch (err) {
+        error(`Certificate ${id}: could not install the backup — ${err.message}`);
+        // The transaction rolls itself back before throwing; issue only if the
+        // slot really is empty again, never into partially installed material.
+        if (!slotStillEmpty()) {
+          suppressed.add(id);
+          warn(`Certificate ${id}: its cert-name is not in a known state, so issuance is suppressed until the next startup resolves it`);
+        }
+        continue;
+      }
+
+      if (!transaction.committed) {
+        // Something occupies the slot that was empty a moment ago. Reclassify
+        // from what is actually there rather than assuming issuance is safe.
+        warn(`Certificate ${id}: backup not installed (${transaction.reason}${transaction.detail ? `: ${transaction.detail}` : ''})`);
+        if (!slotStillEmpty()) suppressed.add(id);
+        continue;
+      }
+
+      // Verify what was installed, against live state and the application's own
+      // rules. parseCerts() with no arguments, so the legacy bulk restore stays
+      // unreachable.
+      let refreshed;
+      try {
+        refreshed = await parseCerts();
+        if (!refreshed[id]) throw new Error(`Certbot did not enumerate "${id}" after installing the backup`);
+        if (!checkCertFiles(id, refreshed[id])) throw new Error('the installed certificate does not satisfy this site\'s configuration');
+      } catch (err) {
+        try {
+          transaction.rollback();
+          // The slot is empty again, so this site is simply a new one.
+          error(`Certificate ${id}: the backup validated in isolation but the installed lineage failed verification (${err.message}) — removed again; continuing with normal issuance`);
+        } catch (rollbackErr) {
+          error(`Certificate ${id}: verification failed (${err.message}) and the rollback failed (${rollbackErr.message}) — state is preserved at ${transaction.transactionDir} and will be resolved on the next startup`);
+          suppressed.add(id);
+        }
+        continue;
+      }
+
+      const { finalized, transactionDir } = transaction.finalize();
+      if (!finalized) {
+        warn(`Certificate ${id}: installed from backup, but its transaction state at ${transactionDir} could not be removed; the next startup will clean it up`);
+      }
+
+      log(`Certificate ${id}: installed from the Certbot backup`);
+      certificates = refreshed;
     }
 
     // Verified against the pinned Certbot 5.6: `certonly --cert-name <id>` on a
@@ -367,7 +511,11 @@ module.exports = async () => {
     log(`Certificate status summary: ${ids.length} certificate(s)`);
     for (const id of ids) {
       if (!final_certificates[id]) {
-        log(`- ${id}: ${suppressed.has(id) ? 'undiscoverable — issuance suppressed, existing lineage preserved' : 'invalid'}`);
+        log(`- ${id}: ${localResidue.has(id)
+          ? 'leftover files, no renewal config — issuance suppressed'
+          : suppressed.has(id)
+            ? 'undiscoverable — issuance suppressed, existing lineage preserved'
+            : 'invalid'}`);
         log(`  domains: ${certs[id].names.join(', ')}`);
       } else {
         const { cert_domains, status } = final_certificates[id];

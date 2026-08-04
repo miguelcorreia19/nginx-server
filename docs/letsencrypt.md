@@ -150,7 +150,14 @@ Let's Encrypt imposes certificate-issuance rate limits. To avoid hitting them wh
 
 ## Certificate backup
 
-Enable `CERTBOT_BACKUP=true` to persist Let's Encrypt state to `CERTBOT_BACKUP_PATH` (default `/home/letsencrypt`) — mount that path as a named volume. On the next startup, if a backup exists, certbot loads certificates from the backup instead of re-issuing them, which also helps you stay within rate limits across container replacements.
+Enable `CERTBOT_BACKUP=true` to persist Let's Encrypt state to `CERTBOT_BACKUP_PATH` (default `/home/letsencrypt`) — mount that path as a named volume. A replacement container with an empty `/etc/letsencrypt` then loads its certificates from that backup instead of requesting new ones, which keeps you within Let's Encrypt's rate limits across container replacements.
+
+Restoring is per certificate and validated first. For each site configured as `letsencrypt`/`letsencrypt-staging`, its backup copy is checked in a temporary directory — nothing live is touched — and installed only if Certbot can read it there *and* it matches that site's certificate name, its configured domains, its environment (production or staging), and is unexpired. The installed result is checked again before the operation completes. Specifically:
+
+- only certificates for currently configured Let's Encrypt sites are considered — a leftover certificate in the backup is never installed, and neither is one whose site is now `http` or `custom`;
+- a missing, unreadable or mismatched backup is never installed: the site simply requests a new certificate as it normally would;
+- a site whose certificate exists locally but which Certbot cannot read is repaired from its backup where possible, and otherwise [preserved and reported](#lineages-certbot-cannot-list) rather than reissued;
+- a certificate name holding leftover files with no renewal config is [preserved and reported](troubleshooting.md#a-site-has-leftover-certificate-files-but-no-renewal-config); nothing is installed over it and no certificate is requested for it.
 
 Note that the backup is written from whatever certificates remain *after* [lifecycle reconciliation](#certificate-lifecycle-removing-a-site-deletes-its-certificate). A certificate whose site you removed is deleted first, so it will not be carried into the next backup.
 

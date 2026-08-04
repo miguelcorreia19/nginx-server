@@ -47,7 +47,7 @@ The image supports four SSL/TLS modes per domain — Let's Encrypt, Let's Encryp
 - **Healthcheck**: pidfile liveness + `nginx -t` config validity on every check interval
 - **Multi-domain support** from a single `config.json`
 - **Custom nginx config override**: replace `nginx.conf`, `proxy.conf`, `http-common.conf` by mounting a directory
-- **Certbot backup/restore**: optional backup of Let's Encrypt state to a named volume, loaded on next startup
+- **Certbot backup/restore**: optional backup of Let's Encrypt state to a named volume; a replacement container validates each backed-up certificate and reuses it instead of requesting a new one
 
 ---
 

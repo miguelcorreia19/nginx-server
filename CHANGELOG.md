@@ -204,6 +204,22 @@ Only the documented literal `false` is special-cased; no new spellings (`FALSE`,
 
 ---
 
+#### Changed: backups are now validated per certificate instead of copied wholesale
+
+Loading certificates from a backup on a fresh container is unchanged as a feature, but is no longer a bulk copy of the whole backup over `/etc/letsencrypt`. Each certificate is now considered on its own, and only for sites currently configured as `letsencrypt`/`letsencrypt-staging`: its backup copy is validated in a temporary directory first, installed by a crash-safe transaction, and checked again against live Certbot state before the operation completes.
+
+This removes several behaviours the bulk copy had. A leftover certificate in the backup is no longer installed and then deleted again; nor is one whose site is now `http` or `custom`, nor any certificate at all when no Let's Encrypt site is configured. A backup from the wrong environment is no longer installed and then thrown away, and a damaged backup can no longer copy its damage into a previously clean container. When a backup is unusable the site simply requests a new certificate, as it would have anyway.
+
+Startup also no longer restores anything while merely *reading* certificate state, so what is on disk is now interpreted before anything is written.
+
+#### Added: leftover certificate files are recognised and left alone
+
+A certificate name holding files under `live/` or `archive/` with no renewal config is now reported and otherwise untouched — no backup is installed over it, and no certificate is requested for it.
+
+Requesting one would not work: Certbot obtains the certificate from Let's Encrypt and only then fails to store it, because those paths already occupy the name, so the certificate is spent and lost. Startup now avoids that entirely and tells you which paths are in the way; removing or renaming them returns the site to the normal path.
+
+---
+
 #### Added: automatic recovery of a certificate Certbot cannot read
 
 When a still-configured certificate becomes unreadable to Certbot, startup now tries to recover it from its backup instead of only reporting the problem. This uses the existing `CERTBOT_BACKUP` opt-in — there is no new setting, and with backups disabled nothing changes.

@@ -21,6 +21,11 @@ jest.mock('../letsencrypt/restore_lineage.js', () => ({
   restoreLineageFromBackup: jest.fn(),
 }));
 
+jest.mock('../letsencrypt/bootstrap_lineage.js', () => ({
+  recoverInterruptedBootstraps: jest.fn(() => { calls.push('recoverBootstraps'); return []; }),
+  bootstrapLineageFromBackup: jest.fn(),
+}));
+
 jest.mock('../letsencrypt/validate_backup.js', () => ({
   validateBackupLineage: jest.fn(),
 }));
@@ -54,6 +59,7 @@ const {
   certbotBackupEnabled, listRenewalStems, backupCertbotState,
 } = require('../letsencrypt/utils.js');
 const { recoverInterruptedRestores, restoreLineageFromBackup } = require('../letsencrypt/restore_lineage.js');
+const { recoverInterruptedBootstraps } = require('../letsencrypt/bootstrap_lineage.js');
 const { validateBackupLineage } = require('../letsencrypt/validate_backup.js');
 const { command, configFiles } = require('../utils.js');
 const { createCert, deleteCert, createConf } = require('../letsencrypt/manage_certs.js');
@@ -97,6 +103,7 @@ beforeEach(() => {
   certbotBackupEnabled.mockReturnValue(true);
   listRenewalStems.mockReturnValue([]);
   recoverInterruptedRestores.mockImplementation(() => { calls.push('recover'); return []; });
+  recoverInterruptedBootstraps.mockImplementation(() => { calls.push('recoverBootstraps'); return []; });
   parseCerts.mockImplementation(() => { calls.push('parseCerts'); return Promise.resolve({}); });
   process.env.CERTBOT_BACKUP_PATH = '/home/letsencrypt';
   logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
@@ -121,7 +128,7 @@ describe('interrupted-restore recovery runs before anything reads Certbot state'
     expect(calls.indexOf('recover')).toBeLessThan(calls.indexOf('hasManagedCertbotState'));
   });
 
-  it('runs before parseCerts(true)', async () => {
+  it('runs before discovery', async () => {
     setConfig({ A: { mode: 'letsencrypt', names: ['a.example.com'] } });
 
     await letsencryptMode();
@@ -237,10 +244,9 @@ describe('a valid backup is restored and the site continues', () => {
 
     await letsencryptMode();
 
-    // parseCerts(true) is discovery; every later call must be argument-free so
-    // the old backup-restore branch is unreachable.
-    expect(parseCerts).toHaveBeenNthCalledWith(1, true);
-    for (const call of parseCerts.mock.calls.slice(1)) expect(call).toEqual([]);
+    // Discovery is now pure too: no call anywhere passes `true`, so the legacy
+    // bulk backup restore inside parseCerts() is unreachable from startup.
+    for (const call of parseCerts.mock.calls) expect(call).toEqual([]);
   });
 
   it('lifts issuance suppression so the site is served this startup', async () => {

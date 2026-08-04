@@ -185,6 +185,19 @@ docker logs <container> | grep "undiscoverable"
 
 Certbot may report that deletion as failed while still removing the renewal config; leftover `live/`/`archive/` directories are inert at that point and are left alone. See [Lineages Certbot cannot list](letsencrypt.md#lineages-certbot-cannot-list).
 
+### A site has leftover certificate files but no renewal config
+
+If startup reports *"leftover certificate files … but no renewal config"*, that certificate name has files under `/etc/letsencrypt/live/<id>` and/or `/etc/letsencrypt/archive/<id>` but nothing telling Certbot how to manage them.
+
+```bash
+docker logs <container> | grep "leftover certificate files"
+docker exec <container> ls -la /etc/letsencrypt/live /etc/letsencrypt/archive
+```
+
+Nothing is done automatically, on purpose. Requesting a certificate would not work: Certbot would obtain one from Let's Encrypt and only then fail to store it, because those paths already occupy the name — the certificate would be spent and lost. Restoring from a backup is also skipped, so nothing overwrites files that may be your only copy of a key.
+
+Inspect those paths, keep anything you still need, then remove or rename them. The site then returns to the normal path: it is restored from a valid backup if one exists, and otherwise requests a new certificate.
+
 ### Nginx not reloading after config change
 
 - Ensure you are modifying files inside the mounted `sites/` directory, not inside the container.

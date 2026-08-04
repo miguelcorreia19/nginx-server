@@ -28,6 +28,11 @@ jest.mock('../letsencrypt/utils.js', () => ({
   renewalConfigPath: jest.fn((stem) => `/etc/letsencrypt/renewal/${stem}.conf`),
 }));
 
+jest.mock('../letsencrypt/bootstrap_lineage.js', () => ({
+  recoverInterruptedBootstraps: jest.fn(() => []),
+  bootstrapLineageFromBackup: jest.fn(),
+}));
+
 jest.mock('../letsencrypt/restore_lineage.js', () => ({
   recoverInterruptedRestores: jest.fn(() => []),
   restoreLineageFromBackup: jest.fn(),
