@@ -57,11 +57,14 @@ jest.mock('../letsencrypt/manage_certs.js', () => ({
   createConf: jest.fn(() => Promise.resolve()),
 }));
 
-// Only the paths named here exist.
-let present = new Set();
+// Only the paths named here exist. The `mock` prefix is required, not
+// stylistic: a jest.mock() factory may not close over an out-of-scope
+// variable unless its name starts with `mock`, so any other name makes the
+// whole suite fail to load.
+let mockPresent = new Set();
 jest.mock('fs', () => ({
   appendFileSync: jest.fn(),
-  existsSync: jest.fn((p) => present.has(String(p))),
+  existsSync: jest.fn((p) => mockPresent.has(String(p))),
   lstatSync: jest.fn(() => undefined),
 }));
 
@@ -103,9 +106,12 @@ const transaction = (overrides = {}) => ({
 // A desired site whose cert-name slot is completely empty.
 const locallyAbsentA = () => {
   setConfig({ A: { mode: 'letsencrypt', names: ['a.example.com'] } });
-  parseCerts.mockResolvedValue({});
+  // Instrumented like the beforeEach default: a plain mockResolvedValue would
+  // replace the implementation and silently stop recording into `calls`, which
+  // the ordering assertions read.
+  parseCerts.mockImplementation(() => { calls.push('parseCerts'); return Promise.resolve({}); });
   listRenewalStems.mockReturnValue([]);
-  present = new Set();
+  mockPresent = new Set();
 };
 
 let logSpy, warnSpy, errorSpy;
@@ -113,7 +119,7 @@ let logSpy, warnSpy, errorSpy;
 beforeEach(() => {
   jest.clearAllMocks();
   calls.length = 0;
-  present = new Set();
+  mockPresent = new Set();
   checkCertFiles.mockReturnValue(true);
   hasManagedCertbotState.mockImplementation(() => { calls.push('hasManagedCertbotState'); return true; });
   certbotBackupEnabled.mockReturnValue(true);
@@ -121,6 +127,13 @@ beforeEach(() => {
   recoverInterruptedRestores.mockImplementation(() => { calls.push('recoverRestores'); return []; });
   recoverInterruptedBootstraps.mockImplementation(() => { calls.push('recoverBootstraps'); return []; });
   parseCerts.mockImplementation(() => { calls.push('parseCerts'); return Promise.resolve({}); });
+  // validateBackupLineage always resolves to a verdict object or throws — it
+  // never resolves to undefined. Most tests here are not about the verdict, so
+  // default to the ordinary "this site has never been backed up" answer; the
+  // recovery tests stub it explicitly. Set every run because
+  // jest.clearAllMocks() keeps whatever implementation the previous test
+  // installed.
+  validateBackupLineage.mockResolvedValue({ valid: false, reason: 'backup-renewal-missing' });
   process.env.CERTBOT_BACKUP_PATH = '/home/letsencrypt';
   logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
   warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
@@ -266,7 +279,7 @@ describe('a locally absent site without a usable backup issues normally', () => 
     locallyAbsentA();
     validateBackupLineage.mockResolvedValue({ valid: true });
     bootstrapLineageFromBackup.mockImplementation(() => {
-      present.add(slot('A').archive);           // rollback did not complete
+      mockPresent.add(slot('A').archive);           // rollback did not complete
       throw new Error('rollback failed');
     });
 
@@ -312,7 +325,7 @@ describe('a cert-name holding residue is left alone entirely', () => {
     setConfig({ A: { mode: 'letsencrypt', names: ['a.example.com'] } });
     parseCerts.mockResolvedValue({});
     listRenewalStems.mockReturnValue([]);
-    present = new Set(paths);
+    mockPresent = new Set(paths);
   };
 
   it.each([
@@ -393,7 +406,7 @@ describe('the existing states are unchanged', () => {
     setConfig({ A: { mode: 'letsencrypt', names: ['a.example.com'] } });
     parseCerts.mockResolvedValue({});
     listRenewalStems.mockImplementation(() => { throw new Error('EACCES'); });
-    present = new Set([slot('A').renewal]);
+    mockPresent = new Set([slot('A').renewal]);
 
     await letsencryptMode();
 
@@ -458,7 +471,7 @@ describe('the four states coexist without interfering', () => {
       D: { mode: 'letsencrypt', names: ['d.example.com'] },   // residue
     });
     listRenewalStems.mockReturnValue(['good']);
-    present = new Set([slot('D').live, slot('D').archive]);
+    mockPresent = new Set([slot('D').live, slot('D').archive]);
     validateBackupLineage.mockImplementation((id) =>
       id === 'B' ? Promise.resolve({ valid: true }) : Promise.resolve({ valid: false, reason: 'backup-renewal-missing' }));
     bootstrapLineageFromBackup.mockReturnValue(transaction());

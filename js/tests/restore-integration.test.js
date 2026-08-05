@@ -162,7 +162,9 @@ describe('an interrupted restore that cannot be resolved stops startup', () => {
     setConfig({ A: { mode: 'letsencrypt', names: ['a.example.com'] } });
     recoverInterruptedRestores.mockReturnValue(results);
 
-    await expect(letsencryptMode()).rejects.toThrow(/Unresolved certificate restore state/);
+    // "transaction", not "restore": one guard covers both the replacement and
+    // the bootstrap transaction namespaces.
+    await expect(letsencryptMode()).rejects.toThrow(/Unresolved certificate transaction state/);
     assertNothingRan();
   });
 

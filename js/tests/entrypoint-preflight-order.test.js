@@ -23,7 +23,11 @@ jest.mock('../http', () => jest.fn(() => Promise.resolve()));
 
 jest.mock('fs', () => ({ existsSync: jest.fn(), statSync: jest.fn() }));
 
-const fs = require('fs');
+// Re-acquired in beforeEach: jest.resetModules() rebuilds the module
+// registry, so the fs mock factory runs again and produces *new* jest.fn()s.
+// A reference captured once at load time would configure — and inspect — an
+// instance entrypoint.js no longer uses.
+let fs = require('fs');
 
 const FILE_STAT = { isFile: () => true };
 
@@ -32,6 +36,7 @@ describe('entrypoint — preflight completes for all entries before any handler 
 
   beforeEach(() => {
     jest.resetModules();
+    fs = require('fs');
     process.env.ENVIRONMENT = 'production';
     delete process.env.CUSTOM_CERTS_PATH;
 

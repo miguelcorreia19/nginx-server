@@ -54,9 +54,12 @@ jest.mock('../letsencrypt/manage_certs.js', () => ({
   createConf: jest.fn(() => Promise.resolve()),
 }));
 
+// lstatSync is not optional: lineage_files.js's exists() falls back to it
+// whenever existsSync says no, so a slot modelled as empty reaches it.
 jest.mock('fs', () => ({
   appendFileSync: jest.fn(),
   existsSync: jest.fn(() => true),
+  lstatSync: jest.fn(() => undefined),
 }));
 
 const fs = require('fs');
@@ -88,6 +91,12 @@ beforeEach(() => {
   hasManagedCertbotState.mockReturnValue(true);
   listRenewalStems.mockReturnValue([]);
   fs.existsSync.mockReturnValue(true);
+  // jest.clearAllMocks() clears recorded calls but keeps whatever
+  // implementation a previous test installed, so a describe that makes
+  // deletion fail would otherwise leak that failure into every test after it.
+  // Re-establish the success defaults explicitly.
+  createCert.mockResolvedValue(true);
+  deleteCert.mockResolvedValue(true);
   delete process.env.CERTBOT_BACKUP;
   process.env.CERTBOT_BACKUP_PATH = '/home/letsencrypt';
   logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
@@ -264,14 +273,17 @@ describe('undiscoverable lineages that are still desired are preserved', () => {
     expect(logged(warnSpy, /Left in place/)).toBe(true);
   });
 
-  it('leaves the existing downstream flow for that site reachable', async () => {
-    // This task only makes the condition visible; the existing issuance
-    // behaviour for a desired-but-unparsed site is deliberately unchanged.
+  it('does not issue for it — reissuing cannot repair an unreadable lineage', async () => {
+    // Certbot cannot reissue into a cert-name whose renewal config it cannot
+    // read: it takes the new-certificate path and persists the result as
+    // "broken-0001", which matches no configured site and is deleted as an
+    // orphan on the next startup. Issuing would spend a real certificate to
+    // produce something this image immediately throws away.
     setConfig({ broken: { mode: 'letsencrypt', names: ['b.example.com'] } });
 
     await letsencryptMode();
 
-    expect(createCert).toHaveBeenCalledWith('broken');
+    expect(createCert).not.toHaveBeenCalledWith('broken');
   });
 });
 
@@ -526,6 +538,10 @@ describe('suppression does not reach sites it should not', () => {
     setConfig({ A: { mode: 'letsencrypt', names: ['a.example.com'] } });
     parseCerts.mockResolvedValue({});
     listRenewalStems.mockReturnValue([]);
+    // A brand-new site occupies nothing: no renewal config, no live/, no
+    // archive/. The suite's default (everything exists) would instead make the
+    // slot read as local residue, which is a different state entirely.
+    fs.existsSync.mockReturnValue(false);
 
     await letsencryptMode();
 

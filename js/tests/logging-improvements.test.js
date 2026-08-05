@@ -98,8 +98,17 @@ describe('js/letsencrypt/utils.js — actionable certificate-parsing diagnostics
 
   it('parsing-failure messages name the certificate id and the missing field', () => {
     const matches = source.match(/Failed to parse "certbot certificates" output for "\$\{cert_id\}": missing "\$\{[A-Z_]+\}"/g) || [];
-    // One for each of: cert path, key path, domains, status, validity
-    expect(matches.length).toBe(5);
+    // One for each of: cert path, key path, status, validity. The identifiers
+    // field is deliberately not in this list — it throws instead of logging
+    // (see below), because every consumer treats cert_domains as an array.
+    expect(matches.length).toBe(4);
+  });
+
+  it('raises the missing identifiers field instead of logging it, still naming the certificate', () => {
+    expect(source).toMatch(
+      /throw new Error\(\s*`Failed to parse "certbot certificates" output for "\$\{cert_id\}": `/
+    );
+    expect(source).toMatch(/no "\$\{CERT_IDENTIFIERS\}" field in its block/);
   });
 
   it('uses clear [letsencrypt]-prefixed backup-discovery logs (no legacy trailing-dot strings)', () => {

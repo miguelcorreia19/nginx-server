@@ -55,7 +55,15 @@ jest.mock('../letsencrypt/manage_certs.js', () => ({
   createConf: jest.fn(() => Promise.resolve()),
 }));
 
-jest.mock('fs', () => ({ appendFileSync: jest.fn() }));
+// index.js classifies each desired site's cert-name slot through
+// lineage_files.js (exists() -> existsSync/lstatSync), so those have to be
+// mocked too. Nothing exists by default: this suite is about lineages Certbot
+// enumerates, not about local residue.
+jest.mock('fs', () => ({
+  appendFileSync: jest.fn(),
+  existsSync: jest.fn(() => false),
+  lstatSync: jest.fn(() => undefined),
+}));
 
 const { parseCerts, checkCertFiles, hasManagedCertbotState } = require('../letsencrypt/utils.js');
 const { command, commandSafe, configFiles } = require('../utils.js');
