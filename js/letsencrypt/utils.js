@@ -3,19 +3,19 @@ const { DateTime } = require("luxon");
 const { command, commandSafe } = require("../utils.js");
 
 const { createLogger } = require("../logger.js");
-const { log, error } = createLogger("letsencrypt");
+const { error } = createLogger("letsencrypt");
 
 let COUNT_PROTECTION = 200;
 
 // The single enablement decision for certificate backup, shared by every gate:
-// the restore path in parseCerts() below, the fast-path detection in
+// the two per-lineage recovery paths and the fast-path detection in
 // hasManagedCertbotState(), and the two write paths (letsencrypt/index.js and
 // letsencrypt/certbot_renew.js).
 //
 // Environment variables are strings, so a bare truthiness test makes the
 // documented value CERTBOT_BACKUP=false *enable* the feature. The restore path
 // used to do exactly that while the write paths did not, so `false` disabled
-// writing but still permitted restoring. All four now share this predicate.
+// writing but still permitted restoring. All of them now share this predicate.
 //
 // Deliberately only the exact literal "false" — no "FALSE"/"0"/"no"/"off" —
 // matching the documented `true`/`false` values and the exact test the write
@@ -127,7 +127,18 @@ exports.parseCertbotCertificatesOutput = parseCertbotCertificatesOutput = (outpu
 exports.certbotReportedNoCertificates = certbotReportedNoCertificates = (output) =>
   /no.*cert.*found/i.test(output);
 
-exports.parseCerts = parseCerts = async (copy_files = false) => {
+// Query Certbot and parse what it enumerates. Discovery only: this reads
+// state and never changes it.
+//
+// It used to take a `copy_files` flag that, on a Certbot reporting no
+// certificates at all, copied the whole backup over /etc/letsencrypt and
+// re-parsed. That bulk restore is gone: recovery is now decided per lineage,
+// after classification, from a backup validated in isolation
+// (validate_backup.js) and installed by a crash-safe transaction
+// (restore_lineage.js, bootstrap_lineage.js). Keeping discovery pure is what
+// lets startup call it freely — including to verify a lineage it just
+// installed — without a read turning into a write.
+exports.parseCerts = parseCerts = async () => {
 
   let output = undefined;
   try {
@@ -136,34 +147,9 @@ exports.parseCerts = parseCerts = async (copy_files = false) => {
     throw new Error(`Failed to query certbot certificates: ${err.error || err.message || err}`);
   }
 
-  let found_certs = {};
+  if (certbotReportedNoCertificates(output)) return {};
 
-  if (!certbotReportedNoCertificates(output)) {
-    found_certs = parseCertbotCertificatesOutput(output);
-  } else if (
-    copy_files &&
-    certbotBackupEnabled()
-  ) {
-    log("Checking backup certificates...");
-    if (fs.existsSync(process.env.CERTBOT_BACKUP_PATH) &&
-      fs.existsSync(`${process.env.CERTBOT_BACKUP_PATH}/live`)
-    ) {
-      const entries = fs.readdirSync(`${process.env.CERTBOT_BACKUP_PATH}/live`);
-      // certbot's `live` directory always contains a README alongside one
-      // subdirectory per certificate lineage — filter it out so a backup
-      // holding exactly one certificate is still detected as non-empty.
-      const certDirs = entries.filter((name) => name !== 'README');
-      if (certDirs.length > 0) {
-        log(`Found ${certDirs.length} certificate(s) in backup storage`);
-        await command(`cp -rf ${process.env.CERTBOT_BACKUP_PATH}/* /etc/letsencrypt`);
-        return await parseCerts();
-      } else {
-        log("No certificates in backup storage; discarding backup");
-      }
-    } else log("No certificates in backup storage; discarding backup");
-  }
-
-  return found_certs;
+  return parseCertbotCertificatesOutput(output);
 }
 
 // Cheap local check for "is there any Certbot state the reconciliation below
@@ -191,9 +177,9 @@ const RENEWAL_DIR = "/etc/letsencrypt/renewal";
 
 exports.hasManagedCertbotState = (overrides = {}) => {
   const renewalDir = overrides.renewalDir || RENEWAL_DIR;
-  // Runs the raw value through the same certbotBackupEnabled() predicate the
-  // parseCerts() restore gate above uses, so the two can never disagree about
-  // whether a backup would actually be restored.
+  // Runs the raw value through the same certbotBackupEnabled() predicate every
+  // other backup gate uses, so they can never disagree about whether a backup
+  // would actually be used.
   const backupEnabled = certbotBackupEnabled(
     'backupEnabled' in overrides ? overrides.backupEnabled : process.env.CERTBOT_BACKUP
   );
@@ -210,11 +196,9 @@ exports.hasManagedCertbotState = (overrides = {}) => {
     return true;
   }
 
-  // Backup state, mirroring the parseCerts(true) restore gate: same enablement
-  // predicate, same live/ requirement, same README filter. Including it keeps
-  // the restore -> rediscover -> delete behaviour reachable unchanged — and
-  // when backup is disabled there is nothing to restore, so it cannot block
-  // the fast path.
+  // Backup state: same enablement predicate, same live/ requirement, same
+  // README filter as the recovery paths — and when backup is disabled there is
+  // nothing to restore, so it cannot block the fast path.
   if (backupEnabled && backupPath) {
     try {
       if (fs.existsSync(backupPath) && fs.existsSync(`${backupPath}/live`)) {

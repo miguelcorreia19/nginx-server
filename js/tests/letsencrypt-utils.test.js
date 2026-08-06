@@ -46,131 +46,43 @@ describe('parseCerts — certbot query failure propagation', () => {
   });
 });
 
-describe('parseCerts — backup restore logic (live dir contents)', () => {
-  const setupBackupEnv = () => {
+// The nine tests that used to live here exercised parseCerts(true): a bulk
+// copy of the whole backup over /etc/letsencrypt whenever Certbot reported no
+// certificates at all. That path is gone — recovery is now per-lineage, from a
+// backup validated in isolation (validate_backup.js) and installed by a
+// crash-safe transaction. What remains worth pinning is the invariant that
+// replaced it: discovery reads, and only reads.
+describe('parseCerts — discovery is pure', () => {
+  it('never touches the backup, even when one is configured and populated', async () => {
     process.env.CERTBOT_BACKUP = 'true';
     process.env.CERTBOT_BACKUP_PATH = '/backup';
-  };
-
-  it('does not inspect backups when CERTBOT_BACKUP is not set', async () => {
-    command.mockResolvedValueOnce(NO_CERTS_OUTPUT);
-
-    const result = await parseCerts(true);
-
-    expect(fs.readdirSync).not.toHaveBeenCalled();
-    expect(result).toEqual({});
-  });
-
-  // Environment values are strings, so the restore gate used to treat the
-  // documented CERTBOT_BACKUP=false as enabled while the write paths treated it
-  // as disabled — `false` disabled writing but still permitted restoring. All
-  // the gates now share certbotBackupEnabled(), so "false" disables restore too.
-  it('does not restore when CERTBOT_BACKUP is the string "false", even with a populated backup', async () => {
-    process.env.CERTBOT_BACKUP = 'false';
-    process.env.CERTBOT_BACKUP_PATH = '/backup';
     fs.existsSync.mockReturnValue(true);
     fs.readdirSync.mockReturnValue(['README', 'example.com']);
     command.mockResolvedValueOnce(NO_CERTS_OUTPUT);
 
-    const result = await parseCerts(true);
-
-    expect(fs.readdirSync).not.toHaveBeenCalled();
-    expect(command).not.toHaveBeenCalledWith(expect.stringContaining('cp -rf'));
-    // Discovery ran exactly once — no recursive re-parse after a restore.
-    expect(command).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({});
-  });
-
-  it('discards the backup when the live directory contains only README', async () => {
-    setupBackupEnv();
-    fs.existsSync.mockReturnValue(true);
-    fs.readdirSync.mockReturnValue(['README']);
-    command.mockResolvedValueOnce(NO_CERTS_OUTPUT);
-
-    const result = await parseCerts(true);
-
-    expect(command).not.toHaveBeenCalledWith(expect.stringContaining('cp -rf'));
-    expect(result).toEqual({});
-  });
-
-  it('restores the backup when it contains exactly one certificate lineage alongside README (regression for dir.length > 1 bug)', async () => {
-    setupBackupEnv();
-    fs.existsSync.mockReturnValue(true);
-    fs.readdirSync.mockReturnValue(['README', 'example.com']);
-    command.mockImplementation((cmd) => {
-      if (cmd === 'certbot certificates') return Promise.resolve(NO_CERTS_OUTPUT);
-      return Promise.resolve();
-    });
-
-    const result = await parseCerts(true);
-
-    expect(command).toHaveBeenCalledWith(expect.stringContaining('cp -rf /backup/* /etc/letsencrypt'));
-    expect(result).toEqual({});
-  });
-
-  it('restores the backup when it contains multiple certificate lineages', async () => {
-    setupBackupEnv();
-    fs.existsSync.mockReturnValue(true);
-    fs.readdirSync.mockReturnValue(['README', 'example.com', 'other.com']);
-    command.mockImplementation((cmd) => {
-      if (cmd === 'certbot certificates') return Promise.resolve(NO_CERTS_OUTPUT);
-      return Promise.resolve();
-    });
-
-    const result = await parseCerts(true);
-
-    expect(command).toHaveBeenCalledWith(expect.stringContaining('cp -rf /backup/* /etc/letsencrypt'));
-    expect(result).toEqual({});
-  });
-
-  it('restores the backup even when README is absent and exactly one lineage dir exists', async () => {
-    setupBackupEnv();
-    fs.existsSync.mockReturnValue(true);
-    fs.readdirSync.mockReturnValue(['example.com']);
-    command.mockImplementation((cmd) => {
-      if (cmd === 'certbot certificates') return Promise.resolve(NO_CERTS_OUTPUT);
-      return Promise.resolve();
-    });
-
-    const result = await parseCerts(true);
-
-    expect(command).toHaveBeenCalledWith(expect.stringContaining('cp -rf /backup/* /etc/letsencrypt'));
-    expect(result).toEqual({});
-  });
-
-  it('discards the backup when the live directory is completely empty', async () => {
-    setupBackupEnv();
-    fs.existsSync.mockReturnValue(true);
-    fs.readdirSync.mockReturnValue([]);
-    command.mockResolvedValueOnce(NO_CERTS_OUTPUT);
-
-    const result = await parseCerts(true);
-
-    expect(command).not.toHaveBeenCalledWith(expect.stringContaining('cp -rf'));
-    expect(result).toEqual({});
-  });
-
-  it('discards the backup when the backup path does not exist on disk', async () => {
-    setupBackupEnv();
-    fs.existsSync.mockReturnValue(false);
-    command.mockResolvedValueOnce(NO_CERTS_OUTPUT);
-
-    const result = await parseCerts(true);
-
-    expect(fs.readdirSync).not.toHaveBeenCalled();
-    expect(command).not.toHaveBeenCalledWith(expect.stringContaining('cp -rf'));
-    expect(result).toEqual({});
-  });
-
-  it('does not inspect backups when copy_files is false, even with CERTBOT_BACKUP set', async () => {
-    setupBackupEnv();
-    command.mockResolvedValueOnce(NO_CERTS_OUTPUT);
-
-    const result = await parseCerts(false);
+    const result = await parseCerts();
 
     expect(fs.existsSync).not.toHaveBeenCalled();
     expect(fs.readdirSync).not.toHaveBeenCalled();
     expect(result).toEqual({});
+  });
+
+  it('runs exactly one command and copies nothing', async () => {
+    process.env.CERTBOT_BACKUP = 'true';
+    process.env.CERTBOT_BACKUP_PATH = '/backup';
+    fs.existsSync.mockReturnValue(true);
+    fs.readdirSync.mockReturnValue(['example.com']);
+    command.mockResolvedValueOnce(NO_CERTS_OUTPUT);
+
+    await parseCerts();
+
+    expect(command).toHaveBeenCalledTimes(1);
+    expect(command).toHaveBeenCalledWith('certbot certificates');
+    expect(command).not.toHaveBeenCalledWith(expect.stringContaining('cp -rf'));
+  });
+
+  it('takes no arguments — there is no restore mode left to ask for', () => {
+    expect(parseCerts.length).toBe(0);
   });
 });
 

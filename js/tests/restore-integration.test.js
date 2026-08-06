@@ -7,9 +7,9 @@
 //
 // The single most important assertion is the ordering one: an interrupted
 // restore leaves renewal/<id>.conf absent while the original lineage sits in
-// the transaction directory. Discovery, the zero-state fast path and the legacy
-// bulk backup restore would all read that as "this lineage does not exist", so
-// recovery has to run before any of them.
+// the transaction directory. Both discovery and the zero-state fast path would
+// read that as "this lineage does not exist", so recovery has to run before
+// either of them.
 
 const mockConfig = {};
 jest.mock('../config.json', () => mockConfig, { virtual: true });
@@ -241,13 +241,13 @@ describe('a valid backup is restored and the site continues', () => {
     expect(txn.rollback).not.toHaveBeenCalled();
   });
 
-  it('verifies against live state without triggering the legacy bulk restore', async () => {
+  it('verifies against live state through the same pure discovery call', async () => {
     succeed();
 
     await letsencryptMode();
 
-    // Discovery is now pure too: no call anywhere passes `true`, so the legacy
-    // bulk backup restore inside parseCerts() is unreachable from startup.
+    // Discovery takes no arguments and mutates nothing, so verifying a
+    // just-installed lineage cannot itself change what it is verifying.
     for (const call of parseCerts.mock.calls) expect(call).toEqual([]);
   });
 

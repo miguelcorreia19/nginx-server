@@ -111,12 +111,23 @@ describe('js/letsencrypt/utils.js — actionable certificate-parsing diagnostics
     expect(source).toMatch(/no "\$\{CERT_IDENTIFIERS\}" field in its block/);
   });
 
-  it('uses clear [letsencrypt]-prefixed backup-discovery logs (no legacy trailing-dot strings)', () => {
+  // The two positive assertions that used to sit here matched the bulk
+  // restore's own progress logs. That path is gone, so only the "these legacy
+  // strings must not come back" half still has a subject.
+  it('keeps the legacy trailing-dot backup strings out of the module', () => {
     expect(source).not.toMatch(/Check existing backups/);
     expect(source).not.toMatch(/Found some certificates on backup path/);
     expect(source).not.toMatch(/Backup path is empty/);
-    expect(source).toMatch(/Checking backup certificates\.\.\./);
-    expect(source).toMatch(/Found \$\{certDirs\.length\} certificate\(s\) in backup storage/);
+  });
+
+  // Only the mechanism is asserted here, never the word "copy_files" — the
+  // module still names the removed flag in a comment explaining why discovery
+  // is pure, and that note is worth keeping. parseCerts()'s own signature is
+  // pinned behaviourally in letsencrypt-utils.test.js.
+  it('no longer carries the discovery-time bulk backup restore', () => {
+    expect(source).not.toMatch(/cp -rf .*\/etc\/letsencrypt/);
+    expect(source).not.toMatch(/Checking backup certificates/);
+    expect(source).not.toMatch(/certificate\(s\) in backup storage/);
   });
 });
 

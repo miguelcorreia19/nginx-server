@@ -115,7 +115,7 @@ describe('hasManagedCertbotState — live/archive residue without a renewal conf
 });
 
 // ──────────────────────────────────────────────
-//  Backup state — mirrors the parseCerts(true) restore gate exactly
+//  Backup state — same enablement predicate as every other backup gate
 // ──────────────────────────────────────────────
 describe('hasManagedCertbotState — backup state', () => {
   beforeEach(mkRenewal);
@@ -178,9 +178,9 @@ describe('hasManagedCertbotState — backup state', () => {
   });
 
   // Backup enablement is one shared decision (certbotBackupEnabled), used by
-  // this predicate, by the parseCerts() restore gate and by both write paths.
-  // With backup disabled there is nothing to restore, so a populated backup
-  // cannot keep the zero-entry fast path on the slow route.
+  // this predicate, by the two per-lineage recovery paths and by both write
+  // paths. With backup disabled there is nothing to restore, so a populated
+  // backup cannot keep the zero-entry fast path on the slow route.
   it('ignores a populated backup when CERTBOT_BACKUP is the string "false"', () => {
     process.env.CERTBOT_BACKUP = 'false';
     process.env.CERTBOT_BACKUP_PATH = backupPath;

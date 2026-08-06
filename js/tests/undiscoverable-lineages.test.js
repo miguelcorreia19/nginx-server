@@ -143,8 +143,9 @@ describe('mixed healthy + undiscoverable orphan', () => {
 // ──────────────────────────────────────────────
 describe('detection', () => {
   it('enumerates renewal stems only after parseCerts has resolved', async () => {
-    // parseCerts(true) can restore a certificate backup, which changes the
-    // renewal directory — a snapshot taken first would miss what it restored.
+    // The two results have to describe the same moment: the set difference
+    // is only meaningful if the stem list is read after discovery has said
+    // what it enumerated, not from a snapshot taken beforehand.
     const order = [];
     parseCerts.mockImplementation(async () => { order.push('parseCerts'); return {}; });
     listRenewalStems.mockImplementation(() => { order.push('listRenewalStems'); return []; });

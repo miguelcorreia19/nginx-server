@@ -48,8 +48,8 @@ module.exports = async () => {
   // has to be the first thing that reads Certbot state at all: a crash partway
   // through a restore leaves renewal/<id>.conf absent while the original
   // lineage sits safely in the transaction directory, and every check below —
-  // the fast path, discovery, even the legacy bulk backup restore — would read
-  // that as "this lineage does not exist".
+  // the fast path and discovery alike — would read that as "this lineage does
+  // not exist".
   //
   // Both transaction namespaces are independent, so their leftovers cannot
   // interact; replacement is resolved first only because it is the older of the
@@ -92,10 +92,10 @@ module.exports = async () => {
   }
 
   try {
-    // Pure discovery: no arguments, so the legacy bulk backup restore inside
-    // parseCerts() is not reached. Recovery from a backup is now decided
-    // per-lineage below, after classification, against a validated source —
-    // rather than by copying the whole backup over whatever is here.
+    // Pure discovery: parseCerts() reads Certbot state and changes nothing.
+    // Recovery from a backup is decided per-lineage below, after
+    // classification, against a validated source — rather than by copying the
+    // whole backup over whatever is here.
     let certificates = await parseCerts();
     // certificates = {
     //  id: {
@@ -232,8 +232,8 @@ module.exports = async () => {
       }
 
       // Verify what was actually installed, against the live tree and the
-      // application's own rules. parseCerts() without arguments on purpose: the
-      // legacy bulk backup restore must never be triggered by a verification.
+      // application's own rules. Safe to re-run because discovery is pure: a
+      // verification can never itself change what it is verifying.
       let restored;
       try {
         restored = await parseCerts();
@@ -379,8 +379,7 @@ module.exports = async () => {
       }
 
       // Verify what was installed, against live state and the application's own
-      // rules. parseCerts() with no arguments, so the legacy bulk restore stays
-      // unreachable.
+      // rules. Safe to re-run because discovery is pure.
       let refreshed;
       try {
         refreshed = await parseCerts();

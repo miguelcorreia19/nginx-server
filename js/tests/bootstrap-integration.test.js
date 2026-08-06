@@ -151,7 +151,7 @@ describe('startup discovery is pure', () => {
 
     await letsencryptMode();
 
-    // parseCerts(true) is the legacy bulk restore; startup must not reach it.
+    // Discovery takes no arguments and mutates nothing.
     for (const call of parseCerts.mock.calls) expect(call).toEqual([]);
   });
 });
