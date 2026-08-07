@@ -65,7 +65,12 @@ jest.mock('fs', () => ({
   lstatSync: jest.fn(() => undefined),
 }));
 
-const { parseCerts, checkCertFiles, hasManagedCertbotState } = require('../letsencrypt/utils.js');
+const {
+  parseCerts, checkCertFiles, hasManagedCertbotState, certbotBackupEnabled, backupCertbotState,
+} = require('../letsencrypt/utils.js');
+const { validateBackupLineage } = require('../letsencrypt/validate_backup.js');
+const { restoreLineageFromBackup } = require('../letsencrypt/restore_lineage.js');
+const { bootstrapLineageFromBackup } = require('../letsencrypt/bootstrap_lineage.js');
 const { command, commandSafe, configFiles } = require('../utils.js');
 const { createCert, deleteCert, createConf } = require('../letsencrypt/manage_certs.js');
 const letsencryptMode = require('../letsencrypt/index.js');
@@ -93,6 +98,12 @@ beforeEach(() => {
   // zero-state fast path that skips discovery entirely is covered separately,
   // in its own describe block at the bottom of this file.
   hasManagedCertbotState.mockReturnValue(true);
+  // jest.clearAllMocks() clears recorded calls but keeps implementations, so
+  // these are re-established every run rather than relying on the factory
+  // defaults surviving whatever the previous test installed. The verdict is a
+  // real object because validateBackupLineage never resolves undefined.
+  certbotBackupEnabled.mockReturnValue(false);
+  validateBackupLineage.mockResolvedValue({ valid: false, reason: 'backup-renewal-missing' });
   jest.spyOn(console, 'log').mockImplementation(() => {});
   jest.spyOn(console, 'warn').mockImplementation(() => {});
   jest.spyOn(console, 'error').mockImplementation(() => {});
@@ -367,6 +378,51 @@ describe('letsencrypt handler — skips Certbot entirely when there is no state 
 
     expect(parseCerts).toHaveBeenCalled();
     expect(deleteCert).toHaveBeenCalledWith('A');
+  });
+});
+
+// ──────────────────────────────────────────────
+//  Why a backup alone is not a reason to take the slow path
+// ──────────────────────────────────────────────
+describe('letsencrypt handler — with zero configured entries the backup is never reached', () => {
+  // The handler returns as soon as cleanup is done when no letsencrypt/
+  // letsencrypt-staging entry is left, and every backup interaction — reading
+  // one for recovery, writing one — sits after that return. So a populated
+  // backup cannot be restored, updated or discarded on this path, which is why
+  // hasManagedCertbotState() no longer counts one as managed state.
+  beforeEach(() => {
+    setConfig({});
+    hasManagedCertbotState.mockReturnValue(true);
+    certbotBackupEnabled.mockReturnValue(true);
+  });
+
+  it('never validates or installs a backup', async () => {
+    parseCerts.mockResolvedValue({});
+
+    await letsencryptMode();
+
+    expect(validateBackupLineage).not.toHaveBeenCalled();
+    expect(restoreLineageFromBackup).not.toHaveBeenCalled();
+    expect(bootstrapLineageFromBackup).not.toHaveBeenCalled();
+  });
+
+  it('never writes the backup, so an existing one is left exactly as it was', async () => {
+    parseCerts.mockResolvedValue({});
+
+    await letsencryptMode();
+
+    expect(backupCertbotState).not.toHaveBeenCalled();
+  });
+
+  it('leaves the backup alone even while cleaning up a discovered orphan', async () => {
+    parseCerts.mockResolvedValue({ A: lineage('A', ['a.example.com']) });
+
+    await letsencryptMode();
+
+    expect(deleteCert).toHaveBeenCalledWith('A');
+    expect(backupCertbotState).not.toHaveBeenCalled();
+    expect(validateBackupLineage).not.toHaveBeenCalled();
+    expect(crondStarted()).toBe(false);
   });
 });
 

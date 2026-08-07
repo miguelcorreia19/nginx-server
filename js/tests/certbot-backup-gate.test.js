@@ -1,14 +1,15 @@
 // CERTBOT_BACKUP enablement, end to end through the Let's Encrypt handler.
 //
 // Environment values are strings, so a bare truthiness test treats the
-// documented CERTBOT_BACKUP=false as enabled. The restore path in parseCerts()
+// documented CERTBOT_BACKUP=false as enabled. The discovery-time restore path
 // used to do exactly that while the two write paths tested `!== 'false'`, so
 // `false` disabled writing the backup but still permitted restoring it.
 //
 // All the gates now share certbotBackupEnabled() (js/letsencrypt/utils.js).
 // This file pins the *write* side of that contract on the real handler; the
-// restore side is covered in letsencrypt-utils.test.js, the fast-path side in
-// certbot-state.test.js, and the predicate itself in both.
+// per-lineage recovery side is covered in restore-integration.test.js and
+// bootstrap-integration.test.js, and the predicate itself in
+// certbot-state.test.js.
 //
 // Mocking mirrors letsencrypt-lineage-cleanup.test.js.
 

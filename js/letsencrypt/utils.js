@@ -170,6 +170,19 @@ exports.parseCerts = parseCerts = async () => {
 // Any *.conf entry counts, parseable or not: corrupt/partial renewal state must
 // stay on the Certbot path so Certbot can surface it, never be hidden here.
 //
+// A populated backup deliberately does NOT count. It used to, back when
+// discovery could copy the whole backup over /etc/letsencrypt and rediscover
+// from it — a backup was then genuinely reachable state. That bulk restore is
+// gone, and with zero configured letsencrypt/letsencrypt-staging entries the
+// handler returns once cleanup is done, before any backup is read for recovery
+// or written. So the slow path can no longer restore, update or discard a
+// backup: entering it for one costs a `certbot certificates` call that can
+// only report nothing, and makes an http/custom-only deployment fail to start
+// whenever Certbot is unhealthy — precisely what the fast path exists to
+// avoid. The backup is left untouched either way, and is still available to
+// per-lineage recovery the moment a Let's Encrypt site is configured again,
+// because a non-empty entry set never consults this function at all.
+//
 // Deliberately conservative: this answers "must the slow path run?", and every
 // uncertain answer is `true`. Skipping cleanup that was needed would be a real
 // defect; running discovery that turned out to be unnecessary costs one command.
@@ -177,15 +190,7 @@ const RENEWAL_DIR = "/etc/letsencrypt/renewal";
 
 exports.hasManagedCertbotState = (overrides = {}) => {
   const renewalDir = overrides.renewalDir || RENEWAL_DIR;
-  // Runs the raw value through the same certbotBackupEnabled() predicate every
-  // other backup gate uses, so they can never disagree about whether a backup
-  // would actually be used.
-  const backupEnabled = certbotBackupEnabled(
-    'backupEnabled' in overrides ? overrides.backupEnabled : process.env.CERTBOT_BACKUP
-  );
-  const backupPath = 'backupPath' in overrides ? overrides.backupPath : process.env.CERTBOT_BACKUP_PATH;
 
-  // Local renewal configs.
   try {
     if (fs.existsSync(renewalDir) && fs.readdirSync(renewalDir).some((name) => name.endsWith('.conf'))) {
       return true;
@@ -194,20 +199,6 @@ exports.hasManagedCertbotState = (overrides = {}) => {
     // Could not prove the directory is empty (permissions, I/O, a racing
     // change). Fall through to the Certbot path rather than assuming absence.
     return true;
-  }
-
-  // Backup state: same enablement predicate, same live/ requirement, same
-  // README filter as the recovery paths — and when backup is disabled there is
-  // nothing to restore, so it cannot block the fast path.
-  if (backupEnabled && backupPath) {
-    try {
-      if (fs.existsSync(backupPath) && fs.existsSync(`${backupPath}/live`)) {
-        const entries = fs.readdirSync(`${backupPath}/live`);
-        if (entries.filter((name) => name !== 'README').length > 0) return true;
-      }
-    } catch (err) {
-      return true;
-    }
   }
 
   return false;

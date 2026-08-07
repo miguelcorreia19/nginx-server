@@ -115,53 +115,31 @@ describe('hasManagedCertbotState — live/archive residue without a renewal conf
 });
 
 // ──────────────────────────────────────────────
-//  Backup state — same enablement predicate as every other backup gate
+//  A backup is not local Certbot state
 // ──────────────────────────────────────────────
-describe('hasManagedCertbotState — backup state', () => {
+// It counted as state while discovery could bulk-restore the backup over
+// /etc/letsencrypt and rediscover from it. That path is gone, and with zero
+// configured Let's Encrypt sites the handler returns before any backup is read
+// for recovery or written (proved at the handler level in
+// letsencrypt-lineage-cleanup.test.js), so a backup is no longer something the
+// slow path could act on.
+describe('hasManagedCertbotState — a populated backup does not force the slow path', () => {
   beforeEach(mkRenewal);
 
-  it('is true when backup is enabled and backup/live holds a lineage', () => {
-    process.env.CERTBOT_BACKUP = 'true';
+  it.each([
+    ['enabled', 'true'],
+    ['the string "false"', 'false'],
+    ['the empty string', ''],
+  ])('is false with a populated backup and CERTBOT_BACKUP %s', (_label, value) => {
+    process.env.CERTBOT_BACKUP = value;
     process.env.CERTBOT_BACKUP_PATH = backupPath;
     mkBackupLive();
     fs.mkdirSync(path.join(backupPath, 'live', 'A'));
 
-    expect(hasManagedCertbotState(opts())).toBe(true);
-  });
-
-  it('is false when backup/live holds only README', () => {
-    process.env.CERTBOT_BACKUP = 'true';
-    process.env.CERTBOT_BACKUP_PATH = backupPath;
-    mkBackupLive();
-    fs.writeFileSync(path.join(backupPath, 'live', 'README'), 'x');
-
     expect(hasManagedCertbotState(opts())).toBe(false);
   });
 
-  it('is false when backup/live is empty', () => {
-    process.env.CERTBOT_BACKUP = 'true';
-    process.env.CERTBOT_BACKUP_PATH = backupPath;
-    mkBackupLive();
-
-    expect(hasManagedCertbotState(opts())).toBe(false);
-  });
-
-  it('is false when the backup path exists but has no live/ directory', () => {
-    process.env.CERTBOT_BACKUP = 'true';
-    process.env.CERTBOT_BACKUP_PATH = backupPath;
-    fs.mkdirSync(backupPath, { recursive: true });
-
-    expect(hasManagedCertbotState(opts())).toBe(false);
-  });
-
-  it('is false when the backup path does not exist at all', () => {
-    process.env.CERTBOT_BACKUP = 'true';
-    process.env.CERTBOT_BACKUP_PATH = path.join(tmp, 'nowhere');
-
-    expect(hasManagedCertbotState(opts())).toBe(false);
-  });
-
-  it('ignores backup contents entirely when CERTBOT_BACKUP is unset', () => {
+  it('is false with a populated backup and CERTBOT_BACKUP unset', () => {
     delete process.env.CERTBOT_BACKUP;
     process.env.CERTBOT_BACKUP_PATH = backupPath;
     mkBackupLive();
@@ -170,33 +148,32 @@ describe('hasManagedCertbotState — backup state', () => {
     expect(hasManagedCertbotState(opts())).toBe(false);
   });
 
-  it('is false when CERTBOT_BACKUP_PATH is unset, even with backup enabled', () => {
+  it('does not read the backup directory at all', () => {
     process.env.CERTBOT_BACKUP = 'true';
-    delete process.env.CERTBOT_BACKUP_PATH;
-
-    expect(hasManagedCertbotState(opts())).toBe(false);
-  });
-
-  // Backup enablement is one shared decision (certbotBackupEnabled), used by
-  // this predicate, by the two per-lineage recovery paths and by both write
-  // paths. With backup disabled there is nothing to restore, so a populated
-  // backup cannot keep the zero-entry fast path on the slow route.
-  it('ignores a populated backup when CERTBOT_BACKUP is the string "false"', () => {
-    process.env.CERTBOT_BACKUP = 'false';
     process.env.CERTBOT_BACKUP_PATH = backupPath;
     mkBackupLive();
     fs.mkdirSync(path.join(backupPath, 'live', 'A'));
 
-    expect(hasManagedCertbotState(opts())).toBe(false);
+    const readdir = jest.spyOn(fs, 'readdirSync');
+
+    hasManagedCertbotState(opts());
+
+    const inspected = readdir.mock.calls.map(([p]) => String(p));
+    expect(inspected.some((p) => p.startsWith(backupPath))).toBe(false);
+
+    readdir.mockRestore();
   });
 
-  it('treats the empty string as disabled', () => {
-    process.env.CERTBOT_BACKUP = '';
+  // The renewal config, not the backup, is what keeps the slow path — so a
+  // container that still has real Certbot state is unaffected by the above.
+  it('is still true when a renewal config sits alongside a populated backup', () => {
+    process.env.CERTBOT_BACKUP = 'true';
     process.env.CERTBOT_BACKUP_PATH = backupPath;
     mkBackupLive();
     fs.mkdirSync(path.join(backupPath, 'live', 'A'));
+    fs.writeFileSync(path.join(renewalDir, 'A.conf'), 'x');
 
-    expect(hasManagedCertbotState(opts())).toBe(false);
+    expect(hasManagedCertbotState(opts())).toBe(true);
   });
 });
 
@@ -218,14 +195,17 @@ describe('hasManagedCertbotState — an uninspectable directory chooses the slow
     spy.mockRestore();
   });
 
-  it('is true when the backup live directory cannot be read', () => {
+  // The counterpart backup case is gone with the backup check itself: an
+  // unreadable backup is no longer a reason to run Certbot, because the slow
+  // path could not act on that backup even if it were readable.
+  it('is unaffected by an unreadable backup directory', () => {
     mkRenewal();
     process.env.CERTBOT_BACKUP = 'true';
     process.env.CERTBOT_BACKUP_PATH = backupPath;
     mkBackupLive();
 
     const spy = jest.spyOn(fs, 'readdirSync').mockImplementation((p) => {
-      if (String(p).includes('backup')) {
+      if (String(p).startsWith(backupPath)) {
         const err = new Error('EIO');
         err.code = 'EIO';
         throw err;
@@ -233,7 +213,7 @@ describe('hasManagedCertbotState — an uninspectable directory chooses the slow
       return [];
     });
 
-    expect(hasManagedCertbotState(opts())).toBe(true);
+    expect(hasManagedCertbotState(opts())).toBe(false);
 
     spy.mockRestore();
   });
@@ -253,7 +233,7 @@ describe('hasManagedCertbotState — an uninspectable directory chooses the slow
 // ──────────────────────────────────────────────
 //  The shared enablement predicate
 // ──────────────────────────────────────────────
-describe('certbotBackupEnabled — one decision shared by restore, write and fast path', () => {
+describe('certbotBackupEnabled — one decision shared by recovery and the write paths', () => {
   const { certbotBackupEnabled } = require('../letsencrypt/utils.js');
 
   it('is disabled when CERTBOT_BACKUP is unset', () => {
