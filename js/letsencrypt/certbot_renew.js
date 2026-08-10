@@ -1,5 +1,5 @@
 const { parseCerts, certbotBackupEnabled, listRenewalStems, isDesiredLetsencryptEntry, backupCertbotState } = require("./utils.js");
-const { command, commandSafe } = require("../utils.js");
+const { commandSafe } = require("../utils.js");
 const migrateRenewalConfigs = require("./migrate_renewal");
 
 // Consistent, container-friendly logging via the shared logger. This script's
@@ -9,6 +9,30 @@ const migrateRenewalConfigs = require("./migrate_renewal");
 // prefix rather than relying on Docker's own log timestamps.
 const { createLogger } = require("../logger.js");
 const { log, warn, error } = createLogger("certbot_renew.js");
+
+// POSIX single-quoting, for the one value that unavoidably crosses a shell
+// boundary.
+//
+// The certbot invocation itself is an argument vector now (commandSafe below),
+// so nothing in it is shell-interpreted. --deploy-hook is the exception:
+// Certbot has no argv form for hooks — it stores the hook as a string and runs
+// it through a shell when a certificate is actually deployed — so the flag path
+// is inside a command string no matter how certbot is invoked.
+//
+// Single quotes make every character in between literal, which is what removes
+// the injection/quoting fragility: a path containing spaces, `;`, `$(...)`,
+// backticks or `&&` is passed to touch(1) as one literal filename. The single
+// quote is the only character that cannot appear inside single quotes, so it is
+// closed, escaped and reopened with the standard '\'' idiom.
+//
+// Quoting is not the whole job: it settles what the *shell* does with the
+// value, not what touch(1) then does with its own argv. A quoted '-d' is still
+// one word, and still an option to touch — verified against the pinned
+// runtime's BusyBox 1.37.0, which answers `touch: unrecognized option: x` for
+// '-x'. CERTBOT_RENEWED_FLAG is an operator-settable override (certbot_renew.sh
+// documents it and exports whatever it is given), so the hook below ends touch's
+// options with `--` before the quoted path.
+const shellQuote = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
 
 // Human-readable expiry derived from the parsed Luxon validity. Logging only —
 // no behavior depends on this, and an unparseable/missing validity is tolerated.
@@ -43,10 +67,23 @@ const start = async () => {
     // certbot_renew.sh reloads nginx only if that flag exists afterward, so nginx
     // is reloaded only when at least one certificate actually changed. The flag
     // path is an internal value supplied by certbot_renew.sh.
+    //
+    // Invoked with commandSafe (execFile): certbot's own arguments are passed as
+    // an argument vector, so CERTBOT_RENEWED_FLAG cannot break out of the
+    // command line the way it could when the whole invocation was one shell
+    // string. Every element of that vector is a fixed literal except the hook,
+    // which always begins "touch ", so none of them can be read as an
+    // unintended certbot option. The hook value is still a command string
+    // because Certbot runs hooks through a shell, so the path is single-quoted
+    // by shellQuote above and guarded from touch's own option parsing with
+    // `--` — see that comment for the remaining, unavoidable trust boundary.
     const renewedFlag = process.env.CERTBOT_RENEWED_FLAG || '/tmp/certbot-renewed.flag';
-    const renewOutput = await command(
-      `certbot renew --webroot -w /var/www/certbot --noninteractive --deploy-hook "touch '${renewedFlag}'"`
-    );
+    const renewOutput = await commandSafe('certbot', [
+      'renew',
+      '--webroot', '-w', '/var/www/certbot',
+      '--noninteractive',
+      '--deploy-hook', `touch -- ${shellQuote(renewedFlag)}`,
+    ]);
     // Surface certbot's own renewal report (which certs were due, skipped,
     // renewed, or failed) verbatim for troubleshooting.
     if (renewOutput) console.log(renewOutput);
@@ -119,7 +156,7 @@ const start = async () => {
   }
 };
 
-module.exports = { formatValidity };
+module.exports = { formatValidity, shellQuote };
 
 // Run only when invoked directly (`node letsencrypt/certbot_renew.js`) so the
 // module can be required by tests without triggering a real renewal.

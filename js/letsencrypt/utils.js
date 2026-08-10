@@ -277,24 +277,49 @@ exports.backupCertbotState = async (options = {}) => {
   const backupPath = 'backupPath' in options ? options.backupPath : process.env.CERTBOT_BACKUP_PATH;
   const protectedLineages = new Set(options.protectedLineages || []);
 
-  // With nothing to protect this is byte-for-byte the copy it has always been,
-  // so the ordinary path keeps its exact previous semantics.
+  // Top-level entries, minus dotfiles. This used to be the shell glob in
+  // `cp -rf ${source}/* ${backupPath}`, which never matches dotfiles; the
+  // enumeration is done here instead so `backupPath` (CERTBOT_BACKUP_PATH, an
+  // operator-supplied path) never reaches a shell. Both branches below skip
+  // dotfiles for the same reason the glob did: otherwise the backup would
+  // silently start including files it never has, such as migrate_renewal.js's
+  // .nginx-server-renewal-schema marker. Only the *top* level is filtered —
+  // `cp -rf` still copies whatever is inside a directory it is handed, dotfiles
+  // included, exactly as the glob's expansion did.
+  //
+  // A source with no visible entries copies nothing and succeeds, which is what
+  // the protected branch below has always done. The glob spelling failed
+  // instead — an unmatched `*` is passed through literally and `cp` cannot stat
+  // it — but that state does not arise here: both callers reach a backup write
+  // only after a successful `certbot certificates`, and on the pinned Certbot
+  // 5.6.0 that call creates /etc/letsencrypt containing renewal-hooks/, so the
+  // listing is never empty. Backing up nothing is also the harmless direction
+  // for this feature (see the caller in index.js: skipping a write costs an
+  // update, overwriting a good copy costs the recovery material).
+  const visible = (dir) => fs.readdirSync(dir).filter((name) => !name.startsWith('.'));
+
+  // `--` on every copy below. execFile removes the shell, but not cp(1)'s own
+  // option parsing, and `backupPath` is unvalidated operator input: a
+  // CERTBOT_BACKUP_PATH beginning with `-` is read as flags by the pinned
+  // runtime's BusyBox 1.37.0 (`cp: unrecognized option: e` for `-dest`). The
+  // sources cannot lead with `-` — they are built from LETSENCRYPT_DIR — but
+  // the destination is the last operand, so it needs the guard.
+
+  // With nothing to protect this is the same copy it has always been — same
+  // binary, same flags, same set of sources — just spelled as one execFile per
+  // top-level entry instead of one shell command with a glob.
   if (protectedLineages.size === 0) {
-    await command(`cp -rf ${source}/* ${backupPath}`);
+    for (const entry of visible(source)) {
+      await commandSafe('cp', ['-rf', '--', `${source}/${entry}`, backupPath]);
+    }
     return;
   }
-
-  // `${source}/*` above is a shell glob, which never matches dotfiles. The walk
-  // below skips them for the same reason: otherwise enabling protection would
-  // silently start backing up files the bulk copy never included, such as
-  // migrate_renewal.js's .nginx-server-renewal-schema marker.
-  const visible = (dir) => fs.readdirSync(dir).filter((name) => !name.startsWith('.'));
 
   for (const entry of visible(source)) {
     if (!LINEAGE_DIRS.includes(entry)) {
       // `cp -rf <dir> <backup>` merges into an existing directory of the same
       // name, exactly as the bulk copy did.
-      await commandSafe('cp', ['-rf', `${source}/${entry}`, backupPath]);
+      await commandSafe('cp', ['-rf', '--', `${source}/${entry}`, backupPath]);
       continue;
     }
 
@@ -307,7 +332,7 @@ exports.backupCertbotState = async (options = {}) => {
       if (protectedLineages.has(id)) continue;
       // Same `cp -rf` as before, so live/<id>'s symlinks into archive/<id> stay
       // symlinks rather than being dereferenced into regular files.
-      await commandSafe('cp', ['-rf', `${source}/${entry}/${child}`, destDir]);
+      await commandSafe('cp', ['-rf', '--', `${source}/${entry}/${child}`, destDir]);
     }
   }
 };

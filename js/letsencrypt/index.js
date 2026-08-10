@@ -12,7 +12,16 @@ const { createLogger } = require("../logger.js");
 const { log, warn, error, fatal } = createLogger("letsencrypt");
 
 module.exports = async () => {
-  await command(`mkdir -p ${process.env.CERTBOT_BACKUP_PATH}`);
+  // execFile, not a shell string: CERTBOT_BACKUP_PATH is operator-supplied, so
+  // interpolating it would word-split on whitespace and interpret any shell
+  // metacharacter it contains. Same binary and same flag as before.
+  //
+  // `--` because dropping the shell does not stop mkdir(1) from parsing its own
+  // argv, and nothing validates this path: `CERTBOT_BACKUP_PATH=-mybackup` is
+  // read as flags by the pinned runtime's BusyBox 1.37.0 (`mkdir: invalid mode
+  // 'ybackup'`, since -m takes the next characters as a mode). `--` ends option
+  // parsing, so the path is treated as the directory to create.
+  await commandSafe('mkdir', ['-p', '--', process.env.CERTBOT_BACKUP_PATH]);
   const _certs = require("../config.json");
 
   const certs = { ..._certs };

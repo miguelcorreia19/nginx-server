@@ -36,6 +36,10 @@ const { backupCertbotState } = require('../letsencrypt/utils.js');
 let tmp, source, backup;
 
 beforeEach(() => {
+  // Call records only — the mock factory's implementations (real exec/execFile
+  // against the temp trees) are set with jest.fn(impl) and survive this, which
+  // is what the copy assertions below rely on.
+  jest.clearAllMocks();
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'backup-protect-'));
   source = path.join(tmp, 'letsencrypt');
   backup = path.join(tmp, 'backup');
@@ -242,14 +246,76 @@ describe('backup shape is unchanged', () => {
 //  G/H. no protection, and orphans
 // ──────────────────────────────────────────────
 describe('with nothing protected', () => {
-  const { command } = require('../utils.js');
+  const { command, commandSafe } = require('../utils.js');
 
-  it('issues the same single bulk copy as before', async () => {
+  // This path used to be one shell command, `cp -rf ${source}/* ${backup}`,
+  // whose glob interpolated CERTBOT_BACKUP_PATH into a shell string. It is now
+  // one execFile per top-level entry — same binary, same flags, same sources —
+  // with the glob's enumeration done in Node instead.
+  it('copies each top-level entry with cp -rf, without a shell', async () => {
     lineage(source, 'A', 'healthy');
 
     await run([]);
 
-    expect(command).toHaveBeenCalledWith(`cp -rf ${source}/* ${backup}`);
+    const copies = commandSafe.mock.calls.map(([bin, args]) => [bin, ...args]);
+    expect(copies).toEqual(
+      expect.arrayContaining([
+        ['cp', '-rf', '--', `${source}/archive`, backup],
+        ['cp', '-rf', '--', `${source}/live`, backup],
+        ['cp', '-rf', '--', `${source}/renewal`, backup],
+      ])
+    );
+    expect(copies).toHaveLength(3);
+    expect(command).not.toHaveBeenCalled();
+  });
+
+  // The glob it replaced never matched top-level dotfiles; the enumeration has
+  // to agree, or the unprotected path would silently start backing up files the
+  // bulk copy never included (migrate_renewal.js's schema marker, above all).
+  it('still skips top-level dotfiles, exactly as the glob did', async () => {
+    lineage(source, 'A', 'healthy');
+    fs.writeFileSync(path.join(source, '.nginx-server-renewal-schema'), 'webroot-renewal-v1');
+
+    await run([]);
+
+    expect(exists(backup, '.nginx-server-renewal-schema')).toBe(false);
+  });
+
+  // ...but a dotfile *inside* a copied directory was always included, because
+  // the glob only ever filtered its own expansion. `cp -rf <dir>` still copies
+  // the whole directory, so that half must not change either.
+  it('still copies dotfiles nested inside a copied directory', async () => {
+    lineage(source, 'A', 'healthy');
+    fs.writeFileSync(path.join(source, 'renewal', '.keep'), 'nested');
+
+    await run([]);
+
+    expect(read(backup, 'renewal', '.keep')).toBe('nested');
+  });
+
+  // The reason this call site moved off the shell helper: CERTBOT_BACKUP_PATH
+  // is operator-supplied, and a bind-mounted backup directory can contain a
+  // space. Under the old shell string this copied into two wrong destinations.
+  it('handles a backup path containing spaces', async () => {
+    const spaced = path.join(tmp, 'my backup dir');
+    fs.mkdirSync(spaced, { recursive: true });
+    lineage(source, 'A', 'healthy');
+
+    await backupCertbotState({ protectedLineages: [], sourceDir: source, backupPath: spaced });
+
+    expect(fs.readFileSync(path.join(spaced, 'renewal', 'A.conf'), 'utf8'))
+      .toBe('# healthy\n[renewalparams]\n');
+    expect(fs.existsSync(path.join(spaced, 'archive', 'A', 'cert1.pem'))).toBe(true);
+  });
+
+  it('handles a source path containing spaces', async () => {
+    const spacedSource = path.join(tmp, 'my letsencrypt dir');
+    fs.mkdirSync(spacedSource, { recursive: true });
+    lineage(spacedSource, 'A', 'healthy');
+
+    await backupCertbotState({ protectedLineages: [], sourceDir: spacedSource, backupPath: backup });
+
+    expect(read(backup, 'renewal', 'A.conf')).toBe('# healthy\n[renewalparams]\n');
   });
 
   it('copies everything, including a lineage that would otherwise be protected', async () => {
@@ -272,6 +338,114 @@ describe('with nothing protected', () => {
     await run([]);
 
     expect(read(backup, 'renewal', 'orphan.conf')).toBe('!!! not remotely valid ini !!!\n');
+  });
+});
+
+// ──────────────────────────────────────────────
+//  I. a source with nothing visible in it
+// ──────────────────────────────────────────────
+//
+// The unprotected branch used to be `cp -rf ${source}/* ${backup}`. A glob with
+// zero matches is passed through literally, so cp could not stat it and the
+// write failed; enumerating in Node copies nothing and returns instead.
+//
+// The no-op is the intended reading, on the repository's own evidence rather
+// than as a side effect of dropping the glob: the protected branch has
+// enumerated with this same filter since protection was introduced, and has
+// always no-opped on an empty source — so failing was never a property of this
+// function, only of one of its two spellings. The caller in
+// js/letsencrypt/index.js states the same policy directly ("a backup is an
+// optimisation — skipping one write is harmless"), and copying nothing
+// overwrites nothing.
+//
+// It is also unreachable in production: both callers reach a backup write only
+// after a successful `certbot certificates`, and on the pinned Certbot 5.6.0
+// that call creates /etc/letsencrypt with renewal-hooks/ inside it, so the
+// listing always has at least one visible entry. Pinned here so the two
+// branches cannot drift apart again.
+describe('a source with no visible entries', () => {
+  const { commandSafe } = require('../utils.js');
+
+  it('copies nothing and succeeds, with nothing protected', async () => {
+    await expect(run([])).resolves.toBeUndefined();
+
+    expect(commandSafe).not.toHaveBeenCalled();
+    expect(fs.readdirSync(backup)).toEqual([]);
+  });
+
+  it('copies nothing and succeeds, with a lineage protected', async () => {
+    await expect(run(['A'])).resolves.toBeUndefined();
+
+    expect(commandSafe).not.toHaveBeenCalled();
+    expect(fs.readdirSync(backup)).toEqual([]);
+  });
+
+  it('treats a source holding only dotfiles the same way', async () => {
+    fs.writeFileSync(path.join(source, '.nginx-server-renewal-schema'), 'webroot-renewal-v1');
+
+    await expect(run([])).resolves.toBeUndefined();
+
+    expect(commandSafe).not.toHaveBeenCalled();
+  });
+
+  // Distinct from "empty": an absent source is not proof that there is nothing
+  // to back up, and it failed before this change too (cp could not stat the
+  // literal glob). Unchanged, deliberately.
+  it('still fails when the source directory does not exist at all', async () => {
+    fs.rmSync(source, { recursive: true, force: true });
+
+    await expect(run([])).rejects.toBeDefined();
+  });
+});
+
+// ──────────────────────────────────────────────
+//  J. a hostile backup path
+// ──────────────────────────────────────────────
+//
+// CERTBOT_BACKUP_PATH is operator-supplied and validated nowhere. execFile
+// keeps a shell away from it; `--` keeps cp's own option parser away from it.
+// Exercised with a relative path, since that is the only way an operand can
+// actually begin with `-` — the pinned runtime's BusyBox 1.37.0 answers
+// `cp: unrecognized option: e` for a `-dest` operand without the marker.
+describe('a backup path beginning with a hyphen', () => {
+  const { commandSafe } = require('../utils.js');
+  let cwd;
+
+  beforeEach(() => {
+    cwd = process.cwd();
+    process.chdir(tmp);
+    fs.mkdirSync('-backup', { recursive: true });
+  });
+
+  // Runs before the outer afterEach removes tmp, so the working directory is
+  // never left pointing at a deleted path.
+  afterEach(() => {
+    process.chdir(cwd);
+  });
+
+  it('is copied into rather than read as cp options', async () => {
+    lineage(source, 'A', 'healthy');
+
+    await backupCertbotState({ protectedLineages: [], sourceDir: source, backupPath: '-backup' });
+
+    expect(read(tmp, '-backup', 'renewal', 'A.conf')).toBe('# healthy\n[renewalparams]\n');
+    expect(exists(tmp, '-backup', 'archive', 'A', 'cert1.pem')).toBe(true);
+    for (const [, args] of commandSafe.mock.calls) {
+      expect(args.indexOf('--')).toBeLessThan(args.indexOf('-backup'));
+    }
+  });
+
+  it('is copied into on the protected path too', async () => {
+    lineage(source, 'A', 'healthy');
+    lineage(source, 'B', 'healthy');
+
+    await backupCertbotState({ protectedLineages: ['A'], sourceDir: source, backupPath: '-backup' });
+
+    expect(read(tmp, '-backup', 'renewal', 'B.conf')).toBe('# healthy\n[renewalparams]\n');
+    expect(exists(tmp, '-backup', 'renewal', 'A.conf')).toBe(false);
+    for (const [, args] of commandSafe.mock.calls) {
+      expect(args.indexOf('--')).toBeLessThan(args.findIndex((a) => a.startsWith('-backup')));
+    }
   });
 });
 

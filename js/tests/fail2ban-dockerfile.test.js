@@ -35,7 +35,12 @@ describe('Dockerfile — Fail2ban files and Alpine startup fixes', () => {
     expect(dockerfile).toMatch(/COPY fail2ban\.sh \/usr\/local\/bin\//);
   });
   it('makes fail2ban.sh executable', () => {
-    expect(dockerfile).toMatch(/chmod \+x[^\n]*\/usr\/local\/bin\/fail2ban\.sh/);
+    // An explicit mode rather than `chmod +x`: symbolic `+x` adds the execute
+    // bits and keeps whatever read/write bits COPY was handed, so the result
+    // would be the checkout's to decide (git tracks only the executable bit,
+    // and a umask-002 clone supplies 0664 -> 0775). The full permission model
+    // for all four helpers lives in build-startup-assertions.test.js.
+    expect(dockerfile).toMatch(/chmod 0?755[^\n]*\/usr\/local\/bin\/fail2ban\.sh/);
   });
   it('installs the static fail2ban.local server config', () => {
     expect(dockerfile).toMatch(/COPY \.\/fail2ban\/fail2ban\.local \/etc\/fail2ban\/fail2ban\.local/);

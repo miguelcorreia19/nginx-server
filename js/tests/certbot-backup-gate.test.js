@@ -59,19 +59,36 @@ jest.mock('../letsencrypt/manage_certs.js', () => ({
   createConf: jest.fn(() => Promise.resolve()),
 }));
 
-jest.mock('fs', () => ({ appendFileSync: jest.fn() }));
+// appendFileSync: the renewal cron line. readdirSync: the real
+// backupCertbotState now enumerates /etc/letsencrypt's top-level entries in
+// Node — that enumeration replaced the shell glob in the old
+// `cp -rf /etc/letsencrypt/* <backup>` — so it must answer with a
+// Certbot-shaped listing here.
+jest.mock('fs', () => ({
+  appendFileSync: jest.fn(),
+  readdirSync: jest.fn(() => ['accounts', 'archive', 'live', 'renewal']),
+}));
 
 const { parseCerts, checkCertFiles, hasManagedCertbotState } = require('../letsencrypt/utils.js');
-const { command } = require('../utils.js');
+const { commandSafe } = require('../utils.js');
 const letsencryptMode = require('../letsencrypt/index.js');
 
 const ENV_KEYS = ['CERTBOT_BACKUP', 'CERTBOT_BACKUP_PATH'];
 const savedEnv = {};
 
-const backupWritten = () =>
-  command.mock.calls
-    .map(([cmd]) => String(cmd))
-    .some((cmd) => cmd.startsWith('cp -rf /etc/letsencrypt/*'));
+// The bulk copy is no longer a shell string: the unprotected backup path issues
+// one `cp -rf <entry> <backupPath>` execFile per top-level /etc/letsencrypt
+// entry. Matched on that exact shape so the handler's *other* `cp` calls — the
+// certificate export into /etc/ssl/certs — can never be mistaken for a backup.
+const isBackupCopy = ([bin, args = []]) =>
+  bin === 'cp'
+  && args.includes('-rf')
+  && String(args[2] || '').startsWith('/etc/letsencrypt/');
+
+const backupWritten = () => commandSafe.mock.calls.some(isBackupCopy);
+
+const backupDestinations = () =>
+  commandSafe.mock.calls.filter(isBackupCopy).map(([, args]) => args[args.length - 1]);
 
 // One configured site with a matching lineage, so the handler runs its full
 // workflow and reaches the backup step.
@@ -163,6 +180,68 @@ describe('backup write gate — honours the shared enablement predicate', () => 
 
     await letsencryptMode();
 
-    expect(command).toHaveBeenCalledWith('cp -rf /etc/letsencrypt/* /mnt/backup');
+    expect(backupDestinations()).not.toHaveLength(0);
+    for (const destination of backupDestinations()) {
+      expect(destination).toBe('/mnt/backup');
+    }
+  });
+});
+
+// The handler creates CERTBOT_BACKUP_PATH before doing anything else. That path
+// is operator-supplied, so it is created with an argument vector rather than
+// interpolated into `mkdir -p <path>` as a shell string — a backup directory
+// containing a space used to be created as two separate directories.
+//
+// The vector ends its options with `--` as well: execFile removes the shell,
+// not mkdir's own argv parsing, and this path is not validated anywhere.
+describe('backup directory creation — operator path never reaches a shell', () => {
+  const mkdirCalls = () => commandSafe.mock.calls.filter(([bin]) => bin === 'mkdir');
+
+  it('creates the backup path with mkdir -p as separate arguments', async () => {
+    withConfiguredSite();
+
+    await letsencryptMode();
+
+    expect(mkdirCalls()).toEqual([['mkdir', ['-p', '--', '/home/letsencrypt']]]);
+  });
+
+  it('passes a path containing spaces as one literal argument', async () => {
+    process.env.CERTBOT_BACKUP_PATH = '/mnt/my backup dir';
+    withConfiguredSite();
+
+    await letsencryptMode();
+
+    expect(mkdirCalls()).toEqual([['mkdir', ['-p', '--', '/mnt/my backup dir']]]);
+  });
+
+  it('passes shell metacharacters through literally', async () => {
+    process.env.CERTBOT_BACKUP_PATH = '/mnt/a b;$(id)&&`x`';
+    withConfiguredSite();
+
+    await letsencryptMode();
+
+    expect(mkdirCalls()).toEqual([['mkdir', ['-p', '--', '/mnt/a b;$(id)&&`x`']]]);
+  });
+
+  it('keeps a path beginning with a hyphen behind the end-of-options marker', async () => {
+    // BusyBox 1.37.0 in the pinned runtime reads `-mybackup` as `-m ybackup`
+    // and fails with `mkdir: invalid mode 'ybackup'`.
+    process.env.CERTBOT_BACKUP_PATH = '-mybackup';
+    withConfiguredSite();
+
+    await letsencryptMode();
+
+    expect(mkdirCalls()).toEqual([['mkdir', ['-p', '--', '-mybackup']]]);
+  });
+
+  it('runs the directory creation before any backup copy', async () => {
+    process.env.CERTBOT_BACKUP = 'true';
+    withConfiguredSite();
+
+    await letsencryptMode();
+
+    const bins = commandSafe.mock.calls.map(([bin]) => bin);
+    expect(bins.indexOf('mkdir')).toBe(0);
+    expect(backupWritten()).toBe(true);
   });
 });

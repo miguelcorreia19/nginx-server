@@ -111,11 +111,32 @@ COPY fail2ban.sh /usr/local/bin/
 # cron shell's already-open append handle on the same path and risk corrupting
 # the log. If long-term retention ever becomes a concern, mount /var/log/certbot
 # as a volume and rotate it at the host/orchestration level instead.
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reload.sh /usr/local/bin/fail2ban.sh \
-    && chmod 777 /usr/local/bin/certbot_renew.sh \
+#
+# Permissions. Everything below is written and executed by root only:
+#   - certbot_renew.sh is executed by cron, which runs the renewal line out of
+#     root's crontab (js/letsencrypt/index.js appends it to /etc/crontabs/root).
+#   - the log is written by that same cron shell's `>>` redirection, so root is
+#     its only writer; it is read with `docker exec ... cat`, which also runs as
+#     root, and via a host-side bind mount if one is configured.
+# Neither therefore needs to be group- or world-writable. A world-writable
+# root-executed script is a privilege-escalation path: nginx workers run as the
+# unprivileged `nginx` user (see nginx/nginx.conf), so anything able to write
+# code into that file would have it run as root at the next renewal.
+#
+# Stated as explicit numeric modes rather than `chmod +x`. Symbolic `+x` only
+# adds the execute bits and keeps whatever read/write bits the file already
+# had, and COPY preserves the build context's modes — so `+x` would make the
+# result depend on the checkout rather than on this file. Git tracks only the
+# executable bit, so a clone made under a permissive umask (002) hands the
+# build mode 0664 files, which `chmod +x` turns into 0775: group-writable,
+# root-executed scripts, decided by the builder's umask. 0755 pins the whole
+# mode for all four helpers, so the image is identical whatever it was handed.
+# The log gets 0644 — root-writable, world-readable for the two read paths
+# above (`touch` alone would leave it at the builder's umask as well).
+RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/reload.sh /usr/local/bin/fail2ban.sh /usr/local/bin/certbot_renew.sh \
     && mkdir /var/log/certbot \
     && touch /var/log/certbot/certbot_renew.log \
-    && chmod 777 /var/log/certbot/certbot_renew.log
+    && chmod 0644 /var/log/certbot/certbot_renew.log
 
 # Exposing public ports
 EXPOSE 80

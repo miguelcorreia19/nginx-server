@@ -1,4 +1,4 @@
-const { configFiles, command } = require("../utils.js");
+const { configFiles, command, commandSafe } = require("../utils.js");
 const path = require('path');
 const { createLogger } = require("../logger.js");
 const { fatal } = createLogger("dev");
@@ -14,7 +14,17 @@ module.exports = async () => {
     // left behind. This handler is purely additive.
     await command(`openssl req -x509 -newkey rsa:2048 -keyout /etc/ssl/certs/priv_dev.key -out /etc/ssl/certs/cert_dev.crt -days 365 -nodes -subj \"/C=UA\" 2>&1`);
 
-    await command(`cp ${path.join(__dirname, 'templates/ssl-dev-certificate.conf')} /etc/nginx/conf/dev.conf`);
+    // execFile, matching how js/http/index.js already copies its own template:
+    // the source is a __dirname-derived path, so a deployment/checkout
+    // directory containing a space (or any shell metacharacter) would break a
+    // shell string. `cp` writes nothing on success, so the outcome is unchanged.
+    //
+    // No `--` here, unlike the copies in js/letsencrypt/utils.js: neither
+    // operand can lead with `-`. `__dirname` is always absolute for a CommonJS
+    // module, so path.join() returns a path starting with `/`, and the
+    // destination is a fixed literal. Nothing operator-supplied reaches this
+    // argument vector.
+    await commandSafe('cp', [path.join(__dirname, 'templates/ssl-dev-certificate.conf'), '/etc/nginx/conf/dev.conf']);
 
     // /home/nginx/sites/dev.conf is required and already confirmed to exist
     // by js/entrypoint.js's development preflight (preflightDev() in

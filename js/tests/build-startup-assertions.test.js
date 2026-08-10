@@ -142,3 +142,130 @@ describe('Dockerfile — unused packages removed', () => {
     expect(runtimeNoComments).not.toMatch(/\brsync\b/);
   });
 });
+
+// Permissions on the Certbot renewal runtime.
+//
+// Both the renewal script and its log are written and executed by root only:
+// cron runs the renewal line out of root's crontab (js/letsencrypt/index.js
+// appends it to /etc/crontabs/root), and that same cron shell's `>>`
+// redirection is the log's only writer. Neither needs to be group- or
+// world-writable.
+//
+// A world-writable, root-executed script is a privilege-escalation path: nginx
+// workers run as the unprivileged `nginx` user (nginx/nginx.conf), so anything
+// able to write code into that file would have it run as root at the next
+// renewal.
+//
+// These assert the *resulting* mode, not merely the absence of a bad one. A
+// symbolic `chmod +x` would pass "no numeric mode grants group write" while
+// still producing 0775, because `+x` adds the execute bits and keeps whatever
+// read/write bits the build context handed COPY — and git tracks only the
+// executable bit, so a clone made under umask 002 supplies 0664 files. The
+// mode has to be stated in the Dockerfile for the image to be reproducible.
+//
+// runtimeNoComments has comment lines stripped, so the rationale comments in
+// the Dockerfile cannot satisfy or trip any of this.
+describe('Dockerfile — Certbot renewal runtime permissions', () => {
+  // All four are runtime helpers executed by root (cron for certbot_renew.sh,
+  // the ENTRYPOINT and its children for the rest), so they share one mode.
+  const HELPER_SCRIPTS = ['entrypoint.sh', 'reload.sh', 'fail2ban.sh', 'certbot_renew.sh'];
+  const LOG = '/var/log/certbot/certbot_renew.log';
+
+  // Every numeric `chmod <mode> <targets>` in the runtime stage.
+  const numericChmods = [...runtimeNoComments.matchAll(/chmod\s+([0-7]{3,4})\s+([^\n\\]+)/g)]
+    .map(([, mode, targets]) => ({ mode, targets: targets.trim().split(/\s+/) }));
+
+  // Every symbolic one (`+x`, `a+w`, `go-w`, `u=rwx`, ...).
+  const symbolicChmods = [...runtimeNoComments.matchAll(/chmod\s+([ugoa]*[-+=][rwxXst]+)\s+([^\n\\]+)/g)]
+    .map(([, op, targets]) => ({ op, targets: targets.trim().split(/\s+/) }));
+
+  // Octal mode -> the three permission digits, as numbers.
+  const digits = (mode) => mode.padStart(4, '0').slice(-3).split('').map(Number);
+  const grantsNonOwnerWrite = (mode) => {
+    const [, group, other] = digits(mode);
+    return (group & 2) !== 0 || (other & 2) !== 0;
+  };
+
+  // The numeric modes applied to one path, newest-wins order preserved.
+  const modesFor = (suffix) => numericChmods
+    .filter(({ targets }) => targets.some((t) => t.endsWith(suffix)))
+    .map(({ mode }) => mode);
+
+  it.each(HELPER_SCRIPTS)('gives /usr/local/bin/%s an explicit 0755', (script) => {
+    const modes = modesFor(`/usr/local/bin/${script}`);
+    expect(modes).not.toHaveLength(0);
+    for (const mode of modes) {
+      const [owner, group, other] = digits(mode);
+      expect(owner).toBe(7);  // rwx — root writes and runs it
+      expect(group).toBe(5);  // r-x — readable and runnable, never writable
+      expect(other).toBe(5);  // r-x
+    }
+  });
+
+  it('sets all four helpers in the same chmod, so their modes cannot drift apart', () => {
+    const covering = numericChmods.filter(({ targets }) =>
+      HELPER_SCRIPTS.every((script) => targets.includes(`/usr/local/bin/${script}`)));
+    expect(covering).toHaveLength(1);
+    expect(covering[0].mode).toMatch(/^0?755$/);
+  });
+
+  it('never decides a helper permission symbolically', () => {
+    // `chmod +x` preserves the incoming read/write bits, so the mode would be
+    // the build context's to choose — 0664 in, 0775 out.
+    const onHelpers = symbolicChmods.filter(({ targets }) =>
+      targets.some((t) => HELPER_SCRIPTS.some((script) => t.endsWith(script))));
+    expect(onHelpers).toEqual([]);
+  });
+
+  it('gives the renewal log an explicit 0644', () => {
+    // `touch` alone would leave the log at the builder's umask, so the mode is
+    // stated here too.
+    const modes = modesFor(LOG);
+    expect(modes).not.toHaveLength(0);
+    for (const mode of modes) {
+      const [owner, group, other] = digits(mode);
+      expect(owner).toBe(6);  // rw- — the cron shell's `>>` is the only writer
+      expect(group).toBe(4);  // r--
+      expect(other).toBe(4);  // r--
+    }
+  });
+
+  it('keeps the renewal log readable, since it is read back out of the container', () => {
+    // docs/troubleshooting.md and docs/letsencrypt.md both document
+    // `docker exec <container> cat /var/log/certbot/certbot_renew.log`, and the
+    // Dockerfile suggests bind-mounting /var/log/certbot for host-side rotation.
+    for (const mode of modesFor(LOG)) {
+      const [owner, , other] = digits(mode);
+      expect(owner & 4).not.toBe(0);
+      expect(other & 4).not.toBe(0);
+    }
+  });
+
+  it('never makes the renewal script group- or world-writable', () => {
+    for (const mode of modesFor('/certbot_renew.sh')) {
+      expect(grantsNonOwnerWrite(mode)).toBe(false);
+    }
+    expect(runtimeNoComments).not.toMatch(/chmod[^\n]*[ago]?\+w[^\n]*certbot_renew\.sh/);
+  });
+
+  it('never makes the renewal log group- or world-writable', () => {
+    const modes = modesFor(LOG);
+    expect(modes).not.toHaveLength(0);
+    for (const mode of modes) {
+      expect(grantsNonOwnerWrite(mode)).toBe(false);
+    }
+  });
+
+  it('still creates the log file cron appends to', () => {
+    expect(runtimeNoComments).toMatch(/mkdir\s+\/var\/log\/certbot/);
+    expect(runtimeNoComments).toMatch(/touch\s+\/var\/log\/certbot\/certbot_renew\.log/);
+  });
+
+  it('uses no group- or world-writable mode anywhere in the runtime stage', () => {
+    expect(runtimeNoComments).not.toMatch(/chmod\s+0?777/);
+    // Listed rather than counted, so a regression names the offending mode
+    // and path instead of just failing.
+    const offenders = numericChmods.filter(({ mode }) => grantsNonOwnerWrite(mode));
+    expect(offenders).toEqual([]);
+  });
+});

@@ -101,11 +101,24 @@ exports.validateNginxConfig = validateNginxConfig = () => {
   });
 };
 
+// `dirPath` is CUSTOM_NGINX_CONFIG_FILES_PATH — an operator-supplied path, so
+// the link is created with commandSafe (execFile) rather than a shell string:
+// interpolated into a shell command the path would word-split on whitespace and
+// every metacharacter in it would be interpreted. As an argv element it reaches
+// ln(1) verbatim. `file` comes from the caller's fixed NGINX_CONF_FILES list.
+//
+// `--` because execFile removes the *shell*, not ln's own option parsing.
+// Nothing validates CUSTOM_NGINX_CONFIG_FILES_PATH, so `conf_file` begins with
+// whatever the operator set; a value starting with `-` (`-t/nginx.conf`) is
+// read as a flag by this image's ln — verified against the pinned runtime's
+// BusyBox 1.37.0, which answers `ln: unrecognized option: t` — and `--` there
+// makes it an operand again. The link target is the fixed `/etc/nginx/` prefix
+// and can never lead with `-`.
 exports.mapCustomNginxConf = mapCustomNginxConf = async (files, dirPath) => {
   for (const file of files) {
     const conf_file = `${dirPath}/${file}`;
     if (fs.existsSync(conf_file)) {
-      await command(`ln -sf ${conf_file} /etc/nginx/${file}`);
+      await commandSafe('ln', ['-sf', '--', conf_file, `/etc/nginx/${file}`]);
     }
   }
 }

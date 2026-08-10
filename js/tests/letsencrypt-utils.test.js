@@ -5,11 +5,14 @@ jest.mock('fs', () => ({
 }));
 jest.mock('../utils.js', () => ({
   command: jest.fn(),
+  // The backup copy lives on commandSafe now, so "discovery copies nothing"
+  // has to be asserted against this helper too, not just the shell one.
+  commandSafe: jest.fn(),
 }));
 jest.mock('luxon', () => ({ DateTime: { fromJSDate: jest.fn(() => 'mock-validity') } }));
 
 const fs = require('fs');
-const { command } = require('../utils.js');
+const { command, commandSafe } = require('../utils.js');
 const { parseCerts } = require('../letsencrypt/utils.js');
 
 const NO_CERTS_OUTPUT = 'No certificates found.';
@@ -79,6 +82,9 @@ describe('parseCerts — discovery is pure', () => {
     expect(command).toHaveBeenCalledTimes(1);
     expect(command).toHaveBeenCalledWith('certbot certificates');
     expect(command).not.toHaveBeenCalledWith(expect.stringContaining('cp -rf'));
+    // No copy on either helper: the bulk backup write moved from a shell glob
+    // to per-entry execFile calls, and discovery must issue neither.
+    expect(commandSafe).not.toHaveBeenCalled();
   });
 
   it('takes no arguments — there is no restore mode left to ask for', () => {

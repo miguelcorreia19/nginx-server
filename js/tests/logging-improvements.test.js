@@ -195,7 +195,10 @@ describe('js/letsencrypt/certbot_renew.js — clear, consistent renewal logs', (
   });
 
   it('surfaces certbot\'s own renewal report instead of discarding it', () => {
-    expect(source).toMatch(/const renewOutput = await command\(\s*`certbot renew/);
+    // The invocation moved from a shell string to an argument vector
+    // (commandSafe/execFile); what this test is about — that certbot's report
+    // is captured and printed rather than discarded — is unchanged.
+    expect(source).toMatch(/const renewOutput = await commandSafe\('certbot', \[/);
     expect(source).toMatch(/if \(renewOutput\) console\.log\(renewOutput\)/);
   });
 

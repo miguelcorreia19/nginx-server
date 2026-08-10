@@ -187,7 +187,7 @@ services:
 
 ## Security Notes
 
-`nginx-server` favors secure, conservative defaults: all Node shell-outs use `execFile` (no shell-string interpolation, so domain names / cert paths / env vars can't inject commands), `config.json` is validated before any config is generated, self-signed certificates are generated only in `development` mode, and the `NET_ADMIN` capability is needed only when Fail2ban is enabled.
+`nginx-server` favors secure, conservative defaults: every Node shell-out carrying a user- or operator-supplied value — domain names, certificate names and paths, and the configurable backup / certificate / nginx-override directories — uses `execFile` with an argument array, so those values reach the binary as literal arguments and are never re-parsed by a shell (the remaining shell calls are fixed command strings), `config.json` is validated before any config is generated, self-signed certificates are generated only in `development` mode, and the `NET_ADMIN` capability is needed only when Fail2ban is enabled.
 
 📖 The full **security model** — together with the process model, startup flow, certbot and healthcheck internals, and design rationale — is documented in **[docs/architecture.md](docs/architecture.md)**.
 
