@@ -48,6 +48,12 @@ function setup() {
 // touches the renewed-flag the way the real certbot deploy hook does.
 const RENEWED = 'touch "$CERTBOT_RENEWED_FLAG"';
 
+// Same, but matching js/letsencrypt/certbot_renew.js's exact deploy-hook shape
+// (`touch -- ${shellQuote(renewedFlag)}` there) rather than the plain form
+// above. Used only where the flag path itself is under test, so the stub is
+// not silently relying on a form production does not actually emit.
+const RENEWED_VIA_PRODUCTION_HOOK = 'touch -- "$CERTBOT_RENEWED_FLAG"';
+
 // nginx stub records its args so we can assert exactly when (and whether) the
 // script reloads nginx.
 function writeNginxStub(binDir, exitCode = 0) {
@@ -60,8 +66,8 @@ function writeNginxStub(binDir, exitCode = 0) {
 function writeStub(binDir, name, exitCode = 0, body = '') {
   fs.writeFileSync(path.join(binDir, name), `#!/bin/bash\n${body}\nexit ${exitCode}\n`, { mode: 0o755 });
 }
-function run(env) {
-  const r = spawnSync('bash', [SCRIPT], { env, encoding: 'utf8' });
+function run(env, spawnOpts = {}) {
+  const r = spawnSync('bash', [SCRIPT], { env, encoding: 'utf8', ...spawnOpts });
   return { code: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
 }
 function nginxCalls(ctx) {
@@ -166,6 +172,79 @@ describe('certbot_renew.sh — reload only when a certificate was renewed', () =
     const calls = nginxCalls(ctx).trim().split('\n').filter(Boolean);
     expect(calls.length).toBe(1);
     expect(calls[0]).toBe('-s reload');
+  });
+});
+
+// The renewed-flag path is operator-controlled (CERTBOT_RENEWED_FLAG), and the
+// script both removes it (`rm -f -- "$RENEWED_FLAG"`, twice) and tests it
+// (`[ -f "$RENEWED_FLAG" ]`, once). `rm` parses its own argv even under
+// execFile-free bash, so a value whose first character is "-" would be read
+// as an rm option without the `--` guard added alongside this test; `[ -f ]`
+// takes no such risk (see the comment above it in certbot_renew.sh) and stays
+// unguarded.
+//
+// A leading-hyphen value only reaches rm's option parser when the *whole*
+// operand starts with "-" — an absolute path like "/tmp/x/-flag" does not,
+// since it starts with "/". So this exercises a bare relative name, run with
+// the script's cwd and CERTBOT_JS_DIR pointed at the same directory: the
+// pre-run `rm`, the deploy hook's `touch`, the `[ -f ]` check and the post-run
+// `rm` then all agree on one location, exactly as they do in production when
+// CERTBOT_JS_DIR is left at its default and RENEWED_FLAG is resolved once.
+describe('certbot_renew.sh — a renewed-flag path beginning with a hyphen', () => {
+  let ctx, hostileDir;
+
+  beforeEach(() => {
+    ctx = setup();
+    writeNginxStub(ctx.binDir, 0);
+    hostileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'certbot-renew-hostile-'));
+    ctx.env.CERTBOT_JS_DIR = hostileDir;
+  });
+  afterEach(() => {
+    cleanupCtx(ctx);
+    fs.rmSync(hostileDir, { recursive: true, force: true });
+  });
+
+  it.each([
+    ['a bare option-looking name', '-renewed.flag'],
+    ['a long-option-shaped name',  '--verbose'],
+  ])('clears a stale flag named %s before the run, instead of failing to remove it', (_label, name) => {
+    ctx.env.CERTBOT_RENEWED_FLAG = name;
+    writeStub(ctx.binDir, 'node', 0); // this run renews nothing
+    fs.writeFileSync(path.join(hostileDir, name), ''); // stale flag from a previous run
+
+    const r = run(ctx.env, { cwd: hostileDir });
+
+    expect(r.code).toBe(0);
+    // Without `--` this `rm -f` fails with busybox's "unrecognized option" and
+    // leaves the stale flag in place — which would then falsely trigger a
+    // reload below. Proving both halves at once: rm actually ran (file gone)
+    // and nothing downstream was misled by a leftover flag.
+    expect(fs.existsSync(path.join(hostileDir, name))).toBe(false);
+    expect(r.stdout).not.toMatch(/unrecognized option/);
+    expect(nginxCalls(ctx)).toBe('');
+    expect(r.stdout).toMatch(/No certificates renewed; nginx reload skipped/);
+  });
+
+  it.each([
+    ['a bare option-looking name', '-renewed.flag'],
+    ['a long-option-shaped name',  '--verbose'],
+  ])('creates, detects, and removes a flag named %s across a real renewal', (_label, name) => {
+    ctx.env.CERTBOT_RENEWED_FLAG = name;
+    // The deploy hook exactly as js/letsencrypt/certbot_renew.js emits it
+    // (`touch -- <flag>`), so this proves the hostile name survives both ends
+    // of the lifecycle, not just the one this test file can stub directly.
+    writeStub(ctx.binDir, 'node', 0, RENEWED_VIA_PRODUCTION_HOOK);
+
+    const r = run(ctx.env, { cwd: hostileDir });
+
+    expect(r.code).toBe(0);
+    expect(r.stdout).not.toMatch(/unrecognized option/);
+    // Detected: the flag was created under that name and the reload fired.
+    expect(nginxCalls(ctx)).toMatch(/-s reload/);
+    expect(r.stdout).toMatch(/Certificates renewed; reloading nginx/);
+    // Removed afterward: consumed, not left behind to cause a false reload on
+    // the next run.
+    expect(fs.existsSync(path.join(hostileDir, name))).toBe(false);
   });
 });
 

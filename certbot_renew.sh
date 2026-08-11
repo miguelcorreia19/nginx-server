@@ -84,7 +84,11 @@ echo $$ > "$LOCK_PID_FILE"
 log "certbot renew started"
 
 # Clear any stale renewal flag so it can't trigger a needless reload this run.
-rm -f "$RENEWED_FLAG"
+# RENEWED_FLAG is an operator-settable override (CERTBOT_RENEWED_FLAG), so a
+# value whose basename begins with "-" must not reach rm's own option parser:
+# `--` ends option parsing, so the operand is always treated as a filename
+# (verified against the pinned runtime's BusyBox 1.37.0 rm).
+rm -f -- "$RENEWED_FLAG"
 
 RENEWAL_EXIT=0
 pushd "$JS_DIR" > /dev/null 2>&1
@@ -100,12 +104,17 @@ fi
 # deploy hook touches "$RENEWED_FLAG" only on a real renewal. A "not yet due"
 # no-op leaves the flag absent, so the daily reload (and its log noise) is
 # skipped. Port 80 is never touched either way.
+#
+# No `--` needed here: unlike `rm`, bash's `[ -f <operand> ]` takes -f as an
+# explicit, unambiguous unary operator and treats whatever follows as a
+# literal string — verified in the pinned runtime, including a value that is
+# itself "--help". There is no option parser here for a leading "-" to enter.
 if [ -f "$RENEWED_FLAG" ]; then
   log "Certificates renewed; reloading nginx"
   nginx -s reload 2>/dev/null \
     && log "nginx reloaded after renewal" \
     || log "WARNING: nginx reload after renewal failed (nginx may already be stopping)"
-  rm -f "$RENEWED_FLAG"
+  rm -f -- "$RENEWED_FLAG"
 else
   log "No certificates renewed; nginx reload skipped"
 fi
