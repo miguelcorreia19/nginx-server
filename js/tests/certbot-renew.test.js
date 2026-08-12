@@ -124,6 +124,111 @@ describe('certbot_renew.sh — lock behavior', () => {
   });
 });
 
+// CERTBOT_LOCK_DIR is the same kind of operator-settable override as
+// CERTBOT_RENEWED_FLAG (see the describe block below this one), but it
+// reaches more external commands across the lock lifecycle: both `mkdir`
+// attempts, `cat` (reading the held PID), `rm -f` and `rmdir` (release), and
+// `rm -rf` (clearing a stale lock). A value whose entire string begins with
+// "-" is only misread as an option when nothing precedes it — an absolute
+// path like "/tmp/x/-lock" never triggers this, since it starts with "/" —
+// so these run the script against a bare relative directory name, with cwd
+// pinned to one temp directory that every phase (mkdir, cat, rm, rmdir, and
+// the `>` redirection that writes the PID file) agrees on throughout,
+// exactly as the default absolute CERTBOT_LOCK_DIR does in production.
+describe('certbot_renew.sh — a lock directory beginning with a hyphen', () => {
+  let ctx, hostileDir;
+
+  beforeEach(() => {
+    ctx = setup();
+    writeNginxStub(ctx.binDir, 0);
+    hostileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'certbot-renew-hostile-lock-'));
+  });
+  afterEach(() => {
+    cleanupCtx(ctx);
+    fs.rmSync(hostileDir, { recursive: true, force: true });
+  });
+
+  it.each([
+    ['a bare option-looking name', '-lock'],
+    ['a long-option-shaped name',  '--verbose'],
+  ])('acquires a fresh lock named %s and completes a renewal', (_label, name) => {
+    ctx.env.CERTBOT_LOCK_DIR = name;
+    writeStub(ctx.binDir, 'node', 0, RENEWED);
+
+    const r = run(ctx.env, { cwd: hostileDir });
+
+    expect(r.code).toBe(0);
+    expect(r.stdout).not.toMatch(/unrecognized option/);
+    // If mkdir had misparsed the name, this run would have taken the
+    // "already locked" branch on a lock directory that never existed.
+    expect(r.stdout).not.toMatch(/already in progress/);
+    expect(r.stdout).not.toMatch(/ERROR: cannot acquire renewal lock/);
+    expect(r.stdout).toMatch(/certbot renew succeeded/);
+    expect(nginxCalls(ctx)).toMatch(/-s reload/);
+  });
+
+  it.each([
+    ['a bare option-looking name', '-lock'],
+    ['a long-option-shaped name',  '--verbose'],
+  ])('removes the lock directory and PID file named %s after a successful run', (_label, name) => {
+    ctx.env.CERTBOT_LOCK_DIR = name;
+    writeStub(ctx.binDir, 'node', 0);
+
+    const r = run(ctx.env, { cwd: hostileDir });
+
+    expect(r.code).toBe(0);
+    // Without `--`, rm -f/rmdir both fail by misparse and leave this behind —
+    // exactly what a real stale lock caused by this defect would look like.
+    expect(fs.existsSync(path.join(hostileDir, name))).toBe(false);
+  });
+
+  it.each([
+    ['a bare option-looking name', '-lock'],
+    ['a long-option-shaped name',  '--verbose'],
+  ])('clears a stale lock named %s (dead PID) and re-acquires it in the same run', (_label, name) => {
+    ctx.env.CERTBOT_LOCK_DIR = name;
+    const lockPath = path.join(hostileDir, name);
+    fs.mkdirSync(lockPath, { recursive: true });
+    fs.writeFileSync(path.join(lockPath, 'pid'), UNREACHABLE_PID);
+    writeStub(ctx.binDir, 'node', 0, RENEWED);
+
+    const r = run(ctx.env, { cwd: hostileDir });
+
+    expect(r.code).toBe(0);
+    expect(r.stdout).not.toMatch(/unrecognized option/);
+    expect(r.stdout).toMatch(/stale lock/i);
+    expect(r.stdout).not.toMatch(/ERROR: cannot acquire renewal lock/);
+    expect(r.stdout).toMatch(/certbot renew succeeded/);
+    // Released again after this run, same as any other successful renewal.
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it.each([
+    ['a bare option-looking name', '-lock'],
+    ['a long-option-shaped name',  '--verbose'],
+  ])('detects a live lock named %s instead of misreading its PID as empty', (_label, name) => {
+    ctx.env.CERTBOT_LOCK_DIR = name;
+    const lockPath = path.join(hostileDir, name);
+    fs.mkdirSync(lockPath, { recursive: true });
+    // A real, currently-running PID (this Jest process) — the same technique
+    // the ordinary "skips cleanly" lock test above uses. If `cat` misparsed
+    // the option-like PID-file path, held_pid would always read empty, `kill
+    // -0` would never run, and the script would treat this exactly like a
+    // dead/stale lock instead of a live one — clearing it out from under
+    // whichever renewal actually holds it.
+    fs.writeFileSync(path.join(lockPath, 'pid'), String(process.pid));
+
+    const r = run(ctx.env, { cwd: hostileDir });
+
+    expect(r.code).toBe(0);
+    expect(r.stdout).not.toMatch(/unrecognized option/);
+    expect(r.stdout).toMatch(/already in progress.*skipping/i);
+    expect(r.stdout).not.toMatch(/stale lock/i);
+    expect(fs.existsSync(lockPath)).toBe(true); // must not disturb a lock it doesn't own
+    expect(nginxCalls(ctx)).toBe('');
+  });
+});
+
 describe('certbot_renew.sh — reload only when a certificate was renewed', () => {
   let ctx;
   beforeEach(() => { ctx = setup(); writeNginxStub(ctx.binDir, 0); });
@@ -324,7 +429,10 @@ describe('certbot_renew.sh — old port-80 handoff fully removed', () => {
     expect(SCRIPT_SRC).not.toMatch(/orphan/i);
   });
   it('keeps the lock + stale-lock machinery', () => {
-    expect(SCRIPT_SRC).toMatch(/mkdir "\$LOCK_DIR"/);
+    // `--` guards the operand from mkdir's own option parsing (see the
+    // "operator-controlled lock directory" describe block below); the source
+    // pin follows that shape rather than the pre-hardening one.
+    expect(SCRIPT_SRC).toMatch(/mkdir -- "\$LOCK_DIR"/);
     expect(SCRIPT_SRC).toMatch(/stale lock/i);
     expect(SCRIPT_SRC).toMatch(/release_lock/);
   });

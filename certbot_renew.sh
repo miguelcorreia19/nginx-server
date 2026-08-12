@@ -41,9 +41,15 @@ export CERTBOT_RENEWED_FLAG="$RENEWED_FLAG"
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [certbot_renew] $*"; }
 
 # ---- Lock release --------------------------------------------------------
+# LOCK_DIR and LOCK_PID_FILE are built from CERTBOT_LOCK_DIR, an
+# operator-settable override (see the header comment above), so a value whose
+# entire string begins with "-" must not reach rm/rmdir's own option parsers.
+# `--` ends option parsing for all four external commands in the lock
+# lifecycle below, verified against the pinned runtime's BusyBox 1.37.0
+# (mkdir, rmdir, cat and rm each answer "unrecognized option" without it).
 release_lock() {
-  rm -f "$LOCK_PID_FILE" 2>/dev/null
-  rmdir "$LOCK_DIR" 2>/dev/null
+  rm -f -- "$LOCK_PID_FILE" 2>/dev/null
+  rmdir -- "$LOCK_DIR" 2>/dev/null
   return 0
 }
 
@@ -59,8 +65,14 @@ cleanup() {
 trap 'cleanup $?' EXIT
 
 # ---- Acquire the renewal lock --------------------------------------------
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-  held_pid=$(cat "$LOCK_PID_FILE" 2>/dev/null || echo "")
+# Without `--`, an option-like LOCK_DIR (e.g. "-lock") makes this mkdir fail
+# by misparse rather than by the directory already existing — so the branch
+# below would be taken on every run, held_pid would always read empty (cat
+# misparses "$LOCK_PID_FILE" the same way), and the second mkdir would fail
+# the same way, permanently exiting 2 and never renewing. `--` is what makes
+# the first attempt succeed on a genuinely-absent lock dir, exactly as before.
+if ! mkdir -- "$LOCK_DIR" 2>/dev/null; then
+  held_pid=$(cat -- "$LOCK_PID_FILE" 2>/dev/null || echo "")
   if [ -n "$held_pid" ] && kill -0 "$held_pid" 2>/dev/null; then
     log "Renewal already in progress (PID $held_pid) — skipping this run"
     trap - EXIT   # nothing has been touched yet; no cleanup needed
@@ -68,13 +80,17 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   fi
 
   log "WARNING: removing stale lock (previous holder PID: ${held_pid:-unknown} is no longer running)"
-  rm -rf "$LOCK_DIR"
-  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  rm -rf -- "$LOCK_DIR"
+  if ! mkdir -- "$LOCK_DIR" 2>/dev/null; then
     log "ERROR: cannot acquire renewal lock after clearing the stale one"
     trap - EXIT
     exit 2
   fi
 fi
+# No `--` needed for this redirection: `>` is bash's own syntax for choosing a
+# target file, not an argument handed to an external command's option parser,
+# so a leading "-" in LOCK_PID_FILE is never at risk here (verified in the
+# pinned runtime).
 echo $$ > "$LOCK_PID_FILE"
 
 # ---- Renewal flow ---------------------------------------------------------
