@@ -5,6 +5,13 @@ const path = require("path");
 const { createLogger } = require("./logger.js");
 const { log } = createLogger("nginx");
 
+// Success/failure is decided by exec()'s own error argument (which already
+// reflects the child's exit status), never by which stream carried output.
+// A process that exits 0 after writing only to stderr — openssl's progress
+// dots, certbot's "Saving debug log to ..." banner — is a successful
+// execution, not a failure; treating non-empty stderr as rejection produced
+// false failures on exactly that pattern. See validateNginxConfig() below for
+// the same exit-code-is-truth contract, arrived at independently for nginx -t.
 exports.command = command = (cmd) => {
   return new Promise((resolve, reject) => {
     exec(cmd, (error, stdout, stderr) => {
@@ -16,18 +23,15 @@ exports.command = command = (cmd) => {
         resolve(stdout);
         return;
       }
-      if (stderr) {
-        reject({ error: stderr });
-        return;
-      }
       resolve();
-      return;
     });
   })
 };
 
 // Shell-injection-safe alternative: spawns the binary directly without a shell.
 // Use this wherever user-controlled values (cert IDs, domains, filenames) are passed as args.
+// Same contract as command() above: execFile's own error argument is the
+// success/failure signal, not the presence of stderr content.
 exports.commandSafe = commandSafe = (bin, args) => {
   return new Promise((resolve, reject) => {
     execFile(bin, args, { maxBuffer: 5 * 1024 * 1024 }, (error, stdout, stderr) => {
@@ -37,10 +41,6 @@ exports.commandSafe = commandSafe = (bin, args) => {
       }
       if (stdout) {
         resolve(stdout);
-        return;
-      }
-      if (stderr) {
-        reject({ error: stderr });
         return;
       }
       resolve();
