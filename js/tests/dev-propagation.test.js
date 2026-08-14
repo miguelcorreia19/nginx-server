@@ -39,10 +39,11 @@ describe('dev mode — error propagation', () => {
   });
 });
 
-// The self-signed certificate still comes from the shell helper (its `2>&1`
-// redirection is load-bearing — see js/dev/index.js), but the template copy
-// takes a __dirname-derived path, so it goes through execFile like the
-// equivalent copy in js/http/index.js.
+// The self-signed certificate still comes from the shell helper — command()
+// now decides success/failure from exit status alone, so the `2>&1` this
+// invocation used to need has been removed (see js/dev/index.js) — while the
+// template copy takes a __dirname-derived path, so it goes through execFile
+// like the equivalent copy in js/http/index.js.
 describe('dev mode — template copy uses an argument vector', () => {
   it('copies the dev SSL fragment with commandSafe, not a shell string', async () => {
     command.mockResolvedValue('');

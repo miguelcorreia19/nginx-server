@@ -12,7 +12,7 @@ module.exports = async () => {
     // there is nothing left to delete — and that reset also removes any
     // production site links and redirects a previous startup of this container
     // left behind. This handler is purely additive.
-    await command(`openssl req -x509 -newkey rsa:2048 -keyout /etc/ssl/certs/priv_dev.key -out /etc/ssl/certs/cert_dev.crt -days 365 -nodes -subj \"/C=UA\" 2>&1`);
+    await command(`openssl req -x509 -newkey rsa:2048 -keyout /etc/ssl/certs/priv_dev.key -out /etc/ssl/certs/cert_dev.crt -days 365 -nodes -subj \"/C=UA\"`);
 
     // execFile, matching how js/http/index.js already copies its own template:
     // the source is a __dirname-derived path, so a deployment/checkout

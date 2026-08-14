@@ -43,7 +43,7 @@ exports.createConf = async (id, { cert_path, cert_key_path, status }) => {
   let data = '';
   if (status === 'invalid' && !process.env.FORCE_INVALID_ON_FAIL) {
     warn(`Certificate "${id}" is invalid — generating a self-signed fallback certificate (set FORCE_INVALID_ON_FAIL to disable this fallback)`);
-    await command(`openssl req -x509 -newkey rsa:2048 -keyout /etc/ssl/certs/${id}_privkey.pem -out /etc/ssl/certs/${id}_cert.pem -days 365 -nodes -subj \"/C=UA\" 2>&1`);
+    await command(`openssl req -x509 -newkey rsa:2048 -keyout /etc/ssl/certs/${id}_privkey.pem -out /etc/ssl/certs/${id}_cert.pem -days 365 -nodes -subj \"/C=UA\"`);
 
     data = fs.readFileSync(templatePath, 'utf8');
     data = data
