@@ -1,6 +1,6 @@
 const fs = require("fs");
 const path = require("path");
-const { command, commandSafe } = require("../utils.js");
+const { commandSafe } = require("../utils.js");
 
 const { createLogger } = require("../logger.js");
 const { warn, error } = createLogger("letsencrypt");
@@ -43,7 +43,22 @@ exports.createConf = async (id, { cert_path, cert_key_path, status }) => {
   let data = '';
   if (status === 'invalid' && !process.env.FORCE_INVALID_ON_FAIL) {
     warn(`Certificate "${id}" is invalid — generating a self-signed fallback certificate (set FORCE_INVALID_ON_FAIL to disable this fallback)`);
-    await command(`openssl req -x509 -newkey rsa:2048 -keyout /etc/ssl/certs/${id}_privkey.pem -out /etc/ssl/certs/${id}_cert.pem -days 365 -nodes -subj \"/C=UA\"`);
+    // execFile, not a shell string: no shell feature (piping, redirection,
+    // globbing) was ever needed here — the only interpolated value is `id`,
+    // and it reaches validateCertId() (js/validate.js) for every config.json
+    // entry before any handler runs, which requires it to start with an
+    // alphanumeric character and contain only letters, digits, dots, hyphens
+    // and underscores. It can never begin with `-` or carry a shell
+    // metacharacter, so no `--` guard is needed on the two operands it feeds.
+    await commandSafe('openssl', [
+      'req', '-x509',
+      '-newkey', 'rsa:2048',
+      '-keyout', `/etc/ssl/certs/${id}_privkey.pem`,
+      '-out', `/etc/ssl/certs/${id}_cert.pem`,
+      '-days', '365',
+      '-nodes',
+      '-subj', '/C=UA',
+    ]);
 
     data = fs.readFileSync(templatePath, 'utf8');
     data = data

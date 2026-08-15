@@ -10,6 +10,13 @@
 // js/preflight.js) now requires /home/nginx/sites/dev.conf before this
 // handler ever runs — see js/tests/preflight.test.js and
 // js/tests/entrypoint-dev-preflight-order.test.js.
+//
+// The self-signed certificate and the template copy both go through
+// commandSafe now: no shell feature was ever needed for either, and the
+// openssl invocation only needed a shell in the first place to carry the
+// `2>&1` redirect command()'s old stderr-on-success defect required — see
+// js/dev/index.js and js/tests/command-helpers.test.js. `command` stays
+// mocked here only so its non-use can be asserted as a regression guard.
 
 jest.mock('../utils.js', () => ({
   command: jest.fn(),
@@ -25,29 +32,41 @@ beforeEach(() => {
 });
 
 describe('dev mode — error propagation', () => {
-  it('propagates failures instead of swallowing them', async () => {
-    command.mockRejectedValueOnce({ error: 'openssl: permission denied' });
+  it('propagates a failure from the self-signed openssl invocation', async () => {
+    commandSafe.mockRejectedValueOnce({ error: 'openssl: permission denied' });
 
     await expect(devMode()).rejects.toBeDefined();
   });
 
   it('propagates a failure from the template copy too', async () => {
-    command.mockResolvedValue('');
-    commandSafe.mockRejectedValueOnce({ error: 'cp: permission denied' });
+    commandSafe.mockResolvedValueOnce(undefined); // openssl succeeds
+    commandSafe.mockRejectedValueOnce({ error: 'cp: permission denied' }); // cp fails
 
     await expect(devMode()).rejects.toBeDefined();
   });
 });
 
-// The self-signed certificate still comes from the shell helper — command()
-// now decides success/failure from exit status alone, so the `2>&1` this
-// invocation used to need has been removed (see js/dev/index.js) — while the
-// template copy takes a __dirname-derived path, so it goes through execFile
-// like the equivalent copy in js/http/index.js.
-describe('dev mode — template copy uses an argument vector', () => {
+describe('dev mode — openssl and the template copy both use argument vectors', () => {
+  it('generates the self-signed certificate with commandSafe, not a shell string', async () => {
+    commandSafe.mockResolvedValue(undefined);
+
+    await devMode();
+
+    const [bin, args] = commandSafe.mock.calls[0];
+    expect(bin).toBe('openssl');
+    expect(args).toEqual([
+      'req', '-x509',
+      '-newkey', 'rsa:2048',
+      '-keyout', '/etc/ssl/certs/priv_dev.key',
+      '-out', '/etc/ssl/certs/cert_dev.crt',
+      '-days', '365',
+      '-nodes',
+      '-subj', '/C=UA',
+    ]);
+  });
+
   it('copies the dev SSL fragment with commandSafe, not a shell string', async () => {
-    command.mockResolvedValue('');
-    commandSafe.mockResolvedValue('');
+    commandSafe.mockResolvedValue(undefined);
 
     await devMode();
 
@@ -56,10 +75,14 @@ describe('dev mode — template copy uses an argument vector', () => {
     expect(args).toHaveLength(2);
     expect(args[0]).toMatch(/dev[/\\]templates[/\\]ssl-dev-certificate\.conf$/);
     expect(args[1]).toBe('/etc/nginx/conf/dev.conf');
+  });
 
-    // The only shell command left in this handler is the openssl one.
-    const shellCommands = command.mock.calls.map(([cmd]) => String(cmd));
-    expect(shellCommands).toHaveLength(1);
-    expect(shellCommands[0]).toMatch(/^openssl req -x509/);
+  it('never routes either call through command() / a shell', async () => {
+    commandSafe.mockResolvedValue(undefined);
+
+    await devMode();
+
+    expect(command).not.toHaveBeenCalled();
+    expect(commandSafe).toHaveBeenCalledTimes(2);
   });
 });

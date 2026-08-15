@@ -3,10 +3,14 @@
 // every other test that touches createConf mocks the whole export away
 // (js/tests/letsencrypt-*.test.js, restore/bootstrap-integration.test.js).
 //
-// command() now decides success/failure from exit status alone, so the
-// `2>&1` this call used to need (to make openssl's stderr-only progress
-// output count as success) has been removed. These pin the resulting shell
-// string and the propagation behaviour that removal must not change.
+// No shell feature (piping, redirection, globbing) was ever needed for this
+// invocation — the only interpolated value is the certificate id, which
+// validateCertId() (js/validate.js) has already restricted to an alphanumeric
+// start plus letters/digits/dots/hyphens/underscores for every config.json
+// entry before any handler runs. It moved to commandSafe (execFile) once
+// command()'s stderr-on-success defect — the reason it needed a shell-string
+// `2>&1` redirect at all — was fixed. These pin the resulting argument
+// vector and the propagation behaviour the migration must not change.
 
 jest.mock('../config.json', () => ({
   mysite: { names: ['example.com'], email: 'admin@example.com', mode: 'letsencrypt' },
@@ -22,7 +26,7 @@ jest.mock('../utils.js', () => ({
   commandSafe: jest.fn(),
 }));
 
-const { command } = require('../utils.js');
+const { command, commandSafe } = require('../utils.js');
 const { createConf } = require('../letsencrypt/manage_certs.js');
 
 beforeEach(() => {
@@ -30,29 +34,42 @@ beforeEach(() => {
 });
 
 describe('createConf — self-signed fallback openssl invocation', () => {
-  it('runs openssl req for an invalid certificate, without a 2>&1 redirect', async () => {
-    command.mockResolvedValue(undefined);
+  it('runs openssl through commandSafe, with the certificate id only in the two output paths', async () => {
+    commandSafe.mockResolvedValue(undefined);
 
     await createConf('mysite', { status: 'invalid', cert_path: '', cert_key_path: '' });
 
-    expect(command).toHaveBeenCalledTimes(1);
-    const [cmd] = command.mock.calls[0];
-    expect(cmd).toMatch(/^openssl req -x509/);
-    expect(cmd).not.toContain('2>&1');
-    expect(cmd).toContain('-keyout /etc/ssl/certs/mysite_privkey.pem');
-    expect(cmd).toContain('-out /etc/ssl/certs/mysite_cert.pem');
-    expect(cmd).toContain('-newkey rsa:2048');
-    expect(cmd).toContain('-days 365');
-    expect(cmd).toContain('-nodes');
-    expect(cmd).toContain('-subj "/C=UA"');
+    expect(commandSafe).toHaveBeenCalledTimes(1);
+    const [bin, args] = commandSafe.mock.calls[0];
+    expect(bin).toBe('openssl');
+    expect(args).toEqual([
+      'req', '-x509',
+      '-newkey', 'rsa:2048',
+      '-keyout', '/etc/ssl/certs/mysite_privkey.pem',
+      '-out', '/etc/ssl/certs/mysite_cert.pem',
+      '-days', '365',
+      '-nodes',
+      '-subj', '/C=UA',
+    ]);
+
+    // The interpolated id appears only inside the two output-path operands —
+    // never as a bare argv element, where it could be read as an option or
+    // an unrelated positional argument.
+    const idBearing = args.filter((a) => a.includes('mysite'));
+    expect(idBearing).toEqual([
+      '/etc/ssl/certs/mysite_privkey.pem',
+      '/etc/ssl/certs/mysite_cert.pem',
+    ]);
+
+    expect(command).not.toHaveBeenCalled();
   });
 
   it('propagates an openssl failure — createConf has no local recovery', async () => {
-    command.mockRejectedValueOnce({ error: 'openssl: permission denied' });
+    commandSafe.mockRejectedValueOnce({ error: 'openssl: permission denied' });
 
     await expect(
       createConf('mysite', { status: 'invalid', cert_path: '', cert_key_path: '' })
-    ).rejects.toBeDefined();
+    ).rejects.toEqual({ error: 'openssl: permission denied' });
   });
 
   it('does not run openssl when FORCE_INVALID_ON_FAIL suppresses the fallback', async () => {
@@ -60,7 +77,7 @@ describe('createConf — self-signed fallback openssl invocation', () => {
     process.env.FORCE_INVALID_ON_FAIL = 'true';
     try {
       await createConf('mysite', { status: 'invalid', cert_path: '', cert_key_path: '' });
-      expect(command).not.toHaveBeenCalled();
+      expect(commandSafe).not.toHaveBeenCalled();
     } finally {
       if (prev === undefined) delete process.env.FORCE_INVALID_ON_FAIL;
       else process.env.FORCE_INVALID_ON_FAIL = prev;
@@ -74,6 +91,6 @@ describe('createConf — self-signed fallback openssl invocation', () => {
       cert_key_path: '/etc/letsencrypt/live/mysite/privkey.pem',
     });
 
-    expect(command).not.toHaveBeenCalled();
+    expect(commandSafe).not.toHaveBeenCalled();
   });
 });
