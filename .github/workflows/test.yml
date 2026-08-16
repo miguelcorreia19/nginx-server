@@ -30,3 +30,17 @@ jobs:
 
       - name: Run Jest
         run: npm test
+
+  shell-syntax:
+    name: Shell syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: bash -n
+        run: |
+          bash -n entrypoint.sh
+          bash -n reload.sh
+          bash -n certbot_renew.sh
+          bash -n fail2ban.sh
+          bash -n generate-release-notes.sh

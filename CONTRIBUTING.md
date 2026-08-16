@@ -67,7 +67,10 @@ bash -n entrypoint.sh
 bash -n reload.sh
 bash -n certbot_renew.sh
 bash -n fail2ban.sh
+bash -n generate-release-notes.sh
 ```
+
+Both the Jest suite and these syntax checks run automatically in CI (`.github/workflows/test.yml`) on every push and pull request to `main`; running them locally first catches failures before CI does.
 
 The test suite covers:
 - Config generation for all four SSL modes
