@@ -17,11 +17,20 @@
 #             a SIGKILL can now leave behind is that stale lock (self-healing on
 #             the next run) — never a disabled port 80.
 #
+#   Ownership: clearing a stale lock removes the lock directory *recursively*,
+#             so it must never run against a directory this script did not
+#             create. Every lock it creates carries an ownership marker (see
+#             LOCK_MARKER_FILE below), and the recursive removal is refused
+#             unless that marker is present with exactly the expected content.
+#             A pre-existing directory — an operator pointing CERTBOT_LOCK_DIR
+#             at real data, say — is therefore preserved rather than deleted.
+#
 # Exit codes
 # ----------
 #   0   Renewal succeeded, or an active renewal was already running (skipped).
 #   1   Certbot or the Node renewal script failed.
-#   2   Lock-acquisition failure (unexpected filesystem error).
+#   2   Lock-acquisition failure: an unexpected filesystem error, or a lock
+#       directory this script cannot prove it owns (which is left untouched).
 #
 # Test-override environment variables (production uses the defaults below)
 # -------------------------------------------------------------------------
@@ -31,6 +40,20 @@
 LOCK_DIR=${CERTBOT_LOCK_DIR:-/tmp/certbot_renew.lock.d}
 LOCK_PID_FILE="$LOCK_DIR/pid"
 JS_DIR=${CERTBOT_JS_DIR:-/home/scripts/js}
+
+# Ownership marker for the lock directory. Same shape the Node layer already
+# uses for its own on-disk markers (js/letsencrypt/migrate_renewal.js writes
+# ".nginx-server-renewal-schema" holding "webroot-renewal-v1", and checks it by
+# exact content match): a dotfile under the ".nginx-server-" prefix carrying a
+# versioned identifier, so the value can change meaning later without the
+# filename becoming ambiguous.
+#
+# Content is checked, not just presence. A bare filename test would accept any
+# directory that happens to contain a file by that name, which is a weaker
+# guarantee than "this script wrote this". This is protection against operator
+# misconfiguration, not authentication — it deliberately stops there.
+LOCK_MARKER_FILE="$LOCK_DIR/.nginx-server-certbot-renew-lock"
+LOCK_MARKER_VALUE="certbot-renew-lock-v1"
 
 # Flag file the certbot deploy hook (wired up in certbot_renew.js) touches when a
 # certificate is actually renewed. Exported so the Node script and certbot agree
@@ -49,7 +72,31 @@ log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [certbot_renew] $*"; }
 # (mkdir, rmdir, cat and rm each answer "unrecognized option" without it).
 release_lock() {
   rm -f -- "$LOCK_PID_FILE" 2>/dev/null
+  rm -f -- "$LOCK_MARKER_FILE" 2>/dev/null
   rmdir -- "$LOCK_DIR" 2>/dev/null
+  return 0
+}
+
+# ---- Lock ownership ------------------------------------------------------
+# True only for a lock directory this script created: the marker must exist as
+# a regular file AND hold exactly LOCK_MARKER_VALUE. `$(cat)` strips the
+# trailing newline printf writes, so the comparison is against the bare value —
+# the same trim-then-compare the Node marker check uses.
+#
+# `--` for cat, as everywhere else in this lifecycle: the marker path inherits
+# LOCK_DIR, so it begins with "-" whenever LOCK_DIR does. `[ -f ]` needs no
+# guard (see the note on the renewed-flag test further down).
+lock_is_ours() {
+  [ -f "$LOCK_MARKER_FILE" ] || return 1
+  [ "$(cat -- "$LOCK_MARKER_FILE" 2>/dev/null)" = "$LOCK_MARKER_VALUE" ]
+}
+
+# Populate a lock directory this invocation just created. Marker first, so a
+# directory that has a PID file can never lack the marker that authorises its
+# later removal. Returns non-zero if either write fails.
+init_lock_metadata() {
+  printf '%s\n' "$LOCK_MARKER_VALUE" > "$LOCK_MARKER_FILE" 2>/dev/null || return 1
+  echo $$ > "$LOCK_PID_FILE" 2>/dev/null || return 1
   return 0
 }
 
@@ -79,6 +126,20 @@ if ! mkdir -- "$LOCK_DIR" 2>/dev/null; then
     exit 0
   fi
 
+  # The holder is gone, but that alone does not make the next line safe: it is
+  # `rm -rf` against a path nothing has validated. CERTBOT_LOCK_DIR reaches
+  # this script in production (BusyBox crond passes the container environment
+  # through to cron jobs), so an operator value naming a real directory — a
+  # certificate backup, a mounted config — would otherwise be recursively
+  # deleted here, on the strength of it merely existing and having no PID file.
+  # Only a directory carrying this script's own marker may be removed.
+  if ! lock_is_ours; then
+    log "ERROR: $LOCK_DIR exists but is not a renewal lock created by this script (ownership marker missing or unrecognised)"
+    log "  Preserved untouched and renewal aborted. Remove it by hand if it is a leftover lock, or point CERTBOT_LOCK_DIR at a dedicated directory."
+    trap - EXIT   # nothing has been touched; releasing would delete files here
+    exit 2
+  fi
+
   log "WARNING: removing stale lock (previous holder PID: ${held_pid:-unknown} is no longer running)"
   rm -rf -- "$LOCK_DIR"
   if ! mkdir -- "$LOCK_DIR" 2>/dev/null; then
@@ -87,11 +148,18 @@ if ! mkdir -- "$LOCK_DIR" 2>/dev/null; then
     exit 2
   fi
 fi
-# No `--` needed for this redirection: `>` is bash's own syntax for choosing a
-# target file, not an argument handed to an external command's option parser,
-# so a leading "-" in LOCK_PID_FILE is never at risk here (verified in the
-# pinned runtime).
-echo $$ > "$LOCK_PID_FILE"
+# No `--` needed for the redirections inside init_lock_metadata: `>` is bash's
+# own syntax for choosing a target file, not an argument handed to an external
+# command's option parser, so a leading "-" in either path is never at risk
+# here (verified in the pinned runtime).
+#
+# The lock directory exists and is this invocation's either way by now — freshly
+# created above, or re-created after a verified stale one was cleared — so the
+# EXIT trap is left armed to release it if the metadata cannot be written.
+if ! init_lock_metadata; then
+  log "ERROR: cannot write renewal lock metadata into $LOCK_DIR"
+  exit 2
+fi
 
 # ---- Renewal flow ---------------------------------------------------------
 # nginx keeps serving port 80 throughout. The Node script ensures every renewal

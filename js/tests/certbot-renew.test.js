@@ -21,6 +21,13 @@ const SCRIPT = path.join(__dirname, '..', '..', 'certbot_renew.sh');
 const SCRIPT_SRC = fs.readFileSync(SCRIPT, 'utf8');
 const UNREACHABLE_PID = '2147483647';
 
+// The lock-ownership contract certbot_renew.sh writes into every lock
+// directory it creates. Pinned as literals here and cross-checked against the
+// script source in the ownership suite below; several fixtures also need them
+// to build a lock directory the script will recognise as its own.
+const LOCK_MARKER_NAME  = '.nginx-server-certbot-renew-lock';
+const LOCK_MARKER_VALUE = 'certbot-renew-lock-v1';
+
 function setup() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'certbot-renew-test-'));
   const lockDir    = path.join(tmp, 'lock', 'certbot_renew.lock.d');
@@ -28,6 +35,7 @@ function setup() {
   const jsDir      = path.join(tmp, 'js');
   const binDir     = path.join(tmp, 'bin');
   const nginxCalls = path.join(tmp, 'nginx-calls');
+  const nodeCalls  = path.join(tmp, 'node-calls');
   const renewedFlag = path.join(tmp, 'renewed.flag');
 
   fs.mkdirSync(lockParent, { recursive: true });
@@ -39,9 +47,10 @@ function setup() {
     CERTBOT_LOCK_DIR: lockDir,
     CERTBOT_JS_DIR: jsDir,
     NGINX_CALLS: nginxCalls,
+    NODE_CALLS: nodeCalls,
     CERTBOT_RENEWED_FLAG: renewedFlag,
   };
-  return { tmp, binDir, lockDir, nginxCalls, renewedFlag, env };
+  return { tmp, binDir, lockDir, nginxCalls, nodeCalls, renewedFlag, env };
 }
 
 // node stub that simulates Certbot actually renewing a cert: its deploy hook
@@ -66,12 +75,26 @@ function writeNginxStub(binDir, exitCode = 0) {
 function writeStub(binDir, name, exitCode = 0, body = '') {
   fs.writeFileSync(path.join(binDir, name), `#!/bin/bash\n${body}\nexit ${exitCode}\n`, { mode: 0o755 });
 }
+// node stub that records the fact it ran, the way writeNginxStub does for
+// nginx. Used where the assertion is that the renewal never started at all —
+// an absent call file proves the script aborted before the renewal step,
+// which "no nginx reload" alone would not (a skipped run has no reload either).
+function writeRecordingNodeStub(binDir, exitCode = 0, body = '') {
+  fs.writeFileSync(
+    path.join(binDir, 'node'),
+    `#!/bin/bash\necho "$@" >> "$NODE_CALLS"\n${body}\nexit ${exitCode}\n`,
+    { mode: 0o755 },
+  );
+}
 function run(env, spawnOpts = {}) {
   const r = spawnSync('bash', [SCRIPT], { env, encoding: 'utf8', ...spawnOpts });
   return { code: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
 }
 function nginxCalls(ctx) {
   return fs.existsSync(ctx.nginxCalls) ? fs.readFileSync(ctx.nginxCalls, 'utf8') : '';
+}
+function nodeCalls(ctx) {
+  return fs.existsSync(ctx.nodeCalls) ? fs.readFileSync(ctx.nodeCalls, 'utf8') : '';
 }
 function cleanupCtx(ctx) { fs.rmSync(ctx.tmp, { recursive: true, force: true }); }
 
@@ -103,6 +126,10 @@ describe('certbot_renew.sh — lock behavior', () => {
 
   it('detects a stale lock (dead PID), clears it, and proceeds with renewal', () => {
     fs.mkdirSync(ctx.lockDir, { recursive: true });
+    // A stale lock is one this script created and then lost, so the fixture
+    // carries the ownership marker a real lock directory holds — without it
+    // the run is refused, which the ownership suite below covers separately.
+    fs.writeFileSync(path.join(ctx.lockDir, LOCK_MARKER_NAME), `${LOCK_MARKER_VALUE}\n`);
     fs.writeFileSync(path.join(ctx.lockDir, 'pid'), UNREACHABLE_PID);
     const r = run(ctx.env);
     expect(r.code).toBe(0);
@@ -121,6 +148,206 @@ describe('certbot_renew.sh — lock behavior', () => {
     const r = run(ctx.env);
     expect(r.code).toBe(1);
     expect(fs.existsSync(ctx.lockDir)).toBe(false);
+  });
+});
+
+// Clearing a stale lock is a *recursive* delete of whatever CERTBOT_LOCK_DIR
+// names, and nothing validates that path. Before the ownership marker existed,
+// the only precondition was "the directory exists and holds no live PID" —
+// which every ordinary data directory satisfies on the very first run. Pointing
+// CERTBOT_LOCK_DIR at /home/letsencrypt (the default CERTBOT_BACKUP_PATH) was
+// enough to destroy the certificate backup, private keys included, behind a
+// single "removing stale lock" warning.
+//
+// The environment does reach this script in production: BusyBox crond passes
+// its inherited environment through to cron jobs, so the "test-override"
+// framing in the script header is a convention, not an enforcement.
+//
+// The guard is an explicit marker file with exact expected content, written
+// only by this script — deliberately checked by content and not by filename
+// alone, so a directory that merely happens to contain a same-named file is
+// still refused.
+describe('certbot_renew.sh — stale-lock removal requires proven ownership', () => {
+  let ctx, dataDir;
+
+  // Shaped like the certificate backup an operator could plausibly point
+  // CERTBOT_LOCK_DIR at by mistake, key material included — an empty directory
+  // would not show that real contents survive.
+  const FIXTURE = {
+    'live/example.com/privkey.pem':   '-----BEGIN PRIVATE KEY-----\nnot-a-real-key\n-----END PRIVATE KEY-----\n',
+    'live/example.com/fullchain.pem': '-----BEGIN CERTIFICATE-----\nnot-a-real-cert\n-----END CERTIFICATE-----\n',
+    'renewal/example.com.conf':       'version = 5.6.0\narchive_dir = /etc/letsencrypt/archive/example.com\n',
+  };
+
+  const writeFixture = (root) => {
+    for (const [rel, content] of Object.entries(FIXTURE)) {
+      const target = path.join(root, rel);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, content);
+    }
+  };
+  const expectFixtureIntact = (root) => {
+    expect(fs.existsSync(root)).toBe(true);
+    for (const [rel, content] of Object.entries(FIXTURE)) {
+      const target = path.join(root, rel);
+      expect(fs.existsSync(target)).toBe(true);
+      expect(fs.readFileSync(target, 'utf8')).toBe(content);
+    }
+  };
+  const markerPath = (dir) => path.join(dir, LOCK_MARKER_NAME);
+
+  beforeEach(() => {
+    ctx = setup();
+    writeNginxStub(ctx.binDir, 0);
+    writeRecordingNodeStub(ctx.binDir, 0);
+    // A directory that already exists, with contents, and no live holder.
+    dataDir = path.join(ctx.tmp, 'operator-data');
+    writeFixture(dataDir);
+    ctx.env.CERTBOT_LOCK_DIR = dataDir;
+  });
+  afterEach(() => cleanupCtx(ctx));
+
+  // The core regression. Without the ownership guard this run deletes dataDir
+  // outright, so every assertion below fails against the pre-fix script.
+  it('refuses to clear a pre-existing directory carrying no ownership marker, and preserves it', () => {
+    const r = run(ctx.env);
+
+    expect(r.code).toBe(2);
+    expectFixtureIntact(dataDir);
+    // Aborted before the renewal step, not merely before the reload.
+    expect(nodeCalls(ctx)).toBe('');
+    expect(nginxCalls(ctx)).toBe('');
+    // Never took the destructive branch at all.
+    expect(r.stdout).not.toMatch(/removing stale lock/i);
+    // The message has to name the path an operator must go and look at.
+    expect(r.stdout).toContain(dataDir);
+    expect(r.stdout).toMatch(/not a renewal lock created by this script/i);
+    expect(r.stdout).toMatch(/preserved/i);
+  });
+
+  // Proves the guard is a content contract, not a filename check: a directory
+  // holding a same-named file with different content is still not ours.
+  it('refuses a directory whose marker file holds unexpected content', () => {
+    fs.writeFileSync(markerPath(dataDir), 'some-other-tool-lock-v9\n');
+
+    const r = run(ctx.env);
+
+    expect(r.code).toBe(2);
+    expectFixtureIntact(dataDir);
+    expect(fs.readFileSync(markerPath(dataDir), 'utf8')).toBe('some-other-tool-lock-v9\n');
+    expect(nodeCalls(ctx)).toBe('');
+    expect(r.stdout).not.toMatch(/removing stale lock/i);
+    expect(r.stdout).toMatch(/not a renewal lock created by this script/i);
+  });
+
+  it('refuses a directory whose marker is empty', () => {
+    fs.writeFileSync(markerPath(dataDir), '');
+
+    const r = run(ctx.env);
+
+    expect(r.code).toBe(2);
+    expectFixtureIntact(dataDir);
+    expect(nodeCalls(ctx)).toBe('');
+    expect(r.stdout).not.toMatch(/removing stale lock/i);
+  });
+
+  // A marker that is a directory rather than a regular file: `[ -f ]` rejects
+  // it, so the guard holds instead of erroring out on the `cat`.
+  it('refuses a directory whose marker path is not a regular file', () => {
+    fs.mkdirSync(markerPath(dataDir));
+
+    const r = run(ctx.env);
+
+    expect(r.code).toBe(2);
+    expectFixtureIntact(dataDir);
+    expect(nodeCalls(ctx)).toBe('');
+  });
+
+  // The live-holder check runs before the ownership check, and must stay
+  // there: the safe answer for a directory holding a live PID is to leave it
+  // alone and skip, whether or not it is ours.
+  it('still skips (exit 0) when an unowned directory holds a live PID, without deleting it', () => {
+    fs.writeFileSync(path.join(dataDir, 'pid'), String(process.pid));
+
+    const r = run(ctx.env);
+
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/already in progress.*skipping/i);
+    expectFixtureIntact(dataDir);
+    expect(nodeCalls(ctx)).toBe('');
+  });
+
+  // Backward compatibility for the case the guard exists to permit: a lock
+  // this script really did create, whose holder was SIGKILLed.
+  it('clears a genuine stale lock (valid marker, dead PID) and re-acquires it', () => {
+    const lockDir = ctx.lockDir;
+    ctx.env.CERTBOT_LOCK_DIR = lockDir;
+    fs.mkdirSync(lockDir, { recursive: true });
+    fs.writeFileSync(markerPath(lockDir), `${LOCK_MARKER_VALUE}\n`);
+    fs.writeFileSync(path.join(lockDir, 'pid'), UNREACHABLE_PID);
+    // Left behind by the killed run; proves the removal really was recursive.
+    fs.mkdirSync(path.join(lockDir, 'leftover'), { recursive: true });
+    fs.writeFileSync(path.join(lockDir, 'leftover', 'junk'), 'x');
+
+    // Observe the re-created metadata mid-run: normal release removes both
+    // before the script exits, so it cannot be inspected afterwards.
+    writeRecordingNodeStub(ctx.binDir, 0,
+      `echo "MARKER=$(cat "${markerPath(lockDir)}" 2>/dev/null)"\n` +
+      `echo "PID=$(cat "${path.join(lockDir, 'pid')}" 2>/dev/null)"\n` +
+      `[ -e "${path.join(lockDir, 'leftover')}" ] && echo LEFTOVER_SURVIVED\n` +
+      RENEWED,
+    );
+
+    const r = run(ctx.env);
+
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/removing stale lock/i);
+    expect(r.stdout).not.toMatch(/not a renewal lock created by this script/i);
+    // Re-acquired, with fresh metadata, and the stale contents really gone.
+    expect(r.stdout).toMatch(new RegExp(`MARKER=${LOCK_MARKER_VALUE}$`, 'm'));
+    expect(r.stdout).toMatch(/^PID=[1-9][0-9]*$/m);
+    expect(r.stdout).not.toMatch(/LEFTOVER_SURVIVED/);
+    // Renewal ran, and normal cleanup still removed the lock.
+    expect(nodeCalls(ctx)).not.toBe('');
+    expect(r.stdout).toMatch(/certbot renew succeeded/);
+    expect(fs.existsSync(lockDir)).toBe(false);
+  });
+
+  it('writes the marker and PID when acquiring a fresh lock', () => {
+    const lockDir = ctx.lockDir;
+    ctx.env.CERTBOT_LOCK_DIR = lockDir;
+    writeRecordingNodeStub(ctx.binDir, 0,
+      `echo "MARKER=$(cat "${markerPath(lockDir)}" 2>/dev/null)"\n` +
+      `echo "PID=$(cat "${path.join(lockDir, 'pid')}" 2>/dev/null)"\n`,
+    );
+
+    const r = run(ctx.env);
+
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(new RegExp(`MARKER=${LOCK_MARKER_VALUE}$`, 'm'));
+    expect(r.stdout).toMatch(/^PID=[1-9][0-9]*$/m);
+  });
+
+  it('removes the marker along with the PID file on normal release', () => {
+    const lockDir = ctx.lockDir;
+    ctx.env.CERTBOT_LOCK_DIR = lockDir;
+
+    const r = run(ctx.env);
+
+    expect(r.code).toBe(0);
+    // rmdir only succeeds on an empty directory, so a surviving marker would
+    // leave the whole lock behind and wedge every later run.
+    expect(fs.existsSync(lockDir)).toBe(false);
+    expect(fs.existsSync(markerPath(lockDir))).toBe(false);
+  });
+
+  it('declares the marker filename and value the lock contract is pinned on', () => {
+    // Keeps the literals above honest: renaming either in the script without
+    // updating these tests would otherwise pass silently.
+    expect(SCRIPT_SRC).toContain(`LOCK_MARKER_FILE="$LOCK_DIR/${LOCK_MARKER_NAME}"`);
+    expect(SCRIPT_SRC).toContain(`LOCK_MARKER_VALUE="${LOCK_MARKER_VALUE}"`);
+    // The recursive delete must stay behind the ownership gate.
+    expect(SCRIPT_SRC).toMatch(/if ! lock_is_ours; then[\s\S]*?rm -rf -- "\$LOCK_DIR"/);
   });
 });
 
@@ -189,6 +416,9 @@ describe('certbot_renew.sh — a lock directory beginning with a hyphen', () => 
     ctx.env.CERTBOT_LOCK_DIR = name;
     const lockPath = path.join(hostileDir, name);
     fs.mkdirSync(lockPath, { recursive: true });
+    // Same as the ordinary stale-lock fixture: a lock this script created
+    // carries the ownership marker, so clearing it is permitted.
+    fs.writeFileSync(path.join(lockPath, LOCK_MARKER_NAME), `${LOCK_MARKER_VALUE}\n`);
     fs.writeFileSync(path.join(lockPath, 'pid'), UNREACHABLE_PID);
     writeStub(ctx.binDir, 'node', 0, RENEWED);
 
