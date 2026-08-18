@@ -1,5 +1,6 @@
 const { parseCerts, checkCertFiles, hasManagedCertbotState, certbotBackupEnabled, listRenewalStems, renewalConfigPath, backupCertbotState } = require("./utils.js");
 const fs = require("fs");
+const path = require("path");
 const { command, commandSafe, configFiles } = require("../utils.js");
 const { validateCronExpression } = require("../validate.js");
 const { createCert, deleteCert, createConf } = require("./manage_certs.js");
@@ -501,7 +502,16 @@ module.exports = async () => {
         if (status !== 'invalid') {
           await commandSafe('cp', [cert_path, `/etc/ssl/certs/${id}_fullchain.pem`]);
           await commandSafe('cp', [cert_key_path, `/etc/ssl/certs/${id}_privkey.pem`]);
-          await commandSafe('cp', [cert_key_path.replace('privkey', 'chain'), `/etc/ssl/certs/${id}_chain.pem`]);
+          // chain.pem sits beside the private key Certbot reported, so it is
+          // derived from that file's directory. It used to be
+          // `cert_key_path.replace('privkey', 'chain')`, which rewrites the
+          // FIRST occurrence of "privkey" in the whole path — not necessarily
+          // the basename. A cert id containing "privkey" (all of "privkey",
+          // "privkeys", "site-privkey" are accepted by validateCertId) had its
+          // *directory* rewritten instead: live/site-privkey/privkey.pem became
+          // live/site-chain/privkey.pem, a path that does not exist, so the copy
+          // failed and took startup down with it.
+          await commandSafe('cp', [path.join(path.dirname(cert_key_path), 'chain.pem'), `/etc/ssl/certs/${id}_chain.pem`]);
         }
         await createConf(id, final_certificates[id]);
       } else if (suppressed.has(id)) {

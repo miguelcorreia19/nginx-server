@@ -1,4 +1,5 @@
 const { parseCerts, certbotBackupEnabled, listRenewalStems, isDesiredLetsencryptEntry, backupCertbotState } = require("./utils.js");
+const path = require("path");
 const { commandSafe } = require("../utils.js");
 const migrateRenewalConfigs = require("./migrate_renewal");
 
@@ -108,7 +109,12 @@ const start = async () => {
       const chainDest = `/etc/ssl/certs/${id}_chain.pem`;
       await commandSafe('cp', [cert_path, fullchainDest]);
       await commandSafe('cp', [cert_key_path, privkeyDest]);
-      await commandSafe('cp', [cert_key_path.replace('privkey', 'chain'), chainDest]);
+      // Same sibling derivation as the startup export in ./index.js: chain.pem
+      // lives in the directory Certbot reported the private key in. The former
+      // `cert_key_path.replace('privkey', 'chain')` rewrote the first match
+      // anywhere in the path, so a cert id containing "privkey" corrupted the
+      // directory component instead of the filename.
+      await commandSafe('cp', [path.join(path.dirname(cert_key_path), 'chain.pem'), chainDest]);
 
       log(`- ${id}: ${status}`);
       log(`  domains: ${cert_domains.join(', ')}`);
