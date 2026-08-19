@@ -28,7 +28,12 @@
 # Exit codes
 # ----------
 #   0   Renewal succeeded, or an active renewal was already running (skipped).
-#   1   Certbot or the Node renewal script failed.
+#   1   Certbot or the Node renewal script failed. This includes a *partial*
+#       renewal — certbot failed for one certificate while renewing another —
+#       which still applies and reloads the certificates that did renew before
+#       reporting the run as failed. Deliberately the same status: "the renewal
+#       run was not healthy" is what a caller acts on, and splitting it would
+#       make a new public contract out of an internal distinction.
 #   2   Lock-acquisition failure: an unexpected filesystem error, or a lock
 #       directory this script cannot prove it owns (which is left untouched).
 #
@@ -57,9 +62,49 @@ LOCK_MARKER_VALUE="certbot-renew-lock-v1"
 
 # Flag file the certbot deploy hook (wired up in certbot_renew.js) touches when a
 # certificate is actually renewed. Exported so the Node script and certbot agree
-# on the path; nginx is reloaded only if this flag exists after the run.
+# on the path.
 RENEWED_FLAG=${CERTBOT_RENEWED_FLAG:-/tmp/certbot-renewed.flag}
 export CERTBOT_RENEWED_FLAG="$RENEWED_FLAG"
+
+# ---- Reload readiness ----------------------------------------------------
+# The renewed flag says Certbot's deploy hook ran. It does NOT say the Node
+# step then finished its own work: `certbot renew` can renew one certificate
+# and fail on another, and the run continues past that failure so the renewed
+# material is still exported. nginx serves the exported copies under
+# /etc/ssl/certs, not the lineage under /etc/letsencrypt/live, so a run whose
+# export or backup failed has changed nothing nginx can see — reloading on the
+# flag alone would announce a renewal that was never applied.
+#
+# So the Node step raises a second signal, and the reload below needs both.
+# This marker is that signal: written by js/letsencrypt/certbot_renew.js only
+# after every required post-renewal step has succeeded.
+#
+# Internal coordination state, not configuration, and deliberately NOT an
+# operator-settable override: the assignment is unconditional, so an inherited
+# CERTBOT_INTERNAL_RELOAD_READY is overwritten rather than honoured and cannot
+# redirect the marker at an arbitrary path. It lives inside the lock directory
+# because that directory is already this script's private, ownership-protected
+# namespace for exactly the lifetime of one renewal run: it is created fresh
+# here and released by the EXIT trap, so the marker is necessarily absent at
+# the start of every run and never survives into a later one.
+#
+# Presence is the whole test — unlike the lock's ownership marker (which
+# authorises an `rm -rf` against an unvalidated path) this one only decides
+# whether to reload nginx, inside a directory this run created itself. The
+# value below is written for a human reading the file, not checked.
+#
+# Absolutised, unlike every other path built from LOCK_DIR: this is the one
+# that crosses a process boundary, and the Node step runs from JS_DIR (the
+# `pushd` further down) rather than from this script's own directory. A
+# relative CERTBOT_LOCK_DIR would then name two different files — the one Node
+# writes and the one the reload check reads — and the reload would never fire.
+# LOCK_DIR itself is deliberately left exactly as given, so nothing about lock
+# acquisition or the ownership check changes.
+case "$LOCK_DIR" in
+  /*) RELOAD_READY_MARKER="$LOCK_DIR/.nginx-server-reload-ready" ;;
+  *)  RELOAD_READY_MARKER="$PWD/$LOCK_DIR/.nginx-server-reload-ready" ;;
+esac
+export CERTBOT_INTERNAL_RELOAD_READY="$RELOAD_READY_MARKER"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [certbot_renew] $*"; }
 
@@ -73,6 +118,9 @@ log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [certbot_renew] $*"; }
 release_lock() {
   rm -f -- "$LOCK_PID_FILE" 2>/dev/null
   rm -f -- "$LOCK_MARKER_FILE" 2>/dev/null
+  # Normal cleanup of the reload-readiness signal: it is scoped to one run, and
+  # rmdir below would refuse a directory still holding it.
+  rm -f -- "$RELOAD_READY_MARKER" 2>/dev/null
   rmdir -- "$LOCK_DIR" 2>/dev/null
   return 0
 }
@@ -174,33 +222,65 @@ log "certbot renew started"
 # (verified against the pinned runtime's BusyBox 1.37.0 rm).
 rm -f -- "$RENEWED_FLAG"
 
+# The lock directory was created by this invocation moments ago, so the marker
+# cannot already be there; cleared anyway rather than left resting on that
+# argument, for the same reason the renewed flag above is. Both are inputs to
+# the reload decision, and a leftover one would authorise a reload this run
+# never earned.
+rm -f -- "$RELOAD_READY_MARKER"
+
 RENEWAL_EXIT=0
 pushd "$JS_DIR" > /dev/null 2>&1
 node letsencrypt/certbot_renew.js || RENEWAL_EXIT=$?
 popd > /dev/null 2>&1
 
+# A failure is recorded but no longer ends the run here. The Node step keeps
+# going past a partial `certbot renew` failure specifically so the certificates
+# that DID renew are exported, and exiting on its status would throw that work
+# away again by skipping the reload that puts it into service. The status is
+# preserved and re-raised below, after the reload decision.
 if [ "$RENEWAL_EXIT" -ne 0 ]; then
   log "ERROR: certbot renewal script failed (exit $RENEWAL_EXIT)"
-  exit "$RENEWAL_EXIT"
 fi
 
-# Reload nginx ONLY if certbot actually renewed at least one certificate — its
-# deploy hook touches "$RENEWED_FLAG" only on a real renewal. A "not yet due"
-# no-op leaves the flag absent, so the daily reload (and its log noise) is
-# skipped. Port 80 is never touched either way.
+# Reload nginx ONLY if certbot actually renewed at least one certificate AND
+# the Node step signalled that it finished applying it. Its deploy hook touches
+# "$RENEWED_FLAG" only on a real renewal, so a "not yet due" no-op leaves the
+# flag absent and the daily reload (and its log noise) is skipped;
+# "$RELOAD_READY_MARKER" is written last by the Node step and only once export
+# and backup have succeeded, so an export/backup failure leaves it absent and
+# nginx is not asked to pick up an export that never completed. Both conditions
+# apply to a full and a partial renewal alike. Port 80 is never touched either
+# way.
 #
 # No `--` needed here: unlike `rm`, bash's `[ -f <operand> ]` takes -f as an
 # explicit, unambiguous unary operator and treats whatever follows as a
 # literal string — verified in the pinned runtime, including a value that is
 # itself "--help". There is no option parser here for a leading "-" to enter.
-if [ -f "$RENEWED_FLAG" ]; then
+if [ ! -f "$RENEWED_FLAG" ]; then
+  log "No certificates renewed; nginx reload skipped"
+elif [ ! -f "$RELOAD_READY_MARKER" ]; then
+  log "WARNING: certificates were renewed but post-renewal processing did not complete; nginx reload skipped"
+  log "  the renewed certificates were not exported to the paths nginx serves, so reloading would apply nothing"
+else
   log "Certificates renewed; reloading nginx"
+  # Reload failure stays a warning, unchanged: during shutdown nginx is
+  # legitimately gone by now. It is logged on the partial path too, and never
+  # folded into the renewal failure below — the two are reported separately.
   nginx -s reload 2>/dev/null \
     && log "nginx reloaded after renewal" \
     || log "WARNING: nginx reload after renewal failed (nginx may already be stopping)"
   rm -f -- "$RENEWED_FLAG"
-else
-  log "No certificates renewed; nginx reload skipped"
+  if [ "$RENEWAL_EXIT" -ne 0 ]; then
+    log "WARNING: the certificates that renewed have been applied, but certbot failed for at least one other certificate — this run is still reported as failed"
+  fi
+fi
+
+# Partial renewal ends here: the renewed certificates are in service, and the
+# run still reports the failure, under the same exit status a wholly failed run
+# has always used.
+if [ "$RENEWAL_EXIT" -ne 0 ]; then
+  exit "$RENEWAL_EXIT"
 fi
 
 log "certbot renew succeeded"

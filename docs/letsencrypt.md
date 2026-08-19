@@ -43,7 +43,8 @@ Renewal uses the **webroot** authenticator: **nginx keeps port 80 the whole time
 1. If a renewal is already in progress, the new run logs "already in progress" and exits cleanly — only one renewal runs at a time (a `mkdir` lock with stale-lock recovery).
 2. Each renewal config is ensured to be webroot (migrated in place if still legacy standalone; see below).
 3. `certbot renew --webroot -w /var/www/certbot` runs non-interactively (it only re-issues certificates close to expiry). The explicit `--webroot` forces the webroot authenticator for the run, so port 80 is never released.
-4. nginx is reloaded **only if at least one certificate was actually renewed** — detected via certbot's `--deploy-hook`, which runs only on a real renewal. A "not yet due" run renews nothing and **skips the reload** (no needless work or log noise). **Port 80 is never taken offline either way.**
+4. Every certificate Certbot can enumerate is exported to the `/etc/ssl/certs/<name>_*.pem` copies nginx actually serves, and the Let's Encrypt state is backed up when [`CERTBOT_BACKUP`](#certificate-backup) is enabled.
+5. nginx is reloaded **only if at least one certificate was actually renewed *and* that export completed successfully**. The renewal is detected via certbot's `--deploy-hook`, which runs only on a real renewal, so a "not yet due" run renews nothing and **skips the reload** (no needless work or log noise); a run whose export or backup failed skips it too, because nothing new reached the paths nginx reads. **Port 80 is never taken offline either way.**
 
 ### Renewal logs
 
@@ -68,6 +69,32 @@ A successful renewal run looks like:
 Both layers use the same `YYYY-MM-DD HH:mm:ss` timestamp; the `[component]` tag tells them apart — the shell wrapper logs as `[certbot_renew]`, the Node step as `[certbot_renew.js]` (see [Troubleshooting → Logs](troubleshooting.md#logs)).
 
 Most daily runs renew nothing (certificates are renewed only near expiry); those runs log `No certificates renewed; nginx reload skipped` instead and do not reload nginx.
+
+### Partial renewals
+
+`certbot renew` renews every certificate that is due and exits non-zero if **any** of them failed. One site that cannot renew — a DNS record no longer pointing at this host, a domain removed from the certificate, an unreadable renewal config — therefore fails the whole command, even when every other certificate renewed perfectly.
+
+**The successful renewals are still applied.** The run exports the certificates Certbot can enumerate, reloads nginx so the renewed ones go into service, and *then* reports the run as failed — exit `1`, the same status a wholly failed run has always used. Monitoring still sees an unhealthy renewal, and the sites that did renew are not left serving expiring certificates until some later run happens to succeed outright.
+
+A partial run is logged like this:
+
+```
+2026-06-08 05:00:03 [certbot_renew.js] WARNING: certbot renew failed, but its deploy hook recorded at least one successful renewal: ...
+2026-06-08 05:00:03 [certbot_renew.js]   continuing with export and post-processing so the certificates that did renew are applied; this run will still be reported as failed
+... export of the certificates Certbot could enumerate ...
+2026-06-08 05:00:03 [certbot_renew.js] ERROR: Partial renewal: the certificates that did renew were exported successfully, but certbot renew failed for at least one other certificate — reporting this run as failed
+2026-06-08 05:00:03 [certbot_renew] ERROR: certbot renewal script failed (exit 1)
+2026-06-08 05:00:03 [certbot_renew] Certificates renewed; reloading nginx
+2026-06-08 05:00:03 [certbot_renew] nginx reloaded after renewal
+2026-06-08 05:00:03 [certbot_renew] WARNING: the certificates that renewed have been applied, but certbot failed for at least one other certificate — this run is still reported as failed
+```
+
+Two cases are deliberately **not** treated as partial success:
+
+- **Nothing renewed at all.** A failing `certbot renew` whose deploy hook never ran is a total failure: it stops immediately, exports nothing, and does not reload.
+- **The export or backup then failed.** nginx is not reloaded, because the renewed material never reached the paths it serves — a reload would apply nothing. The previous certificates keep being served, and the run reports the failure. The log says `certificates were renewed but post-renewal processing did not complete; nginx reload skipped`.
+
+The lineage that failed to renew is left exactly as it was: it is never deleted, never automatically reissued, and its [backup copy is preserved](#certificate-backup) rather than overwritten.
 
 ### Hard kill during renewal
 

@@ -28,6 +28,12 @@ const UNREACHABLE_PID = '2147483647';
 const LOCK_MARKER_NAME  = '.nginx-server-certbot-renew-lock';
 const LOCK_MARKER_VALUE = 'certbot-renew-lock-v1';
 
+// The reload-readiness signal the Node renewal step raises once it has finished
+// exporting (js/letsencrypt/certbot_renew.js). Pinned here and cross-checked
+// against the script source in the readiness suite below; it lives inside the
+// lock directory, which is the script's own private namespace for one run.
+const READY_MARKER_NAME = '.nginx-server-reload-ready';
+
 function setup() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'certbot-renew-test-'));
   const lockDir    = path.join(tmp, 'lock', 'certbot_renew.lock.d');
@@ -37,6 +43,7 @@ function setup() {
   const nginxCalls = path.join(tmp, 'nginx-calls');
   const nodeCalls  = path.join(tmp, 'node-calls');
   const renewedFlag = path.join(tmp, 'renewed.flag');
+  const readyMarker = path.join(lockDir, READY_MARKER_NAME);
 
   fs.mkdirSync(lockParent, { recursive: true });
   fs.mkdirSync(jsDir, { recursive: true });
@@ -50,18 +57,39 @@ function setup() {
     NODE_CALLS: nodeCalls,
     CERTBOT_RENEWED_FLAG: renewedFlag,
   };
-  return { tmp, binDir, lockDir, nginxCalls, nodeCalls, renewedFlag, env };
+  return { tmp, binDir, lockDir, nginxCalls, nodeCalls, renewedFlag, readyMarker, env };
 }
 
-// node stub that simulates Certbot actually renewing a cert: its deploy hook
-// touches the renewed-flag the way the real certbot deploy hook does.
-const RENEWED = 'touch "$CERTBOT_RENEWED_FLAG"';
+// The two on-disk signals a renewal run produces, as the stubs raise them.
+//
+// They answer different questions and the reload needs both: the flag says
+// certbot's deploy hook ran (a certificate really renewed), the readiness
+// marker says js/letsencrypt/certbot_renew.js then finished exporting it to
+// the /etc/ssl/certs paths nginx actually serves. A stub that raises only the
+// first models a run whose post-processing failed, not a successful one.
+const TOUCH_RENEWED_FLAG   = 'touch "$CERTBOT_RENEWED_FLAG"';
+const SIGNAL_RELOAD_READY  = 'touch -- "$CERTBOT_INTERNAL_RELOAD_READY"';
+
+// node stub that simulates Certbot actually renewing a cert and the renewal
+// step completing: the deploy hook touches the renewed-flag the way the real
+// certbot deploy hook does, and the export finishes and signals readiness.
+const RENEWED = `${TOUCH_RENEWED_FLAG}\n${SIGNAL_RELOAD_READY}`;
 
 // Same, but matching js/letsencrypt/certbot_renew.js's exact deploy-hook shape
 // (`touch -- ${shellQuote(renewedFlag)}` there) rather than the plain form
 // above. Used only where the flag path itself is under test, so the stub is
 // not silently relying on a form production does not actually emit.
-const RENEWED_VIA_PRODUCTION_HOOK = 'touch -- "$CERTBOT_RENEWED_FLAG"';
+const RENEWED_VIA_PRODUCTION_HOOK = `touch -- "$CERTBOT_RENEWED_FLAG"\n${SIGNAL_RELOAD_READY}`;
+
+// A run that renewed nothing but completed cleanly — the ordinary daily case.
+// Production signals readiness on this path too (post-processing succeeded);
+// the reload is withheld by the absent flag, not by an absent marker.
+const NOTHING_RENEWED = SIGNAL_RELOAD_READY;
+
+// A partial renewal: certbot renewed at least one certificate (deploy hook
+// fired) and then failed on another, so the Node step exports what it can,
+// signals readiness, and exits non-zero.
+const PARTIAL_RENEWAL = RENEWED;
 
 // nginx stub records its args so we can assert exactly when (and whether) the
 // script reloads nginx.
@@ -507,6 +535,247 @@ describe('certbot_renew.sh — reload only when a certificate was renewed', () =
     const calls = nginxCalls(ctx).trim().split('\n').filter(Boolean);
     expect(calls.length).toBe(1);
     expect(calls[0]).toBe('-s reload');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The four renewal outcomes, and the two signals that separate them
+// ---------------------------------------------------------------------------
+//
+// `certbot renew` renews every due certificate it can and exits non-zero if
+// ANY of them failed, so its exit status cannot tell "nothing renewed" from
+// "one lineage is broken and the rest renewed fine". This script used to exit
+// on that status before reaching the reload decision, which threw the
+// successful half of a partial run away: the renewed material never reached
+// the /etc/ssl/certs copies nginx serves, so nginx kept the old certificates.
+//
+// The Node step now continues past a partial failure and exports what did
+// renew, and this script reloads and *then* reports the failure. Which needs
+// two independent signals, because the renewed flag answers only half the
+// question:
+//
+//   renewed flag   certbot's deploy hook ran — a certificate really renewed.
+//   ready marker   the Node step then finished exporting it (and backing up,
+//                  when that is enabled). Written last, inside the lock
+//                  directory, and never by this script.
+//
+// Reload requires both. The flag alone would reload after a failed export,
+// announcing a renewal that was never applied. The Node half of the protocol
+// — when the marker is and is not written — is in partial-renewal.test.js.
+describe('certbot_renew.sh — the four renewal outcomes', () => {
+  let ctx;
+  beforeEach(() => { ctx = setup(); writeNginxStub(ctx.binDir, 0); });
+  afterEach(() => cleanupCtx(ctx));
+
+  // A — certbot succeeded, nothing was due.
+  it('full success with nothing renewed: no reload, exit 0, no state left behind', () => {
+    writeStub(ctx.binDir, 'node', 0, NOTHING_RENEWED);
+
+    const r = run(ctx.env);
+
+    expect(r.code).toBe(0);
+    expect(nginxCalls(ctx)).toBe('');
+    expect(r.stdout).toMatch(/No certificates renewed; nginx reload skipped/);
+    expect(r.stdout).toMatch(/certbot renew succeeded/);
+    // Readiness is per-run state: it must not survive to authorise a reload
+    // the next run never earned.
+    expect(fs.existsSync(ctx.readyMarker)).toBe(false);
+    expect(fs.existsSync(ctx.lockDir)).toBe(false);
+  });
+
+  // B — certbot succeeded and something renewed.
+  it('full success with a renewal: reloads, exits 0, and clears both signals', () => {
+    writeStub(ctx.binDir, 'node', 0, RENEWED);
+
+    const r = run(ctx.env);
+
+    expect(r.code).toBe(0);
+    expect(nginxCalls(ctx)).toMatch(/-s reload/);
+    expect(r.stdout).toMatch(/Certificates renewed; reloading nginx/);
+    expect(r.stdout).toMatch(/nginx reloaded after renewal/);
+    expect(r.stdout).toMatch(/certbot renew succeeded/);
+    // A healthy run says nothing about partial failure.
+    expect(r.stdout).not.toMatch(/still reported as failed/);
+    expect(fs.existsSync(ctx.renewedFlag)).toBe(false);
+    expect(fs.existsSync(ctx.readyMarker)).toBe(false);
+    expect(fs.existsSync(ctx.lockDir)).toBe(false);
+  });
+
+  // C — certbot failed and nothing renewed.
+  it('total failure: no reload, non-zero exit, no readiness signal', () => {
+    writeStub(ctx.binDir, 'node', 1); // neither signal raised
+
+    const r = run(ctx.env);
+
+    expect(r.code).toBe(1);
+    expect(nginxCalls(ctx)).toBe('');
+    expect(r.stdout).toMatch(/ERROR: certbot renewal script failed \(exit 1\)/);
+    expect(r.stdout).toMatch(/No certificates renewed; nginx reload skipped/);
+    expect(r.stdout).not.toMatch(/succeeded/);
+    expect(fs.existsSync(ctx.readyMarker)).toBe(false);
+  });
+
+  // D — the core regression: certbot failed, but a certificate renewed and the
+  // Node step exported it.
+  it('partial renewal: reloads the certificates that did renew, then still exits non-zero', () => {
+    writeStub(ctx.binDir, 'node', 1, PARTIAL_RENEWAL);
+
+    const r = run(ctx.env);
+
+    // Pre-fix, the script exited on the Node status above and none of this
+    // happened — the renewed certificate sat exported but unserved.
+    expect(nginxCalls(ctx)).toMatch(/-s reload/);
+    expect(r.stdout).toMatch(/Certificates renewed; reloading nginx/);
+    expect(r.stdout).toMatch(/nginx reloaded after renewal/);
+    // ...and the run is still reported as unhealthy.
+    expect(r.code).toBe(1);
+    expect(r.stdout).toMatch(/ERROR: certbot renewal script failed \(exit 1\)/);
+    expect(r.stdout).toMatch(/certificates that renewed have been applied.*still reported as failed/);
+    expect(r.stdout).not.toMatch(/certbot renew succeeded/);
+    // The flag is consumed and the run's private state released as usual.
+    expect(fs.existsSync(ctx.renewedFlag)).toBe(false);
+    expect(fs.existsSync(ctx.readyMarker)).toBe(false);
+    expect(fs.existsSync(ctx.lockDir)).toBe(false);
+  });
+});
+
+// The renewed flag alone must never be reload permission: it says certbot
+// deployed something, not that this pipeline finished applying it. These are
+// the cases where exactly one of the two signals is present.
+describe('certbot_renew.sh — reload needs post-processing to have completed', () => {
+  let ctx;
+  beforeEach(() => { ctx = setup(); writeNginxStub(ctx.binDir, 0); });
+  afterEach(() => cleanupCtx(ctx));
+
+  it('does not reload a partial renewal whose export failed', () => {
+    // certbot renewed a certificate (flag raised by its deploy hook), then the
+    // Node step failed before it could export — no readiness signal.
+    writeStub(ctx.binDir, 'node', 1, TOUCH_RENEWED_FLAG);
+
+    const r = run(ctx.env);
+
+    expect(r.code).toBe(1);
+    expect(nginxCalls(ctx)).toBe('');
+    expect(r.stdout).toMatch(/WARNING: certificates were renewed but post-renewal processing did not complete; nginx reload skipped/);
+    expect(r.stdout).toMatch(/reloading would apply nothing/);
+    expect(r.stdout).not.toMatch(/reloading nginx/);
+  });
+
+  it('does not reload when post-processing succeeded but nothing renewed', () => {
+    // The readiness marker on its own is not a renewal: it only says the run
+    // completed, which every ordinary daily no-op also does.
+    writeStub(ctx.binDir, 'node', 0, SIGNAL_RELOAD_READY);
+
+    const r = run(ctx.env);
+
+    expect(r.code).toBe(0);
+    expect(nginxCalls(ctx)).toBe('');
+    expect(r.stdout).toMatch(/No certificates renewed; nginx reload skipped/);
+  });
+
+  it('does not reload on a renewed flag left behind by a failed run', () => {
+    // Defensive: the Node step exits 0 only after signalling readiness, so
+    // this combination should be unreachable. If it ever arises, the missing
+    // signal — not the exit status — is what withholds the reload.
+    writeStub(ctx.binDir, 'node', 0, TOUCH_RENEWED_FLAG);
+
+    const r = run(ctx.env);
+
+    expect(nginxCalls(ctx)).toBe('');
+    expect(r.stdout).toMatch(/post-renewal processing did not complete/);
+  });
+
+  it('releases the readiness marker even when the run failed', () => {
+    writeStub(ctx.binDir, 'node', 1, PARTIAL_RENEWAL);
+
+    const r = run(ctx.env);
+
+    expect(r.code).toBe(1);
+    expect(fs.existsSync(ctx.readyMarker)).toBe(false);
+    expect(fs.existsSync(ctx.lockDir)).toBe(false);
+  });
+
+  it('starts each run with no readiness marker, whatever a previous one left', () => {
+    // The marker lives in the lock directory, which is created fresh per run —
+    // but a run that inherits a stale lock directory it owns must not inherit
+    // its readiness either.
+    fs.mkdirSync(ctx.lockDir, { recursive: true });
+    fs.writeFileSync(path.join(ctx.lockDir, LOCK_MARKER_NAME), `${LOCK_MARKER_VALUE}\n`);
+    fs.writeFileSync(path.join(ctx.lockDir, 'pid'), UNREACHABLE_PID);
+    fs.writeFileSync(ctx.readyMarker, 'reload-ready-v1\n');
+    // This run renews nothing and signals nothing.
+    writeStub(ctx.binDir, 'node', 0);
+
+    const r = run(ctx.env);
+
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/stale lock/i);
+    expect(nginxCalls(ctx)).toBe('');
+    expect(fs.existsSync(ctx.readyMarker)).toBe(false);
+  });
+
+  it('keeps a reload failure visible on the partial path instead of folding it into the renewal failure', () => {
+    writeNginxStub(ctx.binDir, 1); // reload itself fails
+    writeStub(ctx.binDir, 'node', 1, PARTIAL_RENEWAL);
+
+    const r = run(ctx.env);
+
+    expect(nginxCalls(ctx)).toMatch(/-s reload/);
+    expect(r.stdout).toMatch(/WARNING: nginx reload after renewal failed/);
+    expect(r.stdout).not.toMatch(/nginx reloaded after renewal/);
+    // Still failed, and still failed for the renewal reason it reported.
+    expect(r.code).toBe(1);
+    expect(r.stdout).toMatch(/ERROR: certbot renewal script failed/);
+  });
+});
+
+// The readiness signal is internal coordination state, not a feature. These
+// pin the properties that keep it that way, which no behavioural test can
+// observe from outside.
+describe('certbot_renew.sh — the readiness signal is private, per-run state', () => {
+  it('names the marker inside the lock directory it already owns', () => {
+    expect(SCRIPT_SRC).toMatch(new RegExp(`RELOAD_READY_MARKER=.*\\$LOCK_DIR.*${READY_MARKER_NAME.replace(/\./g, '\\.')}`));
+    expect(SCRIPT_SRC).toMatch(/export CERTBOT_INTERNAL_RELOAD_READY="\$RELOAD_READY_MARKER"/);
+  });
+
+  it('is not an operator-settable override', () => {
+    // CERTBOT_RENEWED_FLAG deliberately honours an inherited value; this one
+    // deliberately does not, so nothing in the environment can redirect the
+    // reload authorisation at a path of its choosing.
+    expect(SCRIPT_SRC).toMatch(/RENEWED_FLAG=\$\{CERTBOT_RENEWED_FLAG:-/);
+    expect(SCRIPT_SRC).not.toMatch(/\$\{CERTBOT_INTERNAL_RELOAD_READY:?-/);
+    // And it is not offered as one in the script's own documentation of them.
+    const overridesBlock = SCRIPT_SRC.slice(
+      SCRIPT_SRC.indexOf('# Test-override environment variables'),
+      SCRIPT_SRC.indexOf('LOCK_DIR='),
+    );
+    expect(overridesBlock).not.toMatch(/CERTBOT_INTERNAL_RELOAD_READY/);
+  });
+
+  it('clears the marker before the run and releases it with the lock', () => {
+    expect(SCRIPT_SRC).toMatch(/rm -f -- "\$RELOAD_READY_MARKER"/);
+    const release = SCRIPT_SRC.slice(
+      SCRIPT_SRC.indexOf('release_lock() {'),
+      SCRIPT_SRC.indexOf('# ---- Lock ownership'),
+    );
+    expect(release).toMatch(/rm -f -- "\$RELOAD_READY_MARKER"/);
+    // Before the rmdir, which would otherwise refuse a non-empty directory.
+    expect(release.indexOf('rm -f -- "$RELOAD_READY_MARKER"'))
+      .toBeLessThan(release.indexOf('rmdir -- "$LOCK_DIR"'));
+  });
+
+  it('gates the reload on both signals, and defers the failure exit until after it', () => {
+    const reloadAt = SCRIPT_SRC.indexOf('nginx -s reload');
+    const gateAt   = SCRIPT_SRC.indexOf('elif [ ! -f "$RELOAD_READY_MARKER" ]');
+    const exitAt   = SCRIPT_SRC.indexOf('exit "$RENEWAL_EXIT"');
+
+    expect(gateAt).toBeGreaterThan(-1);
+    expect(exitAt).toBeGreaterThan(-1);
+    // The regression this whole change is about: the renewal-failure exit used
+    // to sit above the reload decision, so a partial renewal never reloaded.
+    expect(exitAt).toBeGreaterThan(reloadAt);
+    // And there is only one of them.
+    expect(SCRIPT_SRC.indexOf('exit "$RENEWAL_EXIT"', exitAt + 1)).toBe(-1);
   });
 });
 

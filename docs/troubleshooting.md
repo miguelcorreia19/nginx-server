@@ -209,6 +209,20 @@ Inspect those paths, keep anything you still need, then remove or rename them. T
 - Check `/var/log/certbot/certbot_renew.log` for the most recent run output.
 - A stale lock from a previous `SIGKILL` is cleared automatically on the next scheduled run.
 
+### A renewal run reports a failure but certificates were renewed
+
+`certbot renew` fails as a whole if **any** one certificate fails, so a single broken site fails the run even when every other certificate renewed. That is reported honestly — the run exits `1` — but the renewals that did succeed are still exported and nginx is still reloaded, so the healthy sites are served their new certificates immediately. Look for:
+
+```
+WARNING: certbot renew failed, but its deploy hook recorded at least one successful renewal
+...
+WARNING: the certificates that renewed have been applied, but certbot failed for at least one other certificate — this run is still reported as failed
+```
+
+The certbot output above those lines names the lineage that failed. Fix that site (usually DNS, reachability on port 80, or a damaged renewal config — see [A certificate is not listed by certbot](#a-certificate-is-not-listed-by-certbot)); the failing lineage is left in place and is never deleted or reissued automatically. See [Partial renewals](letsencrypt.md#partial-renewals).
+
+If instead you see `certificates were renewed but post-renewal processing did not complete; nginx reload skipped`, the renewal succeeded but the export to `/etc/ssl/certs` (or the backup) failed, so there was nothing new for nginx to pick up. The previously issued certificates keep being served; the error above that line says what failed.
+
 ### Checking container health manually
 
 ```bash

@@ -1,4 +1,5 @@
 const { parseCerts, certbotBackupEnabled, listRenewalStems, isDesiredLetsencryptEntry, backupCertbotState } = require("./utils.js");
+const fs = require("fs");
 const path = require("path");
 const { commandSafe } = require("../utils.js");
 const migrateRenewalConfigs = require("./migrate_renewal");
@@ -35,6 +36,47 @@ const { log, warn, error } = createLogger("certbot_renew.js");
 // options with `--` before the quoted path.
 const shellQuote = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
 
+// ---- Reload readiness -----------------------------------------------------
+// The renewed flag and this marker answer two different questions, and only
+// the pair of them together authorises an nginx reload:
+//
+//   renewed flag   Certbot's deploy hook ran, so at least one certificate was
+//                  actually renewed. Written by Certbot, before this script
+//                  has done anything with the new material.
+//   reload-ready   this script finished every required post-renewal step —
+//                  discovery, export to /etc/ssl/certs, and the backup when it
+//                  is enabled. Written here, last.
+//
+// nginx serves the exported copies under /etc/ssl/certs, not the lineage under
+// /etc/letsencrypt/live, so a renewal whose export failed has changed nothing
+// nginx can see: reloading on the flag alone would be reloading onto the old
+// files at best, and onto a half-written export at worst. Hence the second
+// signal, and hence its position at the very end of the flow.
+//
+// certbot_renew.sh owns the path: it points this at a fixed filename inside
+// the renewal lock directory it just created, and exports it unconditionally,
+// overwriting whatever the environment held. That is deliberate — unlike
+// CERTBOT_RENEWED_FLAG, this is not an operator-settable override, and an
+// inherited value cannot redirect the marker anywhere. It is not configuration
+// and is not documented as such; it exists only so these two processes can
+// name the same private file. The lock directory is created fresh for each run
+// and released (marker included) by the script's EXIT trap, so the marker
+// cannot be stale and cannot outlive the run that wrote it.
+//
+// Absent when this module is run outside certbot_renew.sh (the tests that
+// drive it directly, an operator invoking it by hand): there is no shell
+// waiting on the signal, so there is nothing to raise.
+const RELOAD_READY_MARKER_VALUE = 'reload-ready-v1';
+
+const signalReloadReady = () => {
+  const marker = process.env.CERTBOT_INTERNAL_RELOAD_READY;
+  if (!marker) return;
+  // Deliberately not swallowed: a marker that cannot be written means the
+  // reload cannot be authorised, which is a failed run rather than a silently
+  // skipped reload. It reaches the caller's catch like any other failure.
+  fs.writeFileSync(marker, `${RELOAD_READY_MARKER_VALUE}\n`);
+};
+
 // Human-readable expiry derived from the parsed Luxon validity. Logging only —
 // no behavior depends on this, and an unparseable/missing validity is tolerated.
 const formatValidity = (validity) => {
@@ -46,6 +88,13 @@ const formatValidity = (validity) => {
 };
 
 const start = async () => {
+  // Set when `certbot renew` exited non-zero *and* the deploy-hook flag proves
+  // at least one certificate renewed anyway — a partial renewal. The failure is
+  // held here rather than raised, so the certificates that did renew still go
+  // through the one post-processing path below, and is re-raised as a non-zero
+  // exit once that path has completed. See the branch that sets it.
+  let partialRenewalFailure = null;
+
   try {
     log('Starting certificate renewal');
 
@@ -79,17 +128,41 @@ const start = async () => {
     // by shellQuote above and guarded from touch's own option parsing with
     // `--` — see that comment for the remaining, unavoidable trust boundary.
     const renewedFlag = process.env.CERTBOT_RENEWED_FLAG || '/tmp/certbot-renewed.flag';
-    const renewOutput = await commandSafe('certbot', [
-      'renew',
-      '--webroot', '-w', '/var/www/certbot',
-      '--noninteractive',
-      '--deploy-hook', `touch -- ${shellQuote(renewedFlag)}`,
-    ]);
-    // Surface certbot's own renewal report (which certs were due, skipped,
-    // renewed, or failed) verbatim for troubleshooting.
-    if (renewOutput) console.log(renewOutput);
+    try {
+      const renewOutput = await commandSafe('certbot', [
+        'renew',
+        '--webroot', '-w', '/var/www/certbot',
+        '--noninteractive',
+        '--deploy-hook', `touch -- ${shellQuote(renewedFlag)}`,
+      ]);
+      // Surface certbot's own renewal report (which certs were due, skipped,
+      // renewed, or failed) verbatim for troubleshooting.
+      if (renewOutput) console.log(renewOutput);
 
-    log('certbot renew finished');
+      log('certbot renew finished');
+    } catch (err) {
+      // `certbot renew` renews every due certificate it can and exits non-zero
+      // if *any* of them failed, so its exit status alone cannot tell "nothing
+      // renewed" from "one lineage is broken and the rest renewed fine". One
+      // unrenewable lineage used to abort the whole run here, which threw away
+      // the certificates that had just been renewed successfully: they stayed
+      // in /etc/letsencrypt/live and were never exported to the /etc/ssl/certs
+      // copies nginx actually reads, so nginx kept serving the old ones until
+      // a later run happened to succeed outright.
+      //
+      // The deploy-hook flag settles which of the two it was. Certbot touches
+      // it only for a certificate it actually renewed and deployed, so its
+      // presence is direct evidence of work worth keeping, independent of the
+      // exit status. Absent, this is a total failure and stays fail-fast.
+      if (!fs.existsSync(renewedFlag)) throw err;
+
+      partialRenewalFailure = err;
+      warn(`certbot renew failed, but its deploy hook recorded at least one successful renewal: ${err.error || err.message || err}`);
+      // Indented continuation as a plain line, matching this file's other
+      // multi-line reports (and certbot_renew.sh's): the severity belongs to
+      // the WARNING above it, not repeated on every line of the same message.
+      log('  continuing with export and post-processing so the certificates that did renew are applied; this run will still be reported as failed');
+    }
 
     const final_certificates = await parseCerts();
     const ids = Object.keys(final_certificates);
@@ -156,8 +229,27 @@ const start = async () => {
         log('Backup completed');
       }
     }
+
+    // Everything the renewal run has to do is done and succeeded. Only now may
+    // nginx be told to pick the exported certificates up — see the comment on
+    // signalReloadReady above for why the renewed flag alone is not enough.
+    signalReloadReady();
   } catch (err) {
+    // Reached by a failure in any required step: discovery, export, backup, or
+    // the readiness signal itself. The marker is written last and only on the
+    // success path, so it is necessarily absent here and nginx will not be
+    // reloaded. A partial renewal that then failed in post-processing is
+    // reported through this same path — the exit status is non-zero either
+    // way, and the partial-renewal warning above is already in the log.
     error(`certbot renewal failed: ${err.error || err.message || err}`);
+    process.exit(1);
+  }
+
+  if (partialRenewalFailure) {
+    // Post-processing completed, so the renewed certificates have been exported
+    // and nginx may reload — but certbot itself failed, and the run is reported
+    // as failed so monitoring still sees an unhealthy renewal.
+    error('Partial renewal: the certificates that did renew were exported successfully, but certbot renew failed for at least one other certificate — reporting this run as failed');
     process.exit(1);
   }
 };
