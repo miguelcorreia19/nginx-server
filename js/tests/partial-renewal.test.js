@@ -15,10 +15,15 @@
 //
 // Two signals, not one. The renewed flag says certbot deployed something; it
 // does NOT say this script then finished exporting it. So post-processing
-// raises a second, private signal — the reload-ready marker, written last —
-// and certbot_renew.sh reloads nginx only when both are present. The suites
-// below pin that the marker is never raised by a run whose export or backup
-// failed; the shell half of the protocol is in certbot-renew.test.js.
+// raises a second, private signal — the reload-ready marker — and
+// certbot_renew.sh reloads nginx only when both are present.
+//
+// The marker's boundary is the COMPLETED EXPORT, and nothing after it. Once
+// every /etc/ssl/certs/<id>_*.pem file is in place nginx has what it needs, so
+// a backup that fails afterwards fails the run without withholding the reload;
+// an export that fails, or that only got part-way, withholds it. The suites
+// below pin both halves of that line. The shell half of the protocol is in
+// certbot-renew.test.js.
 //
 // start() is not exported (the module self-invokes only under
 // `require.main === module`), so every scenario drives the real script as a
@@ -129,6 +134,13 @@ fi
 if [ "\${CP_STUB_EXPORT_EXIT:-0}" != "0" ]; then
   echo "cp: can't stat '$1': No such file or directory" >&2
   exit "\${CP_STUB_EXPORT_EXIT}"
+fi
+
+# Fail only once this many export copies have already succeeded, so a run can
+# be stopped part-way through the export phase rather than at its first copy.
+if [ -n "\${CP_STUB_EXPORT_FAIL_AFTER:-}" ] && [ "$(wc -l < "$CP_CALLS")" -gt "\${CP_STUB_EXPORT_FAIL_AFTER}" ]; then
+  echo "cp: can't stat '$1': No such file or directory" >&2
+  exit 1
 fi
 
 src="$1"; dst="$2"
@@ -338,7 +350,7 @@ describe('certbot_renew.js — partial renewal (certbot failed, a certificate re
     }
   });
 
-  it('signals reload readiness once post-processing has completed', () => {
+  it('signals reload readiness once the export has completed', () => {
     const r = run(ctx, { ...RENEWED, ...RENEW_FAILED });
 
     expect(fs.existsSync(ctx.readyMarker)).toBe(true);
@@ -399,14 +411,22 @@ describe('certbot_renew.js — partial renewal with a failing export', () => {
 });
 
 // ---------------------------------------------------------------------------
-// F — partial renewal whose backup then fails
+// F — a backup that fails after a complete export
 // ---------------------------------------------------------------------------
 //
-// Backup is part of the required completion path today: a failure in it
-// already fails the run. That ordering is preserved rather than worked around,
-// so readiness is signalled after the backup, not before it.
+// The backup is recovery material for a later run; it says nothing about
+// whether the .pem files already sitting in /etc/ssl/certs are the ones that
+// should be served. So it fails the run — its failure still reaches the error
+// path and the non-zero exit — without withholding the reload of certificates
+// that were exported successfully before it ran. Gating the reload on it would
+// leave nginx serving a certificate that had just been replaced in its own
+// configured paths.
+//
+// Both entry points are pinned: a partial certbot renewal and an outright
+// successful one. The rule is about the export having completed, not about
+// which kind of failure follows it.
 
-describe('certbot_renew.js — partial renewal with a failing backup', () => {
+describe('certbot_renew.js — a backup that fails after a complete export', () => {
   let ctx;
   beforeEach(() => {
     ctx = setup();
@@ -420,41 +440,97 @@ describe('certbot_renew.js — partial renewal with a failing backup', () => {
 
   const BACKUP_ON = { CERTBOT_BACKUP: 'true' };
 
-  it('fails after a completed export, and never signals readiness', () => {
-    // backupCertbotState() copies out of the fixed /etc/letsencrypt, so the
-    // failure is forced at whichever step that path reaches first on this
-    // host: enumerating a directory that is not there, or the `cp -rf` the
-    // stub refuses. Both are genuine backup failures and both must land in the
-    // same place.
-    const r = run(ctx, {
-      ...RENEWED,
-      ...RENEW_FAILED,
-      ...BACKUP_ON,
-      CERTBOT_BACKUP_PATH: ctx.backupDir,
-      CP_STUB_BACKUP_EXIT: '1',
-    });
+  // backupCertbotState() copies out of the fixed /etc/letsencrypt, so the
+  // failure is forced at whichever step that path reaches first on this host:
+  // enumerating a directory that is not there, or the `cp -rf` the stub
+  // refuses. Both are genuine backup failures and both must land in the same
+  // place.
+  const backupFails = { ...BACKUP_ON, CERTBOT_BACKUP_PATH: null, CP_STUB_BACKUP_EXIT: '1' };
+  const withBackupFailure = (ctx, extra) => ({
+    ...extra,
+    ...backupFails,
+    CERTBOT_BACKUP_PATH: ctx.backupDir,
+  });
+
+  it('after a partial renewal: keeps readiness, keeps the export, still fails', () => {
+    const r = run(ctx, withBackupFailure(ctx, { ...RENEWED, ...RENEW_FAILED }));
 
     expect(r.code).toBe(1);
-    // The export had already succeeded — this is a failure strictly after it.
-    expect(fs.readFileSync(exported(ctx, 'healthy', 'fullchain'), 'utf8'))
-      .toBe(pem('healthy', 'CERTIFICATE'));
+    // The export completed before the backup was even attempted...
+    for (const [file, kind] of [['fullchain', 'CERTIFICATE'], ['privkey', 'PRIVATE KEY'], ['chain', 'TRUSTED CERTIFICATE']]) {
+      expect(fs.readFileSync(exported(ctx, 'healthy', file), 'utf8')).toBe(pem('healthy', kind));
+    }
+    // ...so readiness was raised before it. Its mere presence proves the
+    // ordering: the backup failure aborts the run, so nothing after it could
+    // have written this.
+    expect(fs.existsSync(ctx.readyMarker)).toBe(true);
+    // The backup genuinely ran and genuinely failed — not skipped, not passed.
     expect(r.output).toMatch(/Backing up Let's Encrypt state/);
     expect(r.output).not.toMatch(/Backup completed/);
-    // The whole point: a completed export is not enough on its own.
-    expect(fs.existsSync(ctx.readyMarker)).toBe(false);
     expect(r.output).toMatch(/ERROR: certbot renewal failed/);
   });
 
-  it('withholds readiness on a backup failure even when certbot itself succeeded', () => {
-    const r = run(ctx, {
-      ...RENEWED,
-      ...BACKUP_ON,
-      CERTBOT_BACKUP_PATH: ctx.backupDir,
-      CP_STUB_BACKUP_EXIT: '1',
-    });
+  it('after a fully successful renewal: keeps readiness, keeps the export, still fails', () => {
+    // The rule is about the export having completed, so it must not depend on
+    // certbot having failed as well.
+    const r = run(ctx, withBackupFailure(ctx, RENEWED));
 
     expect(r.code).toBe(1);
+    expect(fs.readFileSync(exported(ctx, 'healthy', 'fullchain'), 'utf8'))
+      .toBe(pem('healthy', 'CERTIFICATE'));
+    expect(fs.existsSync(ctx.readyMarker)).toBe(true);
+    expect(r.output).toMatch(/ERROR: certbot renewal failed/);
+    expect(r.output).not.toMatch(/Backup completed/);
+  });
+
+  it('does not delete a readiness marker it already wrote when the backup fails', () => {
+    // The error handler must leave the marker alone: the shell has not yet
+    // consumed the run's result, and the exported certificates are still the
+    // ones that should be served.
+    const r = run(ctx, withBackupFailure(ctx, { ...RENEWED, ...RENEW_FAILED }));
+
+    expect(fs.readFileSync(ctx.readyMarker, 'utf8')).toMatch(/reload-ready/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The other side of that line: an export that did not finish
+// ---------------------------------------------------------------------------
+
+describe('certbot_renew.js — an export that only partly completed', () => {
+  let ctx;
+  // Two enumerable lineages, six copies in all, so the run can be stopped
+  // between them rather than at the first copy.
+  beforeEach(() => { ctx = setup({ lineages: ['alpha', 'beta'] }); });
+  afterEach(() => cleanup(ctx));
+
+  it('never signals readiness when a later certificate fails to export', () => {
+    // Four copies succeed — all of alpha, then beta's fullchain — and the
+    // fifth fails.
+    const r = run(ctx, { ...RENEWED, CP_STUB_EXPORT_FAIL_AFTER: '4' });
+
+    expect(r.code).toBe(1);
+    // The partial state really is partial: alpha is complete, beta is not.
+    expect(fs.readFileSync(exported(ctx, 'alpha', 'chain'), 'utf8')).toBe(pem('alpha', 'TRUSTED CERTIFICATE'));
+    expect(fs.existsSync(exported(ctx, 'beta', 'fullchain'))).toBe(true);
+    expect(fs.existsSync(exported(ctx, 'beta', 'privkey'))).toBe(false);
+    // Readiness covers the export phase as a whole, so a complete first
+    // certificate does not earn it.
     expect(fs.existsSync(ctx.readyMarker)).toBe(false);
+    // (Marker absent means no reload — certbot-renew.test.js pins that half.)
+    expect(r.output).toMatch(/ERROR: certbot renewal failed/);
+  });
+
+  it('signals readiness once every certificate has been exported', () => {
+    const r = run(ctx, RENEWED);
+
+    expect(r.code).toBe(0);
+    for (const id of ['alpha', 'beta']) {
+      for (const file of ['fullchain', 'privkey', 'chain']) {
+        expect(fs.existsSync(exported(ctx, id, file))).toBe(true);
+      }
+    }
+    expect(fs.existsSync(ctx.readyMarker)).toBe(true);
   });
 });
 

@@ -44,7 +44,7 @@ Renewal uses the **webroot** authenticator: **nginx keeps port 80 the whole time
 2. Each renewal config is ensured to be webroot (migrated in place if still legacy standalone; see below).
 3. `certbot renew --webroot -w /var/www/certbot` runs non-interactively (it only re-issues certificates close to expiry). The explicit `--webroot` forces the webroot authenticator for the run, so port 80 is never released.
 4. Every certificate Certbot can enumerate is exported to the `/etc/ssl/certs/<name>_*.pem` copies nginx actually serves, and the Let's Encrypt state is backed up when [`CERTBOT_BACKUP`](#certificate-backup) is enabled.
-5. nginx is reloaded **only if at least one certificate was actually renewed *and* that export completed successfully**. The renewal is detected via certbot's `--deploy-hook`, which runs only on a real renewal, so a "not yet due" run renews nothing and **skips the reload** (no needless work or log noise); a run whose export or backup failed skips it too, because nothing new reached the paths nginx reads. **Port 80 is never taken offline either way.**
+5. nginx is reloaded **only if at least one certificate was actually renewed *and* the export in step 4 completed successfully**. The renewal is detected via certbot's `--deploy-hook`, which runs only on a real renewal, so a "not yet due" run renews nothing and **skips the reload** (no needless work or log noise); a run whose export failed skips it too, because nothing new reached the paths nginx reads. A *backup* failure does **not** skip the reload — the certificates are already in place by then — but it does still fail the run. **Port 80 is never taken offline either way.**
 
 ### Renewal logs
 
@@ -86,13 +86,21 @@ A partial run is logged like this:
 2026-06-08 05:00:03 [certbot_renew] ERROR: certbot renewal script failed (exit 1)
 2026-06-08 05:00:03 [certbot_renew] Certificates renewed; reloading nginx
 2026-06-08 05:00:03 [certbot_renew] nginx reloaded after renewal
-2026-06-08 05:00:03 [certbot_renew] WARNING: the certificates that renewed have been applied, but certbot failed for at least one other certificate — this run is still reported as failed
+2026-06-08 05:00:03 [certbot_renew] WARNING: the renewed certificates have been applied, but the run failed after exporting them — this run is still reported as failed (see the error above)
 ```
 
 Two cases are deliberately **not** treated as partial success:
 
 - **Nothing renewed at all.** A failing `certbot renew` whose deploy hook never ran is a total failure: it stops immediately, exports nothing, and does not reload.
-- **The export or backup then failed.** nginx is not reloaded, because the renewed material never reached the paths it serves — a reload would apply nothing. The previous certificates keep being served, and the run reports the failure. The log says `certificates were renewed but post-renewal processing did not complete; nginx reload skipped`.
+- **The export then failed.** nginx is not reloaded, because the renewed material never reached the paths it serves — a reload would apply nothing. The previous certificates keep being served, and the run reports the failure. The log says `certificates were renewed but post-renewal processing did not complete; nginx reload skipped`.
+
+### A failed backup does not hold back a renewed certificate
+
+Reload eligibility ends at the **export**. Once every `/etc/ssl/certs/<name>_*.pem` file is written, nginx has the renewed material it needs, and the [backup](#certificate-backup) that runs afterwards is recovery material for a later run rather than part of what makes the exported files correct.
+
+So a renewal whose backup fails **still reloads nginx** and still **exits non-zero**. The renewed certificates go into service; the backup failure is reported as an error and fails the run, so it is not silently lost. This holds for a fully successful `certbot renew` and for a [partial renewal](#partial-renewals) alike.
+
+An **export** failure is the opposite case and is unchanged: no reload, non-zero exit, previous certificates still served.
 
 The lineage that failed to renew is left exactly as it was: it is never deleted, never automatically reissued, and its [backup copy is preserved](#certificate-backup) rather than overwritten.
 

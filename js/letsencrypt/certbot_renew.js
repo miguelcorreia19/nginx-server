@@ -43,15 +43,25 @@ const shellQuote = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
 //   renewed flag   Certbot's deploy hook ran, so at least one certificate was
 //                  actually renewed. Written by Certbot, before this script
 //                  has done anything with the new material.
-//   reload-ready   this script finished every required post-renewal step —
-//                  discovery, export to /etc/ssl/certs, and the backup when it
-//                  is enabled. Written here, last.
+//   reload-ready   this script finished exporting every certificate Certbot
+//                  enumerated to /etc/ssl/certs. Written once that whole phase
+//                  has succeeded — never part-way through it.
 //
 // nginx serves the exported copies under /etc/ssl/certs, not the lineage under
 // /etc/letsencrypt/live, so a renewal whose export failed has changed nothing
 // nginx can see: reloading on the flag alone would be reloading onto the old
 // files at best, and onto a half-written export at worst. Hence the second
-// signal, and hence its position at the very end of the flow.
+// signal, and hence its position immediately after the export loop.
+//
+// The completed export is the whole boundary; the backup that follows it
+// deliberately is not part of it. Once the .pem files nginx reads are in
+// place, nginx has everything it needs to serve the renewed certificate — the
+// backup is recovery material for some later run, and whether it succeeded
+// says nothing about whether the files already on disk are the ones that
+// should be served. Gating the reload on it would leave nginx serving an
+// expiring certificate that had already been replaced in its own configured
+// paths. A failed backup still fails the run; it just does not veto the
+// reload.
 //
 // certbot_renew.sh owns the path: it points this at a fixed filename inside
 // the renewal lock directory it just created, and exports it unconditionally,
@@ -198,6 +208,13 @@ const start = async () => {
       log(`    chain:     ${chainDest}`);
     }
 
+    // Every certificate Certbot enumerated is now in the paths nginx reads, so
+    // the renewed material can be served: reload readiness is signalled here,
+    // before the backup, and not at the end of the run. See the comment on
+    // signalReloadReady above for why the export — and only the export — is
+    // the boundary.
+    signalReloadReady();
+
     // Backup Let's Encrypt state if enabled.
     //
     // This runs from cron, so it repeats daily for as long as a damaged lineage
@@ -229,18 +246,15 @@ const start = async () => {
         log('Backup completed');
       }
     }
-
-    // Everything the renewal run has to do is done and succeeded. Only now may
-    // nginx be told to pick the exported certificates up — see the comment on
-    // signalReloadReady above for why the renewed flag alone is not enough.
-    signalReloadReady();
   } catch (err) {
-    // Reached by a failure in any required step: discovery, export, backup, or
-    // the readiness signal itself. The marker is written last and only on the
-    // success path, so it is necessarily absent here and nginx will not be
-    // reloaded. A partial renewal that then failed in post-processing is
-    // reported through this same path — the exit status is non-zero either
-    // way, and the partial-renewal warning above is already in the log.
+    // Reached by a failure in any required step: discovery, export, the
+    // readiness signal itself, or the backup. Anything up to and including the
+    // signal leaves the marker absent, so nginx is not reloaded. A backup
+    // failure is the deliberate exception: it happens after the marker exists
+    // and does not remove it, so the certificates that were already exported
+    // are still applied while this run is still reported as failed. A partial
+    // renewal that then failed here is reported the same way — the exit status
+    // is non-zero either way, and its warning is already in the log.
     error(`certbot renewal failed: ${err.error || err.message || err}`);
     process.exit(1);
   }

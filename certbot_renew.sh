@@ -247,11 +247,14 @@ fi
 # the Node step signalled that it finished applying it. Its deploy hook touches
 # "$RENEWED_FLAG" only on a real renewal, so a "not yet due" no-op leaves the
 # flag absent and the daily reload (and its log noise) is skipped;
-# "$RELOAD_READY_MARKER" is written last by the Node step and only once export
-# and backup have succeeded, so an export/backup failure leaves it absent and
-# nginx is not asked to pick up an export that never completed. Both conditions
-# apply to a full and a partial renewal alike. Port 80 is never touched either
-# way.
+# "$RELOAD_READY_MARKER" is written by the Node step once it has exported every
+# certificate Certbot enumerated, so a failed or half-finished export leaves it
+# absent and nginx is never asked to pick up an export that did not complete.
+# Deliberately the export and not the whole run: a backup that fails afterwards
+# still fails the run (below), but the .pem files nginx reads are already in
+# place by then, and withholding the reload would leave nginx serving a
+# certificate that had just been replaced. Both conditions apply to a full and
+# a partial renewal alike. Port 80 is never touched either way.
 #
 # No `--` needed here: unlike `rm`, bash's `[ -f <operand> ]` takes -f as an
 # explicit, unambiguous unary operator and treats whatever follows as a
@@ -272,7 +275,11 @@ else
     || log "WARNING: nginx reload after renewal failed (nginx may already be stopping)"
   rm -f -- "$RENEWED_FLAG"
   if [ "$RENEWAL_EXIT" -ne 0 ]; then
-    log "WARNING: the certificates that renewed have been applied, but certbot failed for at least one other certificate — this run is still reported as failed"
+    # Deliberately does not name the cause. Readiness means "the export
+    # finished", so this branch is reached both by a partial certbot renewal
+    # and by a run whose backup failed after a complete export. The error that
+    # actually failed the run is logged above, by whichever layer raised it.
+    log "WARNING: the renewed certificates have been applied, but the run failed after exporting them — this run is still reported as failed (see the error above)"
   fi
 fi
 

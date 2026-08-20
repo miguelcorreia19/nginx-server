@@ -221,7 +221,9 @@ WARNING: the certificates that renewed have been applied, but certbot failed for
 
 The certbot output above those lines names the lineage that failed. Fix that site (usually DNS, reachability on port 80, or a damaged renewal config — see [A certificate is not listed by certbot](#a-certificate-is-not-listed-by-certbot)); the failing lineage is left in place and is never deleted or reissued automatically. See [Partial renewals](letsencrypt.md#partial-renewals).
 
-If instead you see `certificates were renewed but post-renewal processing did not complete; nginx reload skipped`, the renewal succeeded but the export to `/etc/ssl/certs` (or the backup) failed, so there was nothing new for nginx to pick up. The previously issued certificates keep being served; the error above that line says what failed.
+If instead you see `certificates were renewed but post-renewal processing did not complete; nginx reload skipped`, the renewal succeeded but the export to `/etc/ssl/certs` failed, so there was nothing new for nginx to pick up. The previously issued certificates keep being served; the error above that line says what failed.
+
+A **backup** failure reads differently: nginx *is* reloaded (the certificates were already exported) and the run still exits non-zero. Look for the backup error between `Backing up Let's Encrypt state to ...` and the reload lines — a missing or unwritable `CERTBOT_BACKUP_PATH` is the usual cause.
 
 ### Checking container health manually
 

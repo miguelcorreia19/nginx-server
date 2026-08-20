@@ -91,6 +91,13 @@ const NOTHING_RENEWED = SIGNAL_RELOAD_READY;
 // signals readiness, and exits non-zero.
 const PARTIAL_RENEWAL = RENEWED;
 
+// A run whose export finished and whose backup then failed. Indistinguishable
+// from the line above at this layer, and deliberately so: readiness means the
+// export completed, so both raise both signals and both exit non-zero. Named
+// separately because the case it stands for is a different one — see
+// partial-renewal.test.js for the Node side that tells them apart.
+const EXPORTED_THEN_BACKUP_FAILED = RENEWED;
+
 // nginx stub records its args so we can assert exactly when (and whether) the
 // script reloads nginx.
 function writeNginxStub(binDir, exitCode = 0) {
@@ -555,12 +562,15 @@ describe('certbot_renew.sh — reload only when a certificate was renewed', () =
 // question:
 //
 //   renewed flag   certbot's deploy hook ran — a certificate really renewed.
-//   ready marker   the Node step then finished exporting it (and backing up,
-//                  when that is enabled). Written last, inside the lock
-//                  directory, and never by this script.
+//   ready marker   the Node step then finished exporting every certificate to
+//                  /etc/ssl/certs. Written inside the lock directory, and
+//                  never by this script.
 //
 // Reload requires both. The flag alone would reload after a failed export,
-// announcing a renewal that was never applied. The Node half of the protocol
+// announcing a renewal that was never applied. The marker's boundary is that
+// export and nothing after it, so a backup that fails later still fails the
+// run without withholding the reload — at this layer that is simply a run
+// which raised both signals and exited non-zero. The Node half of the protocol
 // — when the marker is and is not written — is in partial-renewal.test.js.
 describe('certbot_renew.sh — the four renewal outcomes', () => {
   let ctx;
@@ -630,7 +640,7 @@ describe('certbot_renew.sh — the four renewal outcomes', () => {
     // ...and the run is still reported as unhealthy.
     expect(r.code).toBe(1);
     expect(r.stdout).toMatch(/ERROR: certbot renewal script failed \(exit 1\)/);
-    expect(r.stdout).toMatch(/certificates that renewed have been applied.*still reported as failed/);
+    expect(r.stdout).toMatch(/renewed certificates have been applied.*run failed after exporting them.*still reported as failed/);
     expect(r.stdout).not.toMatch(/certbot renew succeeded/);
     // The flag is consumed and the run's private state released as usual.
     expect(fs.existsSync(ctx.renewedFlag)).toBe(false);
@@ -642,7 +652,7 @@ describe('certbot_renew.sh — the four renewal outcomes', () => {
 // The renewed flag alone must never be reload permission: it says certbot
 // deployed something, not that this pipeline finished applying it. These are
 // the cases where exactly one of the two signals is present.
-describe('certbot_renew.sh — reload needs post-processing to have completed', () => {
+describe('certbot_renew.sh — reload needs the export to have completed', () => {
   let ctx;
   beforeEach(() => { ctx = setup(); writeNginxStub(ctx.binDir, 0); });
   afterEach(() => cleanupCtx(ctx));
@@ -712,6 +722,30 @@ describe('certbot_renew.sh — reload needs post-processing to have completed', 
     expect(r.stdout).toMatch(/stale lock/i);
     expect(nginxCalls(ctx)).toBe('');
     expect(fs.existsSync(ctx.readyMarker)).toBe(false);
+  });
+
+  it('reloads a run whose backup failed after a complete export', () => {
+    // The export put the certificates into the paths nginx reads, so they are
+    // applied; the backup failure still fails the run. Withholding the reload
+    // for it would leave nginx serving a certificate that had already been
+    // replaced on disk.
+    writeStub(ctx.binDir, 'node', 1, EXPORTED_THEN_BACKUP_FAILED);
+
+    const r = run(ctx.env);
+
+    expect(nginxCalls(ctx)).toMatch(/-s reload/);
+    expect(r.stdout).toMatch(/nginx reloaded after renewal/);
+    expect(r.code).toBe(1);
+    expect(r.stdout).toMatch(/ERROR: certbot renewal script failed \(exit 1\)/);
+    expect(r.stdout).not.toMatch(/certbot renew succeeded/);
+    // The warning names the shape of the outcome, not certbot — the run may
+    // have failed for a reason certbot had nothing to do with.
+    expect(r.stdout).toMatch(/run failed after exporting them/);
+    expect(r.stdout).not.toMatch(/certbot failed for at least one other certificate/);
+    // And the run's private state is released as usual.
+    expect(fs.existsSync(ctx.renewedFlag)).toBe(false);
+    expect(fs.existsSync(ctx.readyMarker)).toBe(false);
+    expect(fs.existsSync(ctx.lockDir)).toBe(false);
   });
 
   it('keeps a reload failure visible on the partial path instead of folding it into the renewal failure', () => {
