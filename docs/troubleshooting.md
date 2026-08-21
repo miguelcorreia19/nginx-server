@@ -200,8 +200,54 @@ Inspect those paths, keep anything you still need, then remove or rename them. T
 
 ### Nginx not reloading after config change
 
-- Ensure you are modifying files inside the mounted `sites/` directory, not inside the container.
+`reload.sh` watches the mounted `sites/` directory and `CUSTOM_NGINX_CONFIG_FILES_PATH` with `inotifywait` and reloads nginx when a **`.conf` entry** in either one changes. The watch is on those two directories only — it is not recursive, so changes in a subdirectory are not seen.
+
+**What triggers a reload**, for any final `*.conf` name:
+
+- writing or saving a config in place;
+- creating a new `*.conf`;
+- renaming a `*.conf` into the directory;
+- deploying atomically — writing a temp file and renaming it over the config — which reloads once the rename lands, not when the temp file is written;
+- `ln -sf` creating or repointing a `*.conf` symlink;
+- deleting a `*.conf`, or moving one out of the directory (a reload is still attempted).
+
+Anything whose name does not end in `.conf` is ignored on purpose, so an editor's scratch files do not each cause a reload: `site.tmp`, `.site.conf.swp`, `site.conf~` and vim's numbered `4913` probe never reach the watcher.
+
+Deleting a config or moving it out can leave the configuration invalid — a dangling `include`, a symlink pointing at nothing. The reload is still attempted and nothing is repaired automatically: nginx refuses the invalid configuration, the failure is logged as `ERROR: nginx reload failed`, and **the running configuration stays active**.
+
+**Checks:**
+
+- Confirm the file you changed ends in `.conf` and sits directly in `sites/` or `CUSTOM_NGINX_CONFIG_FILES_PATH`.
 - Check `docker logs <container>` for `[reload]` messages — if you see `inotifywait` errors, the watch may not have started.
+- If there is no `[reload]` line at all after a host-side edit, see the next section.
+
+#### Host edits on Docker Desktop may not reach the watcher
+
+Automatic reload depends on the container actually receiving an inotify event for the bind mount, and that is a property of the filesystem underneath it, not of the watcher.
+
+- **Native Linux (or any bind mount that propagates events)** — host-side edits to the mounted `sites/` directory reach the container and the watcher reacts to them as described above.
+- **Docker Desktop on macOS and Windows** — the host filesystem is shared into a VM (virtiofs and similar backends), and a host-side change to a bind-mounted file may produce **no inotify event inside the container at all**. The watcher never wakes, so there is no `[reload]` line and no error either — it simply looks like nothing happened.
+
+Treat this as a known limitation of host-to-container event propagation. It is not uniform: different Docker Desktop versions and file-sharing backends behave differently, so confirm what your own setup does rather than assuming either outcome.
+
+Keep editing the configuration **on the host** — that is where the mounted files live, and it is what survives the container being replaced. Just apply the change explicitly afterwards:
+
+```bash
+# Apply the edit — the same reload the watcher would have run
+docker exec <container> nginx -s reload
+
+# Safer: validate the assembled config first, and reload only if it is valid
+docker exec <container> nginx -t && docker exec <container> nginx -s reload
+
+# Restarting also picks the change up (full startup path, brief downtime)
+docker restart <container>
+```
+
+Editing inside the container instead is not a workaround: a change written to a path that is not on the mount is lost the moment the container is replaced.
+
+#### Replacing a watched directory itself
+
+The watches are registered on the `sites/` and custom-config **directories**. Replacing one of those directories — deleting and recreating it, or renaming a replacement over it — swaps the inode the watch was attached to, and the watch is not re-registered. `inotifywait` keeps running and logs nothing, so this fails quietly: files changed inside the new directory are simply never noticed until the container is restarted. Change files *inside* the mounted directories rather than replacing the directories.
 
 ### Renewal not running
 

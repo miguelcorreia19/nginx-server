@@ -80,6 +80,7 @@ The test suite covers:
 - Healthcheck behavior
 - Fail2ban config generation, gating, and tuning validation
 - Logging format and severity correctness
+- The reload watcher's event mask, `.conf` filtering, and duplicate-event coalescing
 - Build-time and startup-time assertions
 
 Please run both the Jest suite and the shell syntax checks before opening a pull request.
