@@ -19,6 +19,8 @@ const { spawnSync, spawn } = require('child_process');
 
 const SCRIPT = path.join(__dirname, '..', '..', 'certbot_renew.sh');
 const SCRIPT_SRC = fs.readFileSync(SCRIPT, 'utf8');
+const RENEW_JS_SRC = fs.readFileSync(
+  path.join(__dirname, '..', 'letsencrypt', 'certbot_renew.js'), 'utf8');
 const UNREACHABLE_PID = '2147483647';
 
 // The lock-ownership contract certbot_renew.sh writes into every lock
@@ -34,6 +36,12 @@ const LOCK_MARKER_VALUE = 'certbot-renew-lock-v1';
 // lock directory, which is the script's own private namespace for one run.
 const READY_MARKER_NAME = '.nginx-server-reload-ready';
 
+// The "a certificate really renewed" signal certbot's deploy hook raises. It
+// used to be an operator-settable path (CERTBOT_RENEWED_FLAG); it is now a
+// private file inside the same owned lock directory, for the same reasons.
+// Pinned here and cross-checked against the script source below.
+const RENEWED_MARKER_NAME = '.nginx-server-renewed';
+
 function setup() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'certbot-renew-test-'));
   const lockDir    = path.join(tmp, 'lock', 'certbot_renew.lock.d');
@@ -42,7 +50,9 @@ function setup() {
   const binDir     = path.join(tmp, 'bin');
   const nginxCalls = path.join(tmp, 'nginx-calls');
   const nodeCalls  = path.join(tmp, 'node-calls');
-  const renewedFlag = path.join(tmp, 'renewed.flag');
+  // Both signals are derived by the script from the lock directory it owns —
+  // never from the environment — so the tests locate them the same way.
+  const renewedFlag = path.join(lockDir, RENEWED_MARKER_NAME);
   const readyMarker = path.join(lockDir, READY_MARKER_NAME);
 
   fs.mkdirSync(lockParent, { recursive: true });
@@ -55,7 +65,6 @@ function setup() {
     CERTBOT_JS_DIR: jsDir,
     NGINX_CALLS: nginxCalls,
     NODE_CALLS: nodeCalls,
-    CERTBOT_RENEWED_FLAG: renewedFlag,
   };
   return { tmp, binDir, lockDir, nginxCalls, nodeCalls, renewedFlag, readyMarker, env };
 }
@@ -67,7 +76,7 @@ function setup() {
 // marker says js/letsencrypt/certbot_renew.js then finished exporting it to
 // the /etc/ssl/certs paths nginx actually serves. A stub that raises only the
 // first models a run whose post-processing failed, not a successful one.
-const TOUCH_RENEWED_FLAG   = 'touch "$CERTBOT_RENEWED_FLAG"';
+const TOUCH_RENEWED_FLAG   = 'touch "$CERTBOT_INTERNAL_RENEWED_FLAG"';
 const SIGNAL_RELOAD_READY  = 'touch -- "$CERTBOT_INTERNAL_RELOAD_READY"';
 
 // node stub that simulates Certbot actually renewing a cert and the renewal
@@ -79,7 +88,7 @@ const RENEWED = `${TOUCH_RENEWED_FLAG}\n${SIGNAL_RELOAD_READY}`;
 // (`touch -- ${shellQuote(renewedFlag)}` there) rather than the plain form
 // above. Used only where the flag path itself is under test, so the stub is
 // not silently relying on a form production does not actually emit.
-const RENEWED_VIA_PRODUCTION_HOOK = `touch -- "$CERTBOT_RENEWED_FLAG"\n${SIGNAL_RELOAD_READY}`;
+const RENEWED_VIA_PRODUCTION_HOOK = `touch -- "$CERTBOT_INTERNAL_RENEWED_FLAG"\n${SIGNAL_RELOAD_READY}`;
 
 // A run that renewed nothing but completed cleanly — the ordinary daily case.
 // Production signals readiness on this path too (post-processing succeeded);
@@ -132,6 +141,19 @@ function nodeCalls(ctx) {
   return fs.existsSync(ctx.nodeCalls) ? fs.readFileSync(ctx.nodeCalls, 'utf8') : '';
 }
 function cleanupCtx(ctx) { fs.rmSync(ctx.tmp, { recursive: true, force: true }); }
+
+// A lock directory this script really did create, whose holder was SIGKILLed:
+// ownership marker with the exact expected content, plus a PID that is gone.
+// `extra` seeds whatever per-run state the dead run is meant to have left
+// inside it. This is the only shape stale-lock recovery is permitted to clear.
+function seedOwnedStaleLock(ctx, extra = {}) {
+  fs.mkdirSync(ctx.lockDir, { recursive: true });
+  fs.writeFileSync(path.join(ctx.lockDir, LOCK_MARKER_NAME), `${LOCK_MARKER_VALUE}\n`);
+  fs.writeFileSync(path.join(ctx.lockDir, 'pid'), UNREACHABLE_PID);
+  for (const [name, body] of Object.entries(extra)) {
+    fs.writeFileSync(path.join(ctx.lockDir, name), body);
+  }
+}
 
 describe('certbot_renew.sh — lock behavior', () => {
   let ctx;
@@ -386,8 +408,9 @@ describe('certbot_renew.sh — stale-lock removal requires proven ownership', ()
   });
 });
 
-// CERTBOT_LOCK_DIR is the same kind of operator-settable override as
-// CERTBOT_RENEWED_FLAG (see the describe block below this one), but it
+// CERTBOT_LOCK_DIR is the one path in this lifecycle an operator still
+// supplies (the renewed and readiness markers are now derived from it rather
+// than inherited), and it
 // reaches more external commands across the lock lifecycle: both `mkdir`
 // attempts, `cat` (reading the held PID), `rm -f` and `rmdir` (release), and
 // `rm -rf` (clearing a stale lock). A value whose entire string begins with
@@ -520,16 +543,19 @@ describe('certbot_renew.sh — reload only when a certificate was renewed', () =
   });
 
   it('clears a stale renewal flag before the run so it cannot cause a false reload', () => {
-    fs.writeFileSync(ctx.renewedFlag, ''); // leftover flag from a previous (e.g. SIGKILLed) run
+    // The flag now lives inside the lock directory, so the only way a stale one
+    // can exist at all is inside a lock a killed run left behind.
+    seedOwnedStaleLock(ctx, { [RENEWED_MARKER_NAME]: '' });
     writeStub(ctx.binDir, 'node', 0);       // this run renews nothing
     const r = run(ctx.env);
     expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/stale lock/i);
     expect(nginxCalls(ctx)).toBe('');       // must NOT reload off the stale flag
     expect(r.stdout).toMatch(/No certificates renewed; nginx reload skipped/);
   });
 
   it('does not reload when the renewal fails (even if a flag somehow exists)', () => {
-    fs.writeFileSync(ctx.renewedFlag, '');
+    seedOwnedStaleLock(ctx, { [RENEWED_MARKER_NAME]: '' });
     writeStub(ctx.binDir, 'node', 1);
     const r = run(ctx.env);
     expect(r.code).toBe(1);
@@ -709,10 +735,7 @@ describe('certbot_renew.sh — reload needs the export to have completed', () =>
     // The marker lives in the lock directory, which is created fresh per run —
     // but a run that inherits a stale lock directory it owns must not inherit
     // its readiness either.
-    fs.mkdirSync(ctx.lockDir, { recursive: true });
-    fs.writeFileSync(path.join(ctx.lockDir, LOCK_MARKER_NAME), `${LOCK_MARKER_VALUE}\n`);
-    fs.writeFileSync(path.join(ctx.lockDir, 'pid'), UNREACHABLE_PID);
-    fs.writeFileSync(ctx.readyMarker, 'reload-ready-v1\n');
+    seedOwnedStaleLock(ctx, { [READY_MARKER_NAME]: 'reload-ready-v1\n' });
     // This run renews nothing and signals nothing.
     writeStub(ctx.binDir, 'node', 0);
 
@@ -763,39 +786,87 @@ describe('certbot_renew.sh — reload needs the export to have completed', () =>
   });
 });
 
-// The readiness signal is internal coordination state, not a feature. These
-// pin the properties that keep it that way, which no behavioural test can
-// observe from outside.
-describe('certbot_renew.sh — the readiness signal is private, per-run state', () => {
-  it('names the marker inside the lock directory it already owns', () => {
-    expect(SCRIPT_SRC).toMatch(new RegExp(`RELOAD_READY_MARKER=.*\\$LOCK_DIR.*${READY_MARKER_NAME.replace(/\./g, '\\.')}`));
-    expect(SCRIPT_SRC).toMatch(/export CERTBOT_INTERNAL_RELOAD_READY="\$RELOAD_READY_MARKER"/);
+// Both signals are internal coordination state, not features. These pin the
+// properties that keep them that way, which no behavioural test can observe
+// from outside.
+describe('certbot_renew.sh — both signals are private, per-run state', () => {
+  const MARKERS = [
+    ['renewed',      'RENEWED_FLAG',          'CERTBOT_INTERNAL_RENEWED_FLAG', RENEWED_MARKER_NAME],
+    ['reload-ready', 'RELOAD_READY_MARKER',   'CERTBOT_INTERNAL_RELOAD_READY', READY_MARKER_NAME],
+  ];
+
+  it.each(MARKERS)('names the %s marker inside the lock directory it already owns', (_label, shellVar, envVar, fileName) => {
+    expect(SCRIPT_SRC).toMatch(
+      new RegExp(`${shellVar}="\\$LOCK_DIR_ABS/${fileName.replace(/\./g, '\\.')}"`)
+    );
+    expect(SCRIPT_SRC).toMatch(new RegExp(`export ${envVar}="\\$${shellVar}"`));
   });
 
-  it('is not an operator-settable override', () => {
-    // CERTBOT_RENEWED_FLAG deliberately honours an inherited value; this one
-    // deliberately does not, so nothing in the environment can redirect the
-    // reload authorisation at a path of its choosing.
-    expect(SCRIPT_SRC).toMatch(/RENEWED_FLAG=\$\{CERTBOT_RENEWED_FLAG:-/);
-    expect(SCRIPT_SRC).not.toMatch(/\$\{CERTBOT_INTERNAL_RELOAD_READY:?-/);
-    // And it is not offered as one in the script's own documentation of them.
+  it('derives both from LOCK_DIR, absolutised for the Node process boundary', () => {
+    // Node runs from JS_DIR (the pushd), so a relative CERTBOT_LOCK_DIR would
+    // otherwise name a different file at each end of the protocol. LOCK_DIR
+    // itself must stay exactly as given, or lock acquisition and the ownership
+    // check would start resolving differently too.
+    expect(SCRIPT_SRC).toMatch(/case "\$LOCK_DIR" in\n\s*\/\*\) LOCK_DIR_ABS="\$LOCK_DIR" ;;\n\s*\*\)\s*LOCK_DIR_ABS="\$PWD\/\$LOCK_DIR" ;;/);
+    expect(SCRIPT_SRC).toMatch(/^LOCK_DIR=\$\{CERTBOT_LOCK_DIR:-/m);
+  });
+
+  it.each(MARKERS)('the %s marker is not an operator-settable override', (_label, shellVar, envVar) => {
+    // Unconditional assignment, and no `${VAR:-default}` form anywhere that
+    // would let an inherited value redirect the marker at a path of its
+    // choosing. This is the property the whole internalisation rests on.
+    expect(SCRIPT_SRC).not.toMatch(new RegExp(`\\$\\{${envVar}:?-`));
+    expect(SCRIPT_SRC).not.toMatch(new RegExp(`${shellVar}=\\$\\{`));
+    // And neither is offered as one in the script's own documentation of them.
     const overridesBlock = SCRIPT_SRC.slice(
       SCRIPT_SRC.indexOf('# Test-override environment variables'),
       SCRIPT_SRC.indexOf('LOCK_DIR='),
     );
-    expect(overridesBlock).not.toMatch(/CERTBOT_INTERNAL_RELOAD_READY/);
+    expect(overridesBlock).not.toMatch(new RegExp(envVar));
   });
 
-  it('clears the marker before the run and releases it with the lock', () => {
-    expect(SCRIPT_SRC).toMatch(/rm -f -- "\$RELOAD_READY_MARKER"/);
+  it('never reads the old operator-controlled CERTBOT_RENEWED_FLAG at all', () => {
+    // Stronger than "overwrites it": the name is unreferenced, so there is no
+    // form of the script in which an inherited value reaches a filesystem
+    // operation. Asserted on the source because no run can prove a negative
+    // about a variable that is never read.
+    expect(SCRIPT_SRC).not.toMatch(/CERTBOT_RENEWED_FLAG/);
+    expect(RENEW_JS_SRC).not.toMatch(/process\.env\.CERTBOT_RENEWED_FLAG/);
+  });
+
+  it.each(MARKERS)('clears the %s marker before the run and releases it with the lock', (_label, shellVar) => {
+    expect(SCRIPT_SRC).toMatch(new RegExp(`rm -f -- "\\$${shellVar}"`));
     const release = SCRIPT_SRC.slice(
       SCRIPT_SRC.indexOf('release_lock() {'),
       SCRIPT_SRC.indexOf('# ---- Lock ownership'),
     );
-    expect(release).toMatch(/rm -f -- "\$RELOAD_READY_MARKER"/);
+    expect(release).toMatch(new RegExp(`rm -f -- "\\$${shellVar}"`));
     // Before the rmdir, which would otherwise refuse a non-empty directory.
-    expect(release.indexOf('rm -f -- "$RELOAD_READY_MARKER"'))
+    expect(release.indexOf(`rm -f -- "$${shellVar}"`))
       .toBeLessThan(release.indexOf('rmdir -- "$LOCK_DIR"'));
+    // Normal release stays non-recursive: it names each entry it removes.
+    expect(release).not.toMatch(/rm -rf/);
+  });
+
+  it('clears neither marker while the lock is still being acquired', () => {
+    // Deleting inside a directory this script has not proved it owns is the
+    // whole class of bug this change closes. Nothing between the first mkdir
+    // and the ownership guard's verdict may touch either marker; the pre-run
+    // removals sit strictly after it. (release_lock is *defined* above this
+    // block but only ever *called* once ownership is settled.)
+    const acquire = SCRIPT_SRC.slice(
+      SCRIPT_SRC.indexOf('if ! mkdir -- "$LOCK_DIR"'),
+      SCRIPT_SRC.indexOf('if ! init_lock_metadata; then'),
+    );
+    expect(acquire).toContain('lock_is_ours');
+    for (const shellVar of ['RENEWED_FLAG', 'RELOAD_READY_MARKER']) {
+      expect(acquire).not.toMatch(new RegExp(`\\$${shellVar}`));
+    }
+    // And the pre-run clears really are downstream of the whole acquire block.
+    const guardEnd = SCRIPT_SRC.indexOf('if ! init_lock_metadata; then');
+    for (const shellVar of ['RENEWED_FLAG', 'RELOAD_READY_MARKER']) {
+      expect(SCRIPT_SRC.indexOf(`rm -f -- "$${shellVar}"`, guardEnd)).toBeGreaterThan(guardEnd);
+    }
   });
 
   it('gates the reload on both signals, and defers the failure exit until after it', () => {
@@ -813,76 +884,325 @@ describe('certbot_renew.sh — the readiness signal is private, per-run state', 
   });
 });
 
-// The renewed-flag path is operator-controlled (CERTBOT_RENEWED_FLAG), and the
-// script both removes it (`rm -f -- "$RENEWED_FLAG"`, twice) and tests it
-// (`[ -f "$RENEWED_FLAG" ]`, once). `rm` parses its own argv even under
-// execFile-free bash, so a value whose first character is "-" would be read
-// as an rm option without the `--` guard added alongside this test; `[ -f ]`
-// takes no such risk (see the comment above it in certbot_renew.sh) and stays
-// unguarded.
+// The renewed marker's path is no longer operator-controlled. It is derived
+// from the lock directory the script owns, so the only hostile path that can
+// still reach it is a hostile CERTBOT_LOCK_DIR — which is exercised in full by
+// the lock-directory suite above, and again here from the marker's side: the
+// script still removes the marker (`rm -f -- "$RENEWED_FLAG"`, twice) and
+// tests it (`[ -f "$RENEWED_FLAG" ]`, once), and the deploy hook still touches
+// it through a shell.
 //
 // A leading-hyphen value only reaches rm's option parser when the *whole*
-// operand starts with "-" — an absolute path like "/tmp/x/-flag" does not,
-// since it starts with "/". So this exercises a bare relative name, run with
-// the script's cwd and CERTBOT_JS_DIR pointed at the same directory: the
-// pre-run `rm`, the deploy hook's `touch`, the `[ -f ]` check and the post-run
-// `rm` then all agree on one location, exactly as they do in production when
-// CERTBOT_JS_DIR is left at its default and RENEWED_FLAG is resolved once.
-describe('certbot_renew.sh — a renewed-flag path beginning with a hyphen', () => {
+// operand starts with "-", so the derived marker — always absolute now — can
+// never trigger it. The `--` guards stay anyway: they cost nothing and they
+// outlive assumptions about how LOCK_DIR is resolved. What this suite pins is
+// that a lock directory whose *name* is option-shaped, or which contains
+// spaces and shell metacharacters, still carries a working renewed marker
+// through create, detect and remove.
+describe('certbot_renew.sh — the renewed marker under a hostile lock-directory name', () => {
   let ctx, hostileDir;
 
   beforeEach(() => {
     ctx = setup();
     writeNginxStub(ctx.binDir, 0);
-    hostileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'certbot-renew-hostile-'));
-    ctx.env.CERTBOT_JS_DIR = hostileDir;
+    hostileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'certbot-renew-hostile-flag-'));
   });
   afterEach(() => {
     cleanupCtx(ctx);
     fs.rmSync(hostileDir, { recursive: true, force: true });
   });
 
+  // Relative + option-shaped: the one case where `--` is load-bearing for the
+  // lock lifecycle, run with cwd pinned so every phase agrees on one location.
   it.each([
-    ['a bare option-looking name', '-renewed.flag'],
+    ['a bare option-looking name', '-lock'],
     ['a long-option-shaped name',  '--verbose'],
-  ])('clears a stale flag named %s before the run, instead of failing to remove it', (_label, name) => {
-    ctx.env.CERTBOT_RENEWED_FLAG = name;
+  ])('clears a stale marker inside a lock dir named %s instead of failing to remove it', (_label, name) => {
+    ctx.env.CERTBOT_LOCK_DIR = name;
+    const lockPath = path.join(hostileDir, name);
+    fs.mkdirSync(lockPath, { recursive: true });
+    fs.writeFileSync(path.join(lockPath, LOCK_MARKER_NAME), `${LOCK_MARKER_VALUE}\n`);
+    fs.writeFileSync(path.join(lockPath, 'pid'), UNREACHABLE_PID);
+    fs.writeFileSync(path.join(lockPath, RENEWED_MARKER_NAME), ''); // left by the killed run
     writeStub(ctx.binDir, 'node', 0); // this run renews nothing
-    fs.writeFileSync(path.join(hostileDir, name), ''); // stale flag from a previous run
 
     const r = run(ctx.env, { cwd: hostileDir });
 
     expect(r.code).toBe(0);
-    // Without `--` this `rm -f` fails with busybox's "unrecognized option" and
-    // leaves the stale flag in place — which would then falsely trigger a
-    // reload below. Proving both halves at once: rm actually ran (file gone)
-    // and nothing downstream was misled by a leftover flag.
-    expect(fs.existsSync(path.join(hostileDir, name))).toBe(false);
     expect(r.stdout).not.toMatch(/unrecognized option/);
+    // The stale marker must not survive into the reload decision.
     expect(nginxCalls(ctx)).toBe('');
     expect(r.stdout).toMatch(/No certificates renewed; nginx reload skipped/);
+    expect(fs.existsSync(lockPath)).toBe(false);
   });
 
   it.each([
-    ['a bare option-looking name', '-renewed.flag'],
+    ['a bare option-looking name', '-lock'],
     ['a long-option-shaped name',  '--verbose'],
-  ])('creates, detects, and removes a flag named %s across a real renewal', (_label, name) => {
-    ctx.env.CERTBOT_RENEWED_FLAG = name;
+    ['spaces and metacharacters',  'lock dir; echo pwned $(id) & `x`'],
+  ])('creates, detects and removes the marker under a lock dir named %s', (_label, name) => {
+    ctx.env.CERTBOT_LOCK_DIR = name;
     // The deploy hook exactly as js/letsencrypt/certbot_renew.js emits it
-    // (`touch -- <flag>`), so this proves the hostile name survives both ends
-    // of the lifecycle, not just the one this test file can stub directly.
+    // (`touch -- <flag>`), so this proves the derived path survives both ends
+    // of the lifecycle, not just the one this file can stub directly.
     writeStub(ctx.binDir, 'node', 0, RENEWED_VIA_PRODUCTION_HOOK);
 
     const r = run(ctx.env, { cwd: hostileDir });
 
     expect(r.code).toBe(0);
     expect(r.stdout).not.toMatch(/unrecognized option/);
-    // Detected: the flag was created under that name and the reload fired.
+    // Detected: the marker was created under that path and the reload fired.
     expect(nginxCalls(ctx)).toMatch(/-s reload/);
     expect(r.stdout).toMatch(/Certificates renewed; reloading nginx/);
-    // Removed afterward: consumed, not left behind to cause a false reload on
-    // the next run.
+    // Removed afterward, along with the lock itself — consumed, not left to
+    // cause a false reload on the next run.
     expect(fs.existsSync(path.join(hostileDir, name))).toBe(false);
+    // Nothing the metacharacter name could have expanded into ran: the only
+    // entry the run left in the working directory is the empty lock's parent.
+    expect(fs.readdirSync(hostileDir)).toEqual([]);
+  });
+
+  it('quotes the marker path through the deploy hook when the lock dir contains metacharacters', () => {
+    const name = 'lock dir; touch pwned';
+    ctx.env.CERTBOT_LOCK_DIR = name;
+    writeStub(ctx.binDir, 'node', 0, RENEWED_VIA_PRODUCTION_HOOK);
+
+    const r = run(ctx.env, { cwd: hostileDir });
+
+    expect(r.code).toBe(0);
+    expect(nginxCalls(ctx)).toMatch(/-s reload/);
+    // The `; touch pwned` half never executed as a command.
+    expect(fs.existsSync(path.join(hostileDir, 'pwned'))).toBe(false);
+  });
+});
+
+// THE PRIMARY REGRESSION.
+//
+// CERTBOT_RENEWED_FLAG used to name the renewed flag's path, and the script
+// removed that path with `rm -f -- "$RENEWED_FLAG"` at two lifecycle points.
+// BusyBox crond passes the container environment through to cron jobs, so an
+// inherited value naming an operator file — CERTBOT_RENEWED_FLAG=/home/config.json
+// — made this script delete it. Bounded to one non-directory entry, since the
+// removal was never recursive, but arbitrary operator-data deletion all the
+// same.
+//
+// The marker is now derived from the owned lock directory, and the old name is
+// read nowhere. These runs supply the hostile value anyway and prove the file
+// it names is neither written nor deleted, on both the nothing-renewed and the
+// deploy-hook-fired paths.
+describe('certbot_renew.sh — an inherited CERTBOT_RENEWED_FLAG cannot redirect anything', () => {
+  let ctx, operatorFile;
+  const OPERATOR_CONTENT = '{"operator":"data","must":"survive"}\n';
+
+  beforeEach(() => {
+    ctx = setup();
+    writeNginxStub(ctx.binDir, 0);
+    operatorFile = path.join(ctx.tmp, 'config.json');
+    fs.writeFileSync(operatorFile, OPERATOR_CONTENT);
+    // Exactly what a mis-set container environment would hand the cron job.
+    ctx.env.CERTBOT_RENEWED_FLAG = operatorFile;
+  });
+  afterEach(() => cleanupCtx(ctx));
+
+  const expectOperatorFileIntact = () => {
+    expect(fs.existsSync(operatorFile)).toBe(true);
+    expect(fs.readFileSync(operatorFile, 'utf8')).toBe(OPERATOR_CONTENT);
+  };
+
+  it('leaves the file untouched on a run that renews nothing', () => {
+    writeStub(ctx.binDir, 'node', 0);
+
+    const r = run(ctx.env);
+
+    expect(r.code).toBe(0);
+    // Pre-fix this run deleted the file outright, in the pre-run `rm -f`.
+    expectOperatorFileIntact();
+    expect(r.stdout).toMatch(/No certificates renewed; nginx reload skipped/);
+    expect(nginxCalls(ctx)).toBe('');
+  });
+
+  it('leaves the file untouched on a run whose deploy hook fires, and reloads off the internal marker', () => {
+    writeStub(ctx.binDir, 'node', 0, RENEWED_VIA_PRODUCTION_HOOK);
+
+    const r = run(ctx.env);
+
+    expect(r.code).toBe(0);
+    // Pre-fix the hook would have touched this path and the post-reload
+    // `rm -f` would then have deleted it.
+    expectOperatorFileIntact();
+    // The reload still happened — driven by the marker inside the lock dir.
+    expect(nginxCalls(ctx)).toMatch(/-s reload/);
+    expect(r.stdout).toMatch(/Certificates renewed; reloading nginx/);
+  });
+
+  it('leaves the file untouched across a partial renewal', () => {
+    writeStub(ctx.binDir, 'node', 1, PARTIAL_RENEWAL);
+
+    const r = run(ctx.env);
+
+    expect(r.code).toBe(1);
+    expectOperatorFileIntact();
+    expect(nginxCalls(ctx)).toMatch(/-s reload/);
+    expect(r.stdout).toMatch(/still reported as failed/);
+  });
+
+  it('leaves the file untouched when the whole renewal fails', () => {
+    writeStub(ctx.binDir, 'node', 1);
+
+    const r = run(ctx.env);
+
+    expect(r.code).toBe(1);
+    expectOperatorFileIntact();
+    expect(nginxCalls(ctx)).toBe('');
+  });
+
+  it('uses the internal marker rather than the inherited path, and hands Node an absolute one', () => {
+    // Observed from inside the run: normal release removes the marker before
+    // the script exits, so it cannot be inspected afterwards.
+    writeRecordingNodeStub(ctx.binDir, 0,
+      'echo "FLAG=$CERTBOT_INTERNAL_RENEWED_FLAG"\n' +
+      'echo "OLD=${CERTBOT_RENEWED_FLAG:-<unset>}"\n');
+
+    const r = run(ctx.env);
+
+    expect(r.code).toBe(0);
+    // The internal protocol variable names a file inside the owned lock dir...
+    expect(r.stdout).toContain(`FLAG=${ctx.renewedFlag}`);
+    expect(path.isAbsolute(ctx.renewedFlag)).toBe(true);
+    expect(path.dirname(ctx.renewedFlag)).toBe(ctx.lockDir);
+    expect(path.basename(ctx.renewedFlag)).toBe(RENEWED_MARKER_NAME);
+    // ...and it is emphatically not the inherited value, which is passed
+    // through to the child untouched precisely because nothing consumes it.
+    expect(r.stdout).not.toContain(`FLAG=${operatorFile}`);
+    expect(r.stdout).toContain(`OLD=${operatorFile}`);
+  });
+});
+
+// A relative CERTBOT_LOCK_DIR is the case absolutisation exists for: the Node
+// step runs from JS_DIR, so an un-absolutised marker path would name one file
+// for the hook and a different one for the reload check.
+describe('certbot_renew.sh — the marker path handed to Node survives a relative lock dir', () => {
+  let ctx, hostileDir;
+
+  beforeEach(() => {
+    ctx = setup();
+    writeNginxStub(ctx.binDir, 0);
+    hostileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'certbot-renew-rel-'));
+  });
+  afterEach(() => {
+    cleanupCtx(ctx);
+    fs.rmSync(hostileDir, { recursive: true, force: true });
+  });
+
+  it('exports an absolute renewed-marker path that is valid from the Node working directory', () => {
+    ctx.env.CERTBOT_LOCK_DIR = 'rel.lock.d';
+    // The Node step runs somewhere else entirely, and reports what it was told.
+    writeRecordingNodeStub(ctx.binDir, 0, 'echo "FLAG=$CERTBOT_INTERNAL_RENEWED_FLAG"');
+
+    const r = run(ctx.env, { cwd: hostileDir });
+
+    expect(r.code).toBe(0);
+    const flag = (r.stdout.match(/^FLAG=(.*)$/m) || [])[1];
+    expect(flag).toBe(path.join(hostileDir, 'rel.lock.d', RENEWED_MARKER_NAME));
+    expect(path.isAbsolute(flag)).toBe(true);
+  });
+
+  it('still reloads when the hook resolves that path from a different working directory', () => {
+    ctx.env.CERTBOT_LOCK_DIR = 'rel.lock.d';
+    // Runs with cwd = JS_DIR, as production's Node step does; only an absolute
+    // path makes the touch and the reload check agree on one file.
+    writeStub(ctx.binDir, 'node', 0, RENEWED_VIA_PRODUCTION_HOOK);
+
+    const r = run(ctx.env, { cwd: hostileDir });
+
+    expect(r.code).toBe(0);
+    expect(nginxCalls(ctx)).toMatch(/-s reload/);
+    expect(r.stdout).toMatch(/Certificates renewed; reloading nginx/);
+    expect(fs.existsSync(path.join(hostileDir, 'rel.lock.d'))).toBe(false);
+  });
+});
+
+// Stale renewed state must not survive into a later run. The marker lives only
+// inside the lock directory, and the stale path removes that wholesale.
+describe('certbot_renew.sh — stale renewed state cannot leak into the next run', () => {
+  let ctx;
+  beforeEach(() => { ctx = setup(); writeNginxStub(ctx.binDir, 0); });
+  afterEach(() => cleanupCtx(ctx));
+
+  it('clears an owned stale lock carrying a renewed marker, and does not reload off it', () => {
+    seedOwnedStaleLock(ctx, {
+      [RENEWED_MARKER_NAME]: '',
+      [READY_MARKER_NAME]: 'reload-ready-v1\n',
+    });
+    writeStub(ctx.binDir, 'node', 0); // this run renews nothing and signals nothing
+
+    const r = run(ctx.env);
+
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/stale lock/i);
+    // Both stale signals were removed with the directory, so neither could
+    // authorise a reload this run never earned.
+    expect(nginxCalls(ctx)).toBe('');
+    expect(r.stdout).toMatch(/No certificates renewed; nginx reload skipped/);
+    expect(fs.existsSync(ctx.renewedFlag)).toBe(false);
+    expect(fs.existsSync(ctx.readyMarker)).toBe(false);
+    expect(fs.existsSync(ctx.lockDir)).toBe(false);
+  });
+
+  it('still reloads on the next run when that run\'s own deploy hook fires', () => {
+    seedOwnedStaleLock(ctx, { [RENEWED_MARKER_NAME]: '' });
+    writeStub(ctx.binDir, 'node', 0, RENEWED_VIA_PRODUCTION_HOOK);
+
+    const r = run(ctx.env);
+
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/stale lock/i);
+    // Cleared, then legitimately re-raised by this run's own hook.
+    expect(nginxCalls(ctx)).toMatch(/-s reload/);
+  });
+
+  it('leaves an unowned directory holding a renewed-marker-shaped file untouched', () => {
+    // The ownership guard runs first: a directory this script cannot prove it
+    // created is preserved whole, marker-shaped contents included.
+    fs.mkdirSync(ctx.lockDir, { recursive: true });
+    fs.writeFileSync(ctx.renewedFlag, 'operator data that merely looks like ours\n');
+    writeStub(ctx.binDir, 'node', 0);
+
+    const r = run(ctx.env);
+
+    expect(r.code).toBe(2);
+    expect(r.stdout).toMatch(/is not a renewal lock created by this script/);
+    expect(fs.readFileSync(ctx.renewedFlag, 'utf8'))
+      .toBe('operator data that merely looks like ours\n');
+    expect(nodeCalls(ctx)).toBe('');
+  });
+});
+
+// Normal completion leaves nothing behind: both signals and the lock metadata
+// are removed, and the lock directory itself is gone.
+describe('certbot_renew.sh — normal release removes every per-run internal file', () => {
+  let ctx;
+  beforeEach(() => { ctx = setup(); writeNginxStub(ctx.binDir, 0); });
+  afterEach(() => cleanupCtx(ctx));
+
+  it.each([
+    ['a run that renewed something', 0, () => RENEWED_VIA_PRODUCTION_HOOK],
+    ['a run that renewed nothing',   0, () => NOTHING_RENEWED],
+    ['a partial renewal',            1, () => PARTIAL_RENEWAL],
+    ['a total failure',              1, () => ''],
+  ])('leaves no marker, PID file, ownership marker or lock dir after %s', (_label, code, body) => {
+    writeStub(ctx.binDir, 'node', code, body());
+
+    const r = run(ctx.env);
+
+    expect(r.code).toBe(code);
+    expect(fs.existsSync(ctx.renewedFlag)).toBe(false);
+    expect(fs.existsSync(ctx.readyMarker)).toBe(false);
+    expect(fs.existsSync(path.join(ctx.lockDir, 'pid'))).toBe(false);
+    expect(fs.existsSync(path.join(ctx.lockDir, LOCK_MARKER_NAME))).toBe(false);
+    // rmdir only succeeds on an empty directory, so its absence is also proof
+    // that nothing else was left inside it.
+    expect(fs.existsSync(ctx.lockDir)).toBe(false);
   });
 });
 
@@ -979,7 +1299,9 @@ describe('certbot_renew.js — renewal-detection wiring', () => {
     expect(JS_SRC).toMatch(/commandSafe\('certbot', \[/);
     expect(JS_SRC).toMatch(/'--webroot', '-w', '\/var\/www\/certbot'/);
     expect(JS_SRC).toMatch(/'--deploy-hook'/);
-    expect(JS_SRC).toMatch(/CERTBOT_RENEWED_FLAG/);
+    expect(JS_SRC).toMatch(/process\.env\.CERTBOT_INTERNAL_RENEWED_FLAG/);
+    // The old operator-controlled name is gone entirely, not merely shadowed.
+    expect(JS_SRC).not.toMatch(/process\.env\.CERTBOT_RENEWED_FLAG/);
     // The hook the tests below build by hand has to be the one the source
     // actually emits, `--` included, or they would be pinning nothing.
     expect(JS_SRC).toMatch(/`touch -- \$\{shellQuote\(renewedFlag\)\}`/);
@@ -1062,11 +1384,13 @@ describe('certbot_renew.js — deploy-hook quoting', () => {
     }
   });
 
-  // The half quoting cannot cover. CERTBOT_RENEWED_FLAG is an operator-settable
-  // override (certbot_renew.sh documents it and exports whatever it is given),
-  // so the flag can begin with `-`; quoted or not, touch reads that as an
-  // option. Run relative to the temp directory, because an absolute path can
-  // never lead with a hyphen — that is exactly the case `--` exists for.
+  // The half quoting cannot cover. The flag path is internal now, so in
+  // production it is absolute and cannot itself begin with `-` — but touch's
+  // option parsing is a property of the hook, not of today's caller, and the
+  // hook must stay correct for any filename it is handed. Quoted or not, touch
+  // reads a leading `-` as an option. Run relative to the temp directory,
+  // because an absolute path can never lead with a hyphen — that is exactly
+  // the case `--` exists for.
   it.each([
     ['a bare option-looking name', '-renewed.flag'],
     ['an option that takes a value', '-d'],

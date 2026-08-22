@@ -31,9 +31,13 @@ const { log, warn, error } = createLogger("certbot_renew.js");
 // value, not what touch(1) then does with its own argv. A quoted '-d' is still
 // one word, and still an option to touch — verified against the pinned
 // runtime's BusyBox 1.37.0, which answers `touch: unrecognized option: x` for
-// '-x'. CERTBOT_RENEWED_FLAG is an operator-settable override (certbot_renew.sh
-// documents it and exports whatever it is given), so the hook below ends touch's
-// options with `--` before the quoted path.
+// '-x'. So the hook below ends touch's options with `--` before the quoted
+// path.
+//
+// The path itself is internal (certbot_renew.sh derives it inside the lock
+// directory it owns), but it is derived from CERTBOT_LOCK_DIR, which remains
+// operator-settable — so it can still carry spaces, quotes or metacharacters,
+// and both guards stay load-bearing.
 const shellQuote = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
 
 // ---- Reload readiness -----------------------------------------------------
@@ -63,15 +67,15 @@ const shellQuote = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
 // paths. A failed backup still fails the run; it just does not veto the
 // reload.
 //
-// certbot_renew.sh owns the path: it points this at a fixed filename inside
-// the renewal lock directory it just created, and exports it unconditionally,
-// overwriting whatever the environment held. That is deliberate — unlike
-// CERTBOT_RENEWED_FLAG, this is not an operator-settable override, and an
-// inherited value cannot redirect the marker anywhere. It is not configuration
-// and is not documented as such; it exists only so these two processes can
-// name the same private file. The lock directory is created fresh for each run
-// and released (marker included) by the script's EXIT trap, so the marker
-// cannot be stale and cannot outlive the run that wrote it.
+// certbot_renew.sh owns both paths: it points them at fixed filenames inside
+// the renewal lock directory it just created, and exports them
+// unconditionally, overwriting whatever the environment held. Neither is an
+// operator-settable override, and an inherited value cannot redirect either
+// marker anywhere. They are not configuration and are not documented as such;
+// they exist only so these processes can name the same private files. The lock
+// directory is created fresh for each run and released (markers included) by
+// the script's EXIT trap, so neither can be stale or outlive the run that
+// wrote it.
 //
 // Absent when this module is run outside certbot_renew.sh (the tests that
 // drive it directly, an operator invoking it by hand): there is no shell
@@ -129,15 +133,18 @@ const start = async () => {
     // path is an internal value supplied by certbot_renew.sh.
     //
     // Invoked with commandSafe (execFile): certbot's own arguments are passed as
-    // an argument vector, so CERTBOT_RENEWED_FLAG cannot break out of the
-    // command line the way it could when the whole invocation was one shell
-    // string. Every element of that vector is a fixed literal except the hook,
+    // an argument vector, so the flag path cannot break out of the command line
+    // the way it could when the whole invocation was one shell string. Every element of that vector is a fixed literal except the hook,
     // which always begins "touch ", so none of them can be read as an
     // unintended certbot option. The hook value is still a command string
     // because Certbot runs hooks through a shell, so the path is single-quoted
     // by shellQuote above and guarded from touch's own option parsing with
     // `--` — see that comment for the remaining, unavoidable trust boundary.
-    const renewedFlag = process.env.CERTBOT_RENEWED_FLAG || '/tmp/certbot-renewed.flag';
+    // Supplied by certbot_renew.sh, which derives it inside the lock directory
+    // it owns and exports it unconditionally (see the reload-readiness comment
+    // above). The fallback is only for this module being run directly, outside
+    // that script — there is no shell run waiting on the signal then.
+    const renewedFlag = process.env.CERTBOT_INTERNAL_RENEWED_FLAG || '/tmp/certbot-renewed.flag';
     try {
       const renewOutput = await commandSafe('certbot', [
         'renew',

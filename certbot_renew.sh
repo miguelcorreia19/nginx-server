@@ -25,6 +25,14 @@
 #             A pre-existing directory — an operator pointing CERTBOT_LOCK_DIR
 #             at real data, say — is therefore preserved rather than deleted.
 #
+#   Internal state: the two per-run signals (a certificate really renewed; the
+#             export finished) are private files inside that same lock
+#             directory. Their paths are derived below from LOCK_DIR and
+#             exported to the Node step unconditionally, so no inherited
+#             environment value can redirect them. Nothing the caller supplies
+#             can make this script create or delete a file outside the lock
+#             namespace it owns.
+#
 # Exit codes
 # ----------
 #   0   Renewal succeeded, or an active renewal was already running (skipped).
@@ -60,50 +68,62 @@ JS_DIR=${CERTBOT_JS_DIR:-/home/scripts/js}
 LOCK_MARKER_FILE="$LOCK_DIR/.nginx-server-certbot-renew-lock"
 LOCK_MARKER_VALUE="certbot-renew-lock-v1"
 
-# Flag file the certbot deploy hook (wired up in certbot_renew.js) touches when a
-# certificate is actually renewed. Exported so the Node script and certbot agree
-# on the path.
-RENEWED_FLAG=${CERTBOT_RENEWED_FLAG:-/tmp/certbot-renewed.flag}
-export CERTBOT_RENEWED_FLAG="$RENEWED_FLAG"
-
-# ---- Reload readiness ----------------------------------------------------
-# The renewed flag says Certbot's deploy hook ran. It does NOT say the Node
-# step then finished its own work: `certbot renew` can renew one certificate
-# and fail on another, and the run continues past that failure so the renewed
-# material is still exported. nginx serves the exported copies under
-# /etc/ssl/certs, not the lineage under /etc/letsencrypt/live, so a run whose
-# export or backup failed has changed nothing nginx can see — reloading on the
-# flag alone would announce a renewal that was never applied.
+# ---- Internal per-run signals --------------------------------------------
+# Two on-disk markers coordinate this script with the Node renewal step, and
+# the nginx reload further down needs both. They answer different questions and
+# are deliberately kept apart rather than collapsed into one:
 #
-# So the Node step raises a second signal, and the reload below needs both.
-# This marker is that signal: written by js/letsencrypt/certbot_renew.js only
-# after every required post-renewal step has succeeded.
+#   renewed       Certbot's deploy hook ran, so at least one certificate was
+#                 actually renewed. Touched by Certbot itself, through the hook
+#                 js/letsencrypt/certbot_renew.js builds, before that script
+#                 has done anything with the new material.
+#   reload-ready  the Node step then finished exporting every certificate
+#                 Certbot enumerated to the /etc/ssl/certs paths nginx serves.
+#                 Written once that whole phase has succeeded, never part-way
+#                 through it.
 #
-# Internal coordination state, not configuration, and deliberately NOT an
-# operator-settable override: the assignment is unconditional, so an inherited
-# CERTBOT_INTERNAL_RELOAD_READY is overwritten rather than honoured and cannot
-# redirect the marker at an arbitrary path. It lives inside the lock directory
-# because that directory is already this script's private, ownership-protected
-# namespace for exactly the lifetime of one renewal run: it is created fresh
-# here and released by the EXIT trap, so the marker is necessarily absent at
-# the start of every run and never survives into a later one.
+# The second is not implied by the first: `certbot renew` can renew one
+# certificate and fail on another, and the run continues past that failure so
+# the renewed material is still exported. nginx serves the exported copies
+# under /etc/ssl/certs, not the lineage under /etc/letsencrypt/live, so a run
+# whose export failed has changed nothing nginx can see — reloading on the
+# renewed marker alone would announce a renewal that was never applied.
 #
-# Presence is the whole test — unlike the lock's ownership marker (which
-# authorises an `rm -rf` against an unvalidated path) this one only decides
-# whether to reload nginx, inside a directory this run created itself. The
-# value below is written for a human reading the file, not checked.
+# Both are internal coordination state, not configuration, and neither is an
+# operator-settable override: the assignments below are unconditional, so an
+# inherited value for either exported name is overwritten rather than honoured
+# and cannot redirect a marker at a path of its choosing. They are exported
+# only so this script, the Node step and certbot can name the same two private
+# files. Neither is documented as a knob, and there is no fallback form that
+# would hand the caller authority over them.
 #
-# Absolutised, unlike every other path built from LOCK_DIR: this is the one
-# that crosses a process boundary, and the Node step runs from JS_DIR (the
+# They live inside the lock directory because that is already this script's
+# private, ownership-protected namespace for exactly the lifetime of one
+# renewal run: it is created fresh here and released by the EXIT trap, so both
+# markers are necessarily absent at the start of every run and never survive
+# into a later one. The same boundary makes stale state impossible after a hard
+# kill — a marker written by a run that died survives only inside that run's
+# own lock directory, which the stale-lock path removes wholesale (ownership
+# marker verified first) before re-creating it.
+#
+# Presence is the whole test for both. Unlike the lock's ownership marker,
+# which authorises an `rm -rf` against a path nothing has validated, these only
+# decide whether to reload nginx, inside a directory this run created itself.
+#
+# Absolutised, unlike every other path built from LOCK_DIR: these are the paths
+# that cross a process boundary, and the Node step runs from JS_DIR (the
 # `pushd` further down) rather than from this script's own directory. A
-# relative CERTBOT_LOCK_DIR would then name two different files — the one Node
-# writes and the one the reload check reads — and the reload would never fire.
-# LOCK_DIR itself is deliberately left exactly as given, so nothing about lock
-# acquisition or the ownership check changes.
+# relative CERTBOT_LOCK_DIR would otherwise name two different files for each
+# marker — the one Node writes and the one the check here reads — and the
+# reload would never fire. LOCK_DIR itself is deliberately left exactly as
+# given, so nothing about lock acquisition or the ownership check changes.
 case "$LOCK_DIR" in
-  /*) RELOAD_READY_MARKER="$LOCK_DIR/.nginx-server-reload-ready" ;;
-  *)  RELOAD_READY_MARKER="$PWD/$LOCK_DIR/.nginx-server-reload-ready" ;;
+  /*) LOCK_DIR_ABS="$LOCK_DIR" ;;
+  *)  LOCK_DIR_ABS="$PWD/$LOCK_DIR" ;;
 esac
+RENEWED_FLAG="$LOCK_DIR_ABS/.nginx-server-renewed"
+RELOAD_READY_MARKER="$LOCK_DIR_ABS/.nginx-server-reload-ready"
+export CERTBOT_INTERNAL_RENEWED_FLAG="$RENEWED_FLAG"
 export CERTBOT_INTERNAL_RELOAD_READY="$RELOAD_READY_MARKER"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [certbot_renew] $*"; }
@@ -118,8 +138,10 @@ log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [certbot_renew] $*"; }
 release_lock() {
   rm -f -- "$LOCK_PID_FILE" 2>/dev/null
   rm -f -- "$LOCK_MARKER_FILE" 2>/dev/null
-  # Normal cleanup of the reload-readiness signal: it is scoped to one run, and
-  # rmdir below would refuse a directory still holding it.
+  # Normal cleanup of this run's two internal signals: both are scoped to one
+  # run, and rmdir below would refuse a directory still holding either. Still
+  # non-recursive — every entry removed here is one this script named itself.
+  rm -f -- "$RENEWED_FLAG" 2>/dev/null
   rm -f -- "$RELOAD_READY_MARKER" 2>/dev/null
   rmdir -- "$LOCK_DIR" 2>/dev/null
   return 0
@@ -215,18 +237,20 @@ fi
 # `certbot renew --webroot -w /var/www/certbot`.
 log "certbot renew started"
 
-# Clear any stale renewal flag so it can't trigger a needless reload this run.
-# RENEWED_FLAG is an operator-settable override (CERTBOT_RENEWED_FLAG), so a
-# value whose basename begins with "-" must not reach rm's own option parser:
-# `--` ends option parsing, so the operand is always treated as a filename
-# (verified against the pinned runtime's BusyBox 1.37.0 rm).
+# The lock directory was created by this invocation moments ago — freshly, or
+# re-created after a verified stale one was cleared wholesale — so neither
+# marker can already be there. Cleared anyway rather than left resting on that
+# argument: both are inputs to the reload decision, and a leftover one would
+# authorise a reload this run never earned.
+#
+# This is the earliest point either removal may happen. Everything above has
+# passed the ownership guard, so these two paths are inside a lock directory
+# this script owns; running them before it would be deleting files under a
+# directory an operator may merely have pointed CERTBOT_LOCK_DIR at. `--` ends
+# rm's option parsing so the operand is always read as a filename, verified
+# against the pinned runtime's BusyBox 1.37.0 rm — both paths are absolute
+# here, but the guard costs nothing and outlives assumptions about LOCK_DIR.
 rm -f -- "$RENEWED_FLAG"
-
-# The lock directory was created by this invocation moments ago, so the marker
-# cannot already be there; cleared anyway rather than left resting on that
-# argument, for the same reason the renewed flag above is. Both are inputs to
-# the reload decision, and a leftover one would authorise a reload this run
-# never earned.
 rm -f -- "$RELOAD_READY_MARKER"
 
 RENEWAL_EXIT=0

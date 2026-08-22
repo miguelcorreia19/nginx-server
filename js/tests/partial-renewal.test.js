@@ -184,7 +184,11 @@ function setup({ lineages = ['healthy'], enumerated = null } = {}) {
   fs.writeFileSync(path.join(binDir, 'certbot'), CERTBOT_STUB, { mode: 0o755 });
   fs.writeFileSync(path.join(binDir, 'cp'), CP_STUB, { mode: 0o755 });
 
-  const renewedFlag = path.join(tmp, 'renewed.flag');
+  // Both signals live inside the lock directory in production; this suite
+  // drives certbot_renew.js directly, so it supplies them the same way
+  // certbot_renew.sh does — as the internal cross-process protocol, never as
+  // caller configuration.
+  const renewedFlag = path.join(lockDir, '.nginx-server-renewed');
   const readyMarker = path.join(lockDir, '.nginx-server-reload-ready');
 
   const env = {
@@ -196,7 +200,7 @@ function setup({ lineages = ['healthy'], enumerated = null } = {}) {
     CERTBOT_RENEWAL_MARKER: path.join(tmp, 'renewal-marker'),
     // The two cross-process signals, named exactly as certbot_renew.sh exports
     // them.
-    CERTBOT_RENEWED_FLAG: renewedFlag,
+    CERTBOT_INTERNAL_RENEWED_FLAG: renewedFlag,
     CERTBOT_INTERNAL_RELOAD_READY: readyMarker,
     // Stub controls.
     CERTBOT_CALLS: path.join(tmp, 'certbot-calls'),
@@ -268,6 +272,25 @@ describe('certbot_renew.js — certbot renew succeeded', () => {
     }
     expect(fs.existsSync(ctx.readyMarker)).toBe(true);
     expect(r.output).not.toMatch(/WARNING|ERROR/);
+  });
+
+  it('builds the deploy hook from the internal marker, never from an inherited CERTBOT_RENEWED_FLAG', () => {
+    // The old operator-controlled name, supplied exactly as a mis-set
+    // container environment would. certbot_renew.js must not read it.
+    const operatorFile = path.join(ctx.tmp, 'operator-config.json');
+    fs.writeFileSync(operatorFile, 'operator data\n');
+
+    const r = run(ctx, { ...RENEWED, CERTBOT_RENEWED_FLAG: operatorFile });
+
+    expect(r.code).toBe(0);
+    const renew = certbotCalls(ctx).find((line) => line.startsWith('renew '));
+    // The hook certbot was handed names the internal marker...
+    expect(renew).toContain(`touch -- '${ctx.renewedFlag}'`);
+    // ...and not the inherited path, which the stub would otherwise have
+    // touched when it ran the hook.
+    expect(renew).not.toContain(operatorFile);
+    expect(fs.existsSync(ctx.renewedFlag)).toBe(true);
+    expect(fs.readFileSync(operatorFile, 'utf8')).toBe('operator data\n');
   });
 
   it('writes the readiness marker only after the export has completed', () => {

@@ -230,7 +230,7 @@ describe('renewal export — chain path is a sibling of the reported private key
         CERTBOT_RENEWAL_DIR: renewalDir,
         CERTBOT_RENEWAL_BACKUP_DIR: path.join(tmp, 'renewal-backup'),
         CERTBOT_RENEWAL_MARKER: path.join(tmp, 'marker'),
-        CERTBOT_RENEWED_FLAG: path.join(tmp, 'renewed.flag'),
+        CERTBOT_INTERNAL_RENEWED_FLAG: path.join(tmp, 'renewed.flag'),
         // CERTBOT_BACKUP unset: the backup branch is the only code path in this
         // script that reads config.json, which does not exist outside a
         // running container.
