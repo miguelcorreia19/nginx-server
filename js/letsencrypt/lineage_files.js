@@ -68,10 +68,11 @@ const exists = (p) => fs.existsSync(p) || fs.lstatSync(p, { throwIfNoEntry: fals
 
 const removeIfPresent = (p) => fs.rmSync(p, { recursive: true, force: true });
 
+// PATH_KEYS and canonicalPathsFor are deliberately not exported: both are used
+// only by checkCanonicalPaths() above, which is the answer callers actually
+// want. Exporting them invited a second, divergent reading of the same rule.
 module.exports = {
   LETSENCRYPT_DIR,
-  PATH_KEYS,
-  canonicalPathsFor,
   checkCanonicalPaths,
   localLineagePaths,
   copyTree,

@@ -1,10 +1,10 @@
 // restoreLineageFromBackup() / recoverInterruptedRestore() — crash-safe
 // replacement of one Certbot lineage from an already-validated backup.
 //
-// The module is a filesystem primitive: nothing calls it yet, it runs no
-// Certbot command, and it decides nothing about whether a restore should
-// happen. So these tests are pure filesystem assertions on real temp trees —
-// real renames, real symlinks, no mocked fs.
+// The module is a filesystem primitive: it runs no Certbot command and decides
+// nothing about whether a restore should happen (the handler does that — see
+// restore-integration.test.js). So these tests are pure filesystem assertions
+// on real temp trees — real renames, real symlinks, no mocked fs.
 //
 // The property under test is that no interruption can leave a half-restored
 // lineage. Certbot enumerates through renewal/<id>.conf, so the transaction

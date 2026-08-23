@@ -1,7 +1,10 @@
 // validateBackupLineage() — is a backed-up lineage usable recovery material?
 //
-// The validator is a standalone primitive: nothing calls it yet. It answers
-// "could this backup be restored for this site?" without touching live state,
+// The validator is a reporting primitive: it decides nothing, and the Let's
+// Encrypt handler gates both recovery paths on its verdict (the orchestration
+// itself is covered by restore-integration.test.js and
+// bootstrap-integration.test.js). It answers "could this backup be restored for
+// this site?" without touching live state,
 // by copying only that lineage into a throwaway Certbot tree, repointing the
 // copied renewal config at that tree, and asking Certbot to enumerate it there.
 //

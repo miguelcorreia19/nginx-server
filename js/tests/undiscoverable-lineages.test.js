@@ -456,7 +456,7 @@ describe('discovered-lineage orphan cleanup is unchanged', () => {
 // immediately discards, so these sites are skipped entirely.
 
 const suppressionWarned = () => logged(warnSpy, /Issuance suppressed/);
-const fallbackWritten = (id) =>
+const invalidConfAttempted = (id) =>
   createConf.mock.calls.some(([certId, arg]) => certId === id && arg && arg.status === 'invalid');
 
 describe('a desired undiscoverable lineage does not trigger issuance', () => {
@@ -505,14 +505,16 @@ describe('a desired undiscoverable lineage does not trigger issuance', () => {
     expect(logged(logSpy, /Certificate A does not exist — creating/)).toBe(false);
   });
 
-  it('does not write a self-signed fallback as a side effect', async () => {
-    // The fallback is never linked into nginx for a site with no parsed
-    // certificate, so writing one would only misrepresent what is on disk.
+  it('does not write any SSL configuration as a side effect', async () => {
+    // A suppressed site keeps real certificate material on disk that Certbot
+    // cannot read, so writing a fragment here would misrepresent what is
+    // actually there — and it would not be served either, since nothing links
+    // this site while it has no parsed certificate.
     setConfig({ A: { mode: 'letsencrypt', names: ['a.example.com'] } });
 
     await letsencryptMode();
 
-    expect(fallbackWritten('A')).toBe(false);
+    expect(invalidConfAttempted('A')).toBe(false);
     expect(createConf).not.toHaveBeenCalled();
   });
 
@@ -593,8 +595,8 @@ describe('suppression is per site', () => {
     // good still completes its normal path.
     expect(createConf).toHaveBeenCalledWith('good', expect.objectContaining({ status: 'valid' }));
     expect(configFiles).toHaveBeenCalledWith('good', 'valid', undefined, ['good.example.com']);
-    // broken gets neither a fallback nor a link.
-    expect(fallbackWritten('broken')).toBe(false);
+    // broken gets neither SSL configuration nor a link.
+    expect(invalidConfAttempted('broken')).toBe(false);
     expect(configFiles).not.toHaveBeenCalledWith('broken', expect.anything(), expect.anything(), expect.anything());
   });
 });

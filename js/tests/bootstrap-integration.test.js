@@ -362,7 +362,7 @@ describe('a cert-name holding residue is left alone entirely', () => {
     expect(logged(logSpy, /- A: leftover files, no renewal config/)).toBe(true);
   });
 
-  it('writes no self-signed fallback for it', async () => {
+  it('writes no SSL configuration for it', async () => {
     withResidue(slot('A').archive);
 
     await letsencryptMode();

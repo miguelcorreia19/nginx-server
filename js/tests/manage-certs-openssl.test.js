@@ -1,23 +1,25 @@
-// createConf()'s self-signed-fallback openssl invocation in
-// js/letsencrypt/manage_certs.js — no existing suite exercises it directly;
-// every other test that touches createConf mocks the whole export away
-// (js/tests/letsencrypt-*.test.js, restore/bootstrap-integration.test.js).
+// createConf() in js/letsencrypt/manage_certs.js — production never generates
+// a self-signed certificate.
 //
-// No shell feature (piping, redirection, globbing) was ever needed for this
-// invocation — the only interpolated value is the certificate id, which
-// validateCertId() (js/validate.js) has already restricted to an alphanumeric
-// start plus letters/digits/dots/hyphens/underscores for every config.json
-// entry before any handler runs. It moved to commandSafe (execFile) once
-// command()'s stderr-on-success defect — the reason it needed a shell-string
-// `2>&1` redirect at all — was fixed. These pin the resulting argument
-// vector and the propagation behaviour the migration must not change.
+// createConf() used to fall back to an openssl self-signed certificate when a
+// Let's Encrypt certificate came back invalid, writing /etc/ssl/certs/<id>_cert.pem,
+// overwriting /etc/ssl/certs/<id>_privkey.pem, and rendering a fragment that
+// pointed at both. That fallback could never take effect: a fragment under
+// /etc/nginx/conf/ is only loaded through the conf.d/443 symlink configFiles()
+// creates (js/utils.js), and configFiles() returns early for exactly this
+// status — so the site was never linked and nginx never read the fragment.
+//
+// These tests pin the removal from both sides: nothing is generated or written
+// for an invalid certificate, and the valid path still renders and writes
+// exactly as before. Self-signed generation now belongs to development mode
+// alone (js/dev/index.js, covered by js/tests/dev-propagation.test.js).
 
 jest.mock('../config.json', () => ({
   mysite: { names: ['example.com'], email: 'admin@example.com', mode: 'letsencrypt' },
 }), { virtual: true });
 
 jest.mock('fs', () => ({
-  readFileSync: jest.fn(() => 'TEMPLATE ${SSL} ${FULLCHAIN} ${PRIVKEY} ${CHAIN}'),
+  readFileSync: jest.fn(() => 'TEMPLATE ${FULLCHAIN} ${PRIVKEY} ${CHAIN}'),
   writeFileSync: jest.fn(),
 }));
 
@@ -26,71 +28,85 @@ jest.mock('../utils.js', () => ({
   commandSafe: jest.fn(),
 }));
 
+const fs = require('fs');
 const { command, commandSafe } = require('../utils.js');
 const { createConf } = require('../letsencrypt/manage_certs.js');
 
+let warnSpy;
+
 beforeEach(() => {
   jest.clearAllMocks();
+  warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
 });
 
-describe('createConf — self-signed fallback openssl invocation', () => {
-  it('runs openssl through commandSafe, with the certificate id only in the two output paths', async () => {
-    commandSafe.mockResolvedValue(undefined);
+afterEach(() => {
+  warnSpy.mockRestore();
+});
 
-    await createConf('mysite', { status: 'invalid', cert_path: '', cert_key_path: '' });
+const warned = (re) => warnSpy.mock.calls.some(([line]) => re.test(String(line)));
 
-    expect(commandSafe).toHaveBeenCalledTimes(1);
-    const [bin, args] = commandSafe.mock.calls[0];
-    expect(bin).toBe('openssl');
-    expect(args).toEqual([
-      'req', '-x509',
-      '-newkey', 'rsa:2048',
-      '-keyout', '/etc/ssl/certs/mysite_privkey.pem',
-      '-out', '/etc/ssl/certs/mysite_cert.pem',
-      '-days', '365',
-      '-nodes',
-      '-subj', '/C=UA',
-    ]);
+const INVALID = { status: 'invalid', cert_path: '', cert_key_path: '' };
 
-    // The interpolated id appears only inside the two output-path operands —
-    // never as a bare argv element, where it could be read as an option or
-    // an unrelated positional argument.
-    const idBearing = args.filter((a) => a.includes('mysite'));
-    expect(idBearing).toEqual([
-      '/etc/ssl/certs/mysite_privkey.pem',
-      '/etc/ssl/certs/mysite_cert.pem',
-    ]);
+describe('createConf — an invalid certificate produces no fallback material', () => {
+  it('never invokes openssl', async () => {
+    await createConf('mysite', INVALID);
 
+    expect(commandSafe).not.toHaveBeenCalled();
     expect(command).not.toHaveBeenCalled();
   });
 
-  it('propagates an openssl failure — createConf has no local recovery', async () => {
-    commandSafe.mockRejectedValueOnce({ error: 'openssl: permission denied' });
+  it('writes no nginx fragment at all', async () => {
+    await createConf('mysite', INVALID);
 
-    await expect(
-      createConf('mysite', { status: 'invalid', cert_path: '', cert_key_path: '' })
-    ).rejects.toEqual({ error: 'openssl: permission denied' });
+    expect(fs.writeFileSync).not.toHaveBeenCalled();
   });
 
-  it('does not run openssl when FORCE_INVALID_ON_FAIL suppresses the fallback', async () => {
-    const prev = process.env.FORCE_INVALID_ON_FAIL;
-    process.env.FORCE_INVALID_ON_FAIL = 'true';
-    try {
-      await createConf('mysite', { status: 'invalid', cert_path: '', cert_key_path: '' });
-      expect(commandSafe).not.toHaveBeenCalled();
-    } finally {
-      if (prev === undefined) delete process.env.FORCE_INVALID_ON_FAIL;
-      else process.env.FORCE_INVALID_ON_FAIL = prev;
-    }
+  it('does not read the SSL template, so no fragment can be rendered', async () => {
+    await createConf('mysite', INVALID);
+
+    expect(fs.readFileSync).not.toHaveBeenCalled();
   });
 
-  it('does not run openssl for a valid certificate', async () => {
-    await createConf('mysite', {
-      status: 'valid',
-      cert_path: '/etc/letsencrypt/live/mysite/fullchain.pem',
-      cert_key_path: '/etc/letsencrypt/live/mysite/privkey.pem',
-    });
+  it('reports the site as unserved instead of announcing a fallback', async () => {
+    await createConf('mysite', INVALID);
+
+    expect(warned(/Certificate "mysite" is invalid — no SSL configuration written/)).toBe(true);
+    expect(warned(/self-signed/i)).toBe(false);
+    expect(warned(/fallback/i)).toBe(false);
+  });
+});
+
+describe('createConf — a usable certificate is configured exactly as before', () => {
+  const VALID = {
+    status: 'valid',
+    cert_path: '/etc/letsencrypt/live/mysite/fullchain.pem',
+    cert_key_path: '/etc/letsencrypt/live/mysite/privkey.pem',
+  };
+
+  it('renders the fragment from the exported /etc/ssl/certs paths', async () => {
+    await createConf('mysite', VALID);
+
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      '/etc/nginx/conf/mysite.conf',
+      'TEMPLATE /etc/ssl/certs/mysite_fullchain.pem /etc/ssl/certs/mysite_privkey.pem /etc/ssl/certs/mysite_chain.pem',
+    );
+  });
+
+  it('never invokes openssl for a usable certificate either', async () => {
+    await createConf('mysite', VALID);
 
     expect(commandSafe).not.toHaveBeenCalled();
+    expect(command).not.toHaveBeenCalled();
+  });
+
+  // A staging certificate is usable for a letsencrypt-staging site, so it takes
+  // the same path — only 'invalid' suppresses configuration.
+  it('configures a staging certificate the same way', async () => {
+    await createConf('mysite', { ...VALID, status: 'staging' });
+
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      '/etc/nginx/conf/mysite.conf',
+      expect.stringContaining('/etc/ssl/certs/mysite_fullchain.pem'),
+    );
   });
 });

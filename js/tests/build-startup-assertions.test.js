@@ -7,6 +7,7 @@ const path = require('path');
 
 const root = path.join(__dirname, '..', '..');
 const entrypoint = fs.readFileSync(path.join(root, 'entrypoint.sh'), 'utf8');
+const entrypointJs = fs.readFileSync(path.join(root, 'js', 'entrypoint.js'), 'utf8');
 const dockerfile  = fs.readFileSync(path.join(root, 'Dockerfile'), 'utf8');
 
 // Split the Dockerfile at the runtime stage boundary (second FROM, no AS).
@@ -46,10 +47,10 @@ describe('Dockerfile — build-time dependency install', () => {
     expect(dockerfile).toMatch(/npm ci.*--omit=dev/);
   });
 
-  it('copies package files in a separate layer before the full source copy', () => {
+  it('copies package files in a separate layer before the application source', () => {
     const pkgCopyIdx  = dockerfile.indexOf('COPY js/package');
     const npmCiIdx    = dockerfile.indexOf('npm ci');
-    const srcCopyIdx  = dockerfile.indexOf('COPY . /home/scripts/');
+    const srcCopyIdx  = dockerfile.indexOf('COPY js/ /home/scripts/js/');
     expect(pkgCopyIdx).toBeGreaterThan(-1);
     expect(npmCiIdx).toBeGreaterThan(pkgCopyIdx);
     expect(srcCopyIdx).toBeGreaterThan(npmCiIdx);
@@ -124,6 +125,94 @@ describe('Dockerfile — pinned runtime version contract', () => {
 
   it('does not install certbot unpinned', () => {
     expect(runtimeNoComments).not.toMatch(/^\s*certbot\s*\\?\s*$/m);
+  });
+});
+
+// What reaches /home/scripts is named explicitly rather than swept in with
+// `COPY . /home/scripts/`. The blanket copy shipped the documentation tree,
+// .github/, the changelog and any untracked working-tree file the maintainer
+// happened to have, plus a second copy of all four helper scripts that missed
+// the 0755 normalisation applied to the /usr/local/bin copies.
+describe('Dockerfile — the runtime image copies only what it runs', () => {
+  it('does not sweep the whole build context into the image', () => {
+    expect(runtimeNoComments).not.toMatch(/^COPY \.\s+\/home\/scripts\/?\s*$/m);
+  });
+
+  it('copies the Node layer, which entrypoint.sh and certbot_renew.sh both run', () => {
+    expect(runtimeNoComments).toMatch(/^COPY js\/ \/home\/scripts\/js\/\s*$/m);
+  });
+
+  // js/reconcile.js copies these two back into conf.d/{80,443} on every
+  // production startup, so they are the one part of nginx/ the runtime reads.
+  it('copies the two default-vhost sources js/reconcile.js restores from', () => {
+    expect(runtimeNoComments).toMatch(
+      /^COPY nginx\/nginx\.vh\.default\.80\.conf nginx\/nginx\.vh\.default\.443\.conf \/home\/scripts\/nginx\/\s*$/m,
+    );
+  });
+
+  // The helpers are installed once, in /usr/local/bin, where the chmod below
+  // pins their mode. A second copy under /home/scripts would not be executed
+  // and would not be mode-normalised.
+  it.each(['entrypoint.sh', 'reload.sh', 'certbot_renew.sh', 'fail2ban.sh'])(
+    'does not also copy %s into /home/scripts',
+    (script) => {
+      expect(runtimeNoComments).not.toMatch(new RegExp(`^COPY ${script} /home/scripts`, 'm'));
+    },
+  );
+});
+
+// The bundled nginx files were copied into /etc/nginx/conf/ as well as their
+// real locations. nginx.conf globs only conf.d/{80,443}/*.conf, so those copies
+// had no reader — while sharing a directory with the per-site fragments the
+// mode handlers generate there.
+describe('Dockerfile — /etc/nginx/conf holds generated fragments only', () => {
+  it('no longer copies the bundled nginx directory into it', () => {
+    expect(runtimeNoComments).not.toMatch(/^COPY \.\/nginx\/ \/etc\/nginx\/conf\/\s*$/m);
+  });
+
+  it('still creates the directory the mode handlers write their fragments into', () => {
+    expect(runtimeNoComments).toMatch(/mkdir -p[\s\S]{0,200}\/etc\/nginx\/conf\b/);
+  });
+
+  it('keeps the three base config files at the paths nginx.conf loads', () => {
+    expect(runtimeNoComments).toMatch(/^COPY \.\/nginx\/nginx\.conf \/etc\/nginx\/nginx\.conf\s*$/m);
+    expect(runtimeNoComments).toMatch(/^COPY \.\/nginx\/proxy\.conf \/etc\/nginx\/proxy\.conf\s*$/m);
+    expect(runtimeNoComments).toMatch(/^COPY \.\/nginx\/http-common\.conf \/etc\/nginx\/http-common\.conf\s*$/m);
+  });
+});
+
+// The image default, the Node fallback and the shell startup line must all name
+// the same environment. They disagreed once: the image shipped
+// ENV ENVIRONMENT=development while js/entrypoint.js fell back to production and
+// every document recorded production as the default. An ENV set in the image is
+// never "unset", so the Node fallback could not correct it — a container started
+// without an explicit ENVIRONMENT ran in development mode and failed on the
+// missing dev.conf instead of serving the configured production sites.
+describe('ENVIRONMENT default — image, Node fallback and shell agree on production', () => {
+  it('the image defaults ENVIRONMENT to production', () => {
+    expect(runtimeNoComments).toMatch(/^ENV ENVIRONMENT=production\s*$/m);
+  });
+
+  it('never ships development as the image default', () => {
+    expect(runtimeNoComments).not.toMatch(/^ENV ENVIRONMENT=(development|dev)\s*$/m);
+  });
+
+  it('js/entrypoint.js still falls back to production when the variable is unset', () => {
+    expect(entrypointJs).toMatch(/process\.env\.ENVIRONMENT\s*=\s*'production'/);
+  });
+
+  it('entrypoint.sh reports the same default in its startup line', () => {
+    expect(entrypoint).toMatch(/ENVIRONMENT=\$\{ENVIRONMENT:-production\}/);
+  });
+});
+
+// DOMAIN, ORGANIZATION and COUNTRY were image ENV defaults with no consumer
+// anywhere in the repository — no script, template, nginx config or JS source
+// ever read them, in any commit. Both openssl invocations hardcode their
+// subject (-subj '/C=UA'), so nothing was left unparameterised by removing them.
+describe('Dockerfile — no unused environment defaults', () => {
+  it.each(['DOMAIN', 'ORGANIZATION', 'COUNTRY'])('does not declare %s', (name) => {
+    expect(runtimeNoComments).not.toMatch(new RegExp(`^ENV ${name}=`, 'm'));
   });
 });
 

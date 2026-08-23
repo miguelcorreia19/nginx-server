@@ -1,15 +1,16 @@
 # Docker build-context excludes.
 #
-# Anything listed here is NOT sent to the Docker daemon, so it is not picked up
-# by `COPY . /home/scripts/`. This keeps the runtime image small and the build
-# deterministic. It does not change build behaviour: every path the build/runtime
-# actually needs is kept.
+# Anything listed here is NOT sent to the Docker daemon. Since the Dockerfile
+# now names every path it copies (there is no `COPY . /home/scripts/`), this
+# file no longer decides what ends up in the image — the COPY instructions do.
+# What it still does is keep the build context small and keep local, untracked
+# working-tree files out of it entirely.
 #
-# Intentionally NOT excluded (the build/runtime depend on them):
-#   Dockerfile          — the build runs `RUN rm Dockerfile`, which needs it present
-#   nginx/              — runtime scripts copy from /home/scripts/nginx/
-#   fail2ban/           — `COPY ./fail2ban/fail2ban.local` reads it
-#   js/ (except below)  — application source + package manifests
+# Two exclusions remain load-bearing rather than cosmetic, because they sit
+# inside a path the Dockerfile does copy (`COPY js/ /home/scripts/js/`):
+#   js/tests/          — excluding it here is what keeps the suite out of the image
+#   **/node_modules/   — stops a host-side node_modules from overwriting the
+#                        builder's clean, prod-only copy
 
 # Version control & local tooling metadata
 .git
@@ -17,13 +18,6 @@
 .gitattributes
 .dockerignore
 .claude
-
-# Unrelated reference project (Apache image used only for analysis)
-apache-with-certificate/
-
-# Design / discussion transcripts (markdown, not part of the product)
-initial-chat.md
-second-chat.md
 
 # Usage examples — documentation only, never used at build or runtime
 examples/
@@ -39,6 +33,10 @@ coverage/
 
 # Dev-only helper script (release notes generation)
 generate-release-notes.sh
+
+# Local, untracked working notes (gitignored). Kept out of the build context so
+# a personal file present in a maintainer's tree is never sent to the daemon.
+notes.md
 
 # OS / editor / log cruft
 .DS_Store

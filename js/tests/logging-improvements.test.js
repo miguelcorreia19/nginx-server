@@ -252,7 +252,7 @@ describe('js/letsencrypt/certbot_renew.js — formatValidity (behavioral)', () =
   });
 });
 
-describe('js/letsencrypt/manage_certs.js — fallback-certificate messages without ALL-CAPS shouting', () => {
+describe('js/letsencrypt/manage_certs.js — invalid-certificate message without ALL-CAPS shouting', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'letsencrypt', 'manage_certs.js'), 'utf8');
 
   it('no longer shouts instructions in all-caps', () => {
@@ -260,9 +260,26 @@ describe('js/letsencrypt/manage_certs.js — fallback-certificate messages witho
     expect(source).not.toMatch(/Probably this will fail/);
   });
 
-  it('explains the fallback behavior and how to control it via FORCE_INVALID_ON_FAIL', () => {
-    expect(source).toMatch(/generating a self-signed fallback certificate \(set FORCE_INVALID_ON_FAIL/);
-    expect(source).toMatch(/proceeding without a fallback because FORCE_INVALID_ON_FAIL is set/);
+  it('says what happens to the site instead of announcing a fallback', () => {
+    expect(source).toMatch(/is invalid — no SSL configuration written/);
+    expect(source).toMatch(/this site is not served until a valid certificate is obtained/);
+  });
+
+  // The production self-signed fallback and its FORCE_INVALID_ON_FAIL gate were
+  // removed: the fragment they produced was never linked into conf.d/443, so it
+  // could not be served. Comment lines are stripped first — the same approach
+  // build-startup-assertions.test.js and reload-watcher.test.js use — because
+  // the rationale comment explaining the removal necessarily names what was
+  // removed, and prose must not satisfy (or defeat) an assertion about code.
+  it('no longer implements the removed self-signed fallback', () => {
+    const codeOnly = source
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('//'))
+      .join('\n');
+
+    expect(codeOnly).not.toMatch(/FORCE_INVALID_ON_FAIL/);
+    expect(codeOnly).not.toMatch(/openssl/);
+    expect(codeOnly).not.toMatch(/_cert\.pem/);
   });
 });
 

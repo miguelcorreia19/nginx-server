@@ -17,7 +17,10 @@
 // from renewal/<id>.conf: the material goes in first and that config goes in
 // last, so a single rename is the commit and nothing partial is ever visible.
 //
-// Nothing calls this yet. It runs no Certbot command and touches no network.
+// It runs no Certbot command and touches no network. js/letsencrypt/index.js
+// calls it for a desired site whose cert-name slot is provably empty — the
+// container-replacement case — and calls recoverInterruptedBootstraps() at the
+// top of startup, alongside the replacement transaction's own recovery.
 
 const fs = require("fs");
 const path = require("path");

@@ -6,8 +6,11 @@
 // under /etc/letsencrypt or CERTBOT_BACKUP_PATH is read as lineage material or
 // written at any point.
 //
-// It is a standalone primitive: nothing calls it yet. Per-lineage restore is a
-// separate decision, and this deliberately stops at "yes/no, and why".
+// It is a primitive that only reports: it deliberately stops at "yes/no, and
+// why", and never decides whether a restore should happen. That decision, and
+// the install itself, belong to the caller — js/letsencrypt/index.js gates both
+// the undiscoverable-lineage restore path and the empty-slot bootstrap path on
+// this verdict before touching anything live.
 //
 // Why the sandbox needs a rewrite step: a backup is produced by copying
 // /etc/letsencrypt wholesale, so its renewal configs still carry absolute

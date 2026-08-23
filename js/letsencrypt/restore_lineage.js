@@ -1,8 +1,12 @@
 // Crash-safe replacement of one Certbot lineage from an already-validated backup.
 //
-// This is a filesystem primitive: nothing calls it yet, it runs no Certbot
-// command, and it makes no decision about whether a restore *should* happen.
-// Validation is validate_backup.js's job; deciding is the caller's.
+// This is a filesystem primitive: it runs no Certbot command and makes no
+// decision about whether a restore *should* happen. Validation is
+// validate_backup.js's job; deciding is the caller's. js/letsencrypt/index.js
+// is that caller — it uses this for a still-configured lineage Certbot cannot
+// enumerate, and calls recoverInterruptedRestores() at the very top of startup,
+// before discovery, so a half-applied transaction is never read as an absent
+// lineage.
 //
 // The safety property, and the whole reason for the step order below:
 //

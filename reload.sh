@@ -86,4 +86,3 @@ WATCH_PID=$!
 wait "$WATCH_PID"
 
 log "Reload script ended"
-exec "$@"

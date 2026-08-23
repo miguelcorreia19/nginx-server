@@ -46,7 +46,13 @@ describe('custom SSL template placeholder resolution', () => {
 });
 
 // ──────────────────────────────────────────────
-//  Letsencrypt SSL template — valid certificate path  (fixes: ${SSL} not cleared)
+//  Letsencrypt SSL template
+//
+//  The template now has exactly one substitution path. It used to have two:
+//  a valid certificate cleared ${SSL} while the self-signed fallback set it to
+//  "# " to comment out ssl_trusted_certificate. That fallback is gone — an
+//  invalid certificate produces no fragment at all (js/letsencrypt/manage_certs.js)
+//  — so ${SSL} has no remaining purpose and must not reappear.
 // ──────────────────────────────────────────────
 describe('letsencrypt SSL template — valid certificate', () => {
   const templatePath = path.join(__dirname, '../letsencrypt/templates/ssl-letsencrypt-certificate.conf');
@@ -55,10 +61,9 @@ describe('letsencrypt SSL template — valid certificate', () => {
     expect(fs.existsSync(templatePath)).toBe(true);
   });
 
-  it('leaves no unresolved placeholders after valid-cert replacement', () => {
+  it('leaves no unresolved placeholders after replacement', () => {
     let data = fs.readFileSync(templatePath, 'utf8');
     data = data
-      .replace('${SSL}', '')
       .replace('${FULLCHAIN}', '/etc/ssl/certs/id_fullchain.pem')
       .replace('${PRIVKEY}', '/etc/ssl/certs/id_privkey.pem')
       .replace('${CHAIN}', '/etc/ssl/certs/id_chain.pem');
@@ -66,10 +71,9 @@ describe('letsencrypt SSL template — valid certificate', () => {
     expect(data).not.toMatch(PLACEHOLDER_RE);
   });
 
-  it('enables ssl_trusted_certificate for valid certs (${SSL} → empty)', () => {
+  it('enables ssl_trusted_certificate unconditionally', () => {
     let data = fs.readFileSync(templatePath, 'utf8');
     data = data
-      .replace('${SSL}', '')
       .replace('${FULLCHAIN}', '/etc/ssl/certs/id_fullchain.pem')
       .replace('${PRIVKEY}', '/etc/ssl/certs/id_privkey.pem')
       .replace('${CHAIN}', '/etc/ssl/certs/id_chain.pem');
@@ -77,33 +81,10 @@ describe('letsencrypt SSL template — valid certificate', () => {
     expect(data).toContain('ssl_trusted_certificate /etc/ssl/certs/id_chain.pem');
     expect(data).not.toMatch(/^#\s*ssl_trusted_certificate/m);
   });
-});
 
-// ──────────────────────────────────────────────
-//  Letsencrypt SSL template — invalid certificate / self-signed fallback
-// ──────────────────────────────────────────────
-describe('letsencrypt SSL template — invalid certificate fallback', () => {
-  const templatePath = path.join(__dirname, '../letsencrypt/templates/ssl-letsencrypt-certificate.conf');
+  it('carries no ${SSL} placeholder, so no comment-out path can return', () => {
+    const data = fs.readFileSync(templatePath, 'utf8');
 
-  it('leaves no unresolved placeholders after invalid-cert replacement', () => {
-    let data = fs.readFileSync(templatePath, 'utf8');
-    data = data
-      .replace('${FULLCHAIN}', '/etc/ssl/certs/id_cert.pem')
-      .replace('${PRIVKEY}', '/etc/ssl/certs/id_privkey.pem')
-      .replace('${SSL}', '# ')
-      .replace('${CHAIN}', '');
-
-    expect(data).not.toMatch(PLACEHOLDER_RE);
-  });
-
-  it('comments out ssl_trusted_certificate for invalid certs', () => {
-    let data = fs.readFileSync(templatePath, 'utf8');
-    data = data
-      .replace('${FULLCHAIN}', '/etc/ssl/certs/id_cert.pem')
-      .replace('${PRIVKEY}', '/etc/ssl/certs/id_privkey.pem')
-      .replace('${SSL}', '# ')
-      .replace('${CHAIN}', '');
-
-    expect(data).toMatch(/^# ssl_trusted_certificate/m);
+    expect(data).not.toContain('${SSL}');
   });
 });

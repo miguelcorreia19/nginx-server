@@ -1,6 +1,6 @@
 # nginx-server
 
-A Docker image providing a flexible, production-ready Nginx setup for managing multiple domains with full HTTP and HTTPS support. Includes automated SSL certificate management via Let's Encrypt or custom certificates, safe certbot renewal with locking and port-80 restore, automatic nginx config reload on file changes, and a built-in healthcheck.
+A Docker image providing a flexible, production-ready Nginx setup for managing multiple domains with full HTTP and HTTPS support. Includes automated SSL certificate management via Let's Encrypt or custom certificates, safe certbot renewal with locking and zero-downtime webroot renewal, automatic nginx config reload on file changes, and a built-in healthcheck.
 
 ## Links
 
@@ -42,7 +42,7 @@ The image supports four SSL/TLS modes per domain — Let's Encrypt, Let's Encryp
 - **Automatic HTTP → HTTPS redirection** (configurable per domain)
 - **Development mode** with self-signed certificates (no CA contact)
 - **Automatic nginx reload** on config file changes via inotifywait
-- **Safe certbot renewal** with atomic lock, port-80 restore, and failure detection
+- **Safe certbot renewal** with atomic lock, webroot challenges (nginx keeps port 80 throughout), and failure detection
 - **Startup validation**: nginx config is validated with `nginx -t` before nginx starts; startup aborts with a clear error if invalid
 - **Healthcheck**: pidfile liveness + `nginx -t` config validity on every check interval
 - **Multi-domain support** from a single `config.json`
@@ -187,7 +187,7 @@ services:
 
 ## Security Notes
 
-`nginx-server` favors secure, conservative defaults: every Node shell-out carrying a user- or operator-supplied value — domain names, certificate names and paths, and the configurable backup / certificate / nginx-override directories — uses `execFile` with an argument array, so those values reach the binary as literal arguments and are never re-parsed by a shell (the remaining shell calls are fixed command strings), `config.json` is validated before any config is generated, self-signed certificates are generated only in `development` mode, and the `NET_ADMIN` capability is needed only when Fail2ban is enabled.
+`nginx-server` favors secure, conservative defaults: every Node shell-out carrying a user- or operator-supplied value — domain names, certificate names and paths, and the configurable backup / certificate / nginx-override directories — uses `execFile` with an argument array, so those values reach the binary as literal arguments and are never re-parsed by a shell (the remaining shell calls are fixed command strings), `config.json` is validated before any config is generated, self-signed certificates are generated only in `development` mode (a failed Let's Encrypt certificate is never backed by a self-signed one — the site is simply not served), and the `NET_ADMIN` capability is needed only when Fail2ban is enabled.
 
 📖 The full **security model** — together with the process model, startup flow, certbot and healthcheck internals, and design rationale — is documented in **[docs/architecture.md](docs/architecture.md)**.
 

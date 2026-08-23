@@ -22,10 +22,12 @@ FROM nginx:1.31.4-alpine3.24
 
 LABEL maintainer="Miguel Correia <miguelcorreia19@hotmail.com>"
 
-ENV ENVIRONMENT=development
-ENV DOMAIN=[]
-ENV ORGANIZATION=[]
-ENV COUNTRY=[]
+# production is the documented default and the one js/entrypoint.js falls back
+# to when ENVIRONMENT is unset. This ENV used to say "development", which meant
+# a container started without an explicit ENVIRONMENT ran in development mode —
+# the opposite of what every document stated, and something the Node fallback
+# could never correct, because an ENV set here is never "unset".
+ENV ENVIRONMENT=production
 
 ENV CERTBOT_BACKUP_PATH=/home/letsencrypt
 ENV CUSTOM_CERTS_PATH=/home/custom-certificates
@@ -68,29 +70,38 @@ RUN mkdir -p /var/run/fail2ban /var/lib/fail2ban \
     && rm -f /etc/fail2ban/jail.d/alpine-ssh.conf
 COPY ./fail2ban/fail2ban.local /etc/fail2ban/fail2ban.local
 
-# Copying Nginx Files
+# The three base config files nginx actually loads. nginx.conf includes the
+# other two by absolute path, and all three are the files an operator may
+# replace by mounting CUSTOM_NGINX_CONFIG_FILES_PATH (mapCustomNginxConf in
+# js/utils.js symlinks over these exact paths).
+#
+# They are deliberately NOT also copied into /etc/nginx/conf/. That directory
+# used to receive a copy of the whole nginx/ tree, but nginx.conf globs only
+# /etc/nginx/conf.d/{80,443}/*.conf and never /etc/nginx/conf/ — so those five
+# copies had no reader, while sharing a namespace with the per-site fragments
+# the mode handlers generate there (a site legitimately named "proxy" would
+# have overwritten one).
 COPY ./nginx/proxy.conf /etc/nginx/proxy.conf
 COPY ./nginx/nginx.conf /etc/nginx/nginx.conf
 COPY ./nginx/http-common.conf /etc/nginx/http-common.conf
-# COPY ./nginx/nginx.vh.default.conf /etc/nginx/nginx.80_redirect.conf
-# COPY ./nginx/nginx.vh.default.conf /etc/nginx/or_nginx.80_redirect.conf
 
-# TODO: check if is needed
-COPY ./nginx/ /etc/nginx/conf/
-
-# Copying nginx sites conf files and creating required directories.
+# Runtime directories.
+#
+# /etc/nginx/conf holds the per-site SSL fragments the mode handlers generate
+# (`/etc/nginx/conf/<id>.conf`), which each user site file pulls in with
+# `include /etc/nginx/conf/<id>.conf;`. Nothing else creates it, so this mkdir
+# is load-bearing: the handlers write into it before nginx ever starts.
+#
 # /var/www/certbot is the shared ACME webroot: nginx (workers run as the
-# 'nginx' user) serves /.well-known/acme-challenge/ from it, and certbot/root
-# would write challenge tokens into it. Created here so it exists in the image;
-# default root ownership (mode 755) is readable by the nginx workers. Phase A
-# only provisions this infrastructure — renewal still uses standalone mode.
+# 'nginx' user) serves /.well-known/acme-challenge/ from it, and certbot writes
+# challenge tokens into it during renewal. Created here so it exists in the
+# image; default root ownership (mode 755) is readable by the nginx workers.
 RUN mkdir -p \
     /etc/nginx/conf \
     /home/nginx/sites \
     /etc/nginx/conf.d/80/ \
     /etc/nginx/conf.d/443/ \
     /var/www/certbot
-# COPY ./nginx/sites/ /home/nginx/sites
 
 COPY ./nginx/nginx.vh.default.443.conf /etc/nginx/conf.d/443/nginx.vh.default.443.conf
 COPY ./nginx/nginx.vh.default.80.conf /etc/nginx/conf.d/80/nginx.vh.default.80.conf
@@ -142,23 +153,49 @@ RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/reload.sh /usr/local/
 EXPOSE 80
 EXPOSE 443
 
-RUN mkdir -p /home/scripts/js/
+# ---- Application layer ------------------------------------------------------
+# Copied file-by-file rather than with `COPY . /home/scripts/`.
+#
+# The blanket copy pulled the entire build context into the runtime image, so
+# /home/scripts also received the documentation tree, .github/, the changelog,
+# and — because .dockerignore only excluded transcripts it knew about by name —
+# any untracked working-tree file the maintainer happened to have. It also
+# produced a second, never-executed copy of all four helper scripts, which
+# missed the explicit 0755 normalisation applied to the /usr/local/bin copies
+# above and therefore carried whatever mode the build context handed them.
+#
+# What the runtime actually needs under /home/scripts is exactly two things:
+# the Node layer, and the two default-vhost sources js/reconcile.js restores
+# from. Naming them is both smaller and more predictable than maintaining a
+# blacklist that has to grow every time a file is added to the repository.
 
-# Copy package files first so the dependency layer is cached independently of
+# Package files first, so the dependency layer is cached independently of
 # application source. This layer only re-runs when package.json or
 # package-lock.json changes — source-only edits leave it fully cached.
 # --omit=dev keeps Jest and other dev-only packages out of the production image.
 COPY js/package*.json /home/scripts/js/
 
-# Copy pre-built node_modules from the builder stage (no npm binary in the
-# runtime image; the builder produced the same node_modules npm ci would).
+# Pre-built node_modules from the builder stage (no npm binary in the runtime
+# image; the builder produced the same node_modules npm ci would).
 COPY --from=node-builder /home/scripts/js/node_modules /home/scripts/js/node_modules
+
+# The Node startup and renewal layer. entrypoint.sh runs `node entrypoint.js`
+# here, and certbot_renew.sh runs `node letsencrypt/certbot_renew.js` from the
+# same directory (CERTBOT_JS_DIR). js/tests/ is excluded by .dockerignore.
+COPY js/ /home/scripts/js/
+
+# The default-vhost sources js/reconcile.js copies back into conf.d/{80,443} on
+# every production startup. Only these two files from nginx/ are read at
+# runtime — the rest of that directory is installed under /etc/nginx above.
+COPY nginx/nginx.vh.default.80.conf nginx/nginx.vh.default.443.conf /home/scripts/nginx/
 
 WORKDIR /home/scripts
 
-COPY . /home/scripts/
-
-RUN rm Dockerfile /etc/nginx/conf.d/default.conf
+# The base image's default server block. nginx.conf globs only
+# conf.d/{80,443}/*.conf, so it is already unreachable — removed anyway because
+# an operator-supplied nginx.conf (CUSTOM_NGINX_CONFIG_FILES_PATH) may glob
+# conf.d/*.conf and would otherwise pick it up.
+RUN rm -f /etc/nginx/conf.d/default.conf
 
 # Lightweight, no-load, no-network healthcheck: confirms the nginx master
 # process recorded in its pidfile is alive AND that the on-disk config it

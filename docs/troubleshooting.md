@@ -134,6 +134,8 @@ Fix: check your custom nginx config files for syntax errors. Run `nginx -t` loca
 - Use `letsencrypt-staging` mode first to validate your setup without consuming rate-limit quota.
 - Check `docker logs <container>` for certbot error output.
 
+A site whose certificate could not be obtained is **not served over HTTPS**: it gets no SSL configuration and is not linked into the active configuration, and the log says so (`Certificate "<id>" is invalid — no SSL configuration written`). No self-signed certificate is generated in its place — that is a development-mode feature only. The container still starts and every other configured site is served normally; fix the cause above and restart to retry issuance.
+
 ### A removed or changed site is still being served
 
 Startup rebuilds the generated nginx configuration from the current environment on every start — in both production and development — so restarting the container applies removals, `mode` changes, `http_redirect` changes and `ENVIRONMENT` switches completely.
@@ -262,10 +264,13 @@ The watches are registered on the `sites/` and custom-config **directories**. Re
 ```
 WARNING: certbot renew failed, but its deploy hook recorded at least one successful renewal
 ...
-WARNING: the certificates that renewed have been applied, but certbot failed for at least one other certificate — this run is still reported as failed
+ERROR: Partial renewal: the certificates that did renew were exported successfully, but certbot renew failed for at least one other certificate — reporting this run as failed
+ERROR: certbot renewal script failed (exit 1)
+Certificates renewed; reloading nginx
+WARNING: the renewed certificates have been applied, but the run failed after exporting them — this run is still reported as failed (see the error above)
 ```
 
-The certbot output above those lines names the lineage that failed. Fix that site (usually DNS, reachability on port 80, or a damaged renewal config — see [A certificate is not listed by certbot](#a-certificate-is-not-listed-by-certbot)); the failing lineage is left in place and is never deleted or reissued automatically. See [Partial renewals](letsencrypt.md#partial-renewals).
+The last line deliberately does not name the cause: it is reached both by a partial renewal and by a run whose *backup* failed after a complete export (see below). The line that actually failed the run is the `ERROR:` above it. The certbot output further up names the lineage that failed. Fix that site (usually DNS, reachability on port 80, or a damaged renewal config — see [A certificate is not listed by certbot](#a-certificate-is-not-listed-by-certbot)); the failing lineage is left in place and is never deleted or reissued automatically. See [Partial renewals](letsencrypt.md#partial-renewals).
 
 If instead you see `certificates were renewed but post-renewal processing did not complete; nginx reload skipped`, the renewal succeeded but the export to `/etc/ssl/certs` failed, so there was nothing new for nginx to pick up. The previously issued certificates keep being served; the error above that line says what failed.
 

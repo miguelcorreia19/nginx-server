@@ -291,6 +291,55 @@ The practical effect was that a fresh deployment started normally and every rest
 
 The parser now reads `Identifiers:`, matching the pinned Certbot version above. Consistent with the version contract, pre-5.6 `Domains:` output is deliberately *not* accepted — unrecognised output fails inside the certificate parser with a message naming the affected certificate, instead of resurfacing later as an unrelated error. Each certificate block is also parsed within its own bounds, so a block missing the field cannot pick up the next certificate's identifiers.
 
+#### Default environment is now `production`
+
+The image shipped `ENV ENVIRONMENT=development`, so a container started without an explicit `ENVIRONMENT` ran in **development** mode — contradicting the documented default, the Node fallback and the shell startup line, and failing on the missing `dev.conf` instead of serving the configured production sites. An `ENV` set in the image is never "unset", so the Node fallback could not correct it.
+
+The image default is now `production`. Setting `development`/`dev` or `production`/`prod` explicitly is unaffected.
+
+---
+
+### Removed
+
+#### Self-signed fallback for a failed Let's Encrypt certificate
+
+An invalid Let's Encrypt certificate used to trigger a self-signed certificate plus a matching nginx fragment. Neither could ever be served: the fragment was written to `/etc/nginx/conf/<id>.conf`, which nginx loads only through the `conf.d/443` symlink such a site never receives. It also overwrote `/etc/ssl/certs/<id>_privkey.pem` — the path a successful export uses — with self-signed key material.
+
+Nothing is generated now. The site gets no SSL configuration, is not linked, and is reported as `Certificate "<id>" is invalid — no SSL configuration written`. **Traffic behaviour is unchanged**: such a site was not served before either, and the container still starts and serves every other configured site. Self-signed certificates remain a development-mode feature.
+
+The undocumented `FORCE_INVALID_ON_FAIL` variable is removed with it — it existed only to disable this fallback.
+
+#### Unused image environment variables
+
+`DOMAIN`, `ORGANIZATION` and `COUNTRY` were image defaults that no script, template, nginx config or JS source has ever read. Both `openssl` invocations hardcode their certificate subject, so nothing was left unparameterised.
+
+#### Unused runtime image contents
+
+The runtime image no longer carries content it never used:
+
+- the bundled nginx files copied into `/etc/nginx/conf/` — `nginx.conf` globs only `conf.d/{80,443}/*.conf`, so none was ever loaded. **The directory itself is still created**, and generated per-site fragments (`include /etc/nginx/conf/<id>.conf;`) are unchanged;
+- a second, never-executed copy of `entrypoint.sh`, `reload.sh`, `certbot_renew.sh` and `fail2ban.sh` under `/home/scripts/`, which also missed the explicit permissions applied to the installed copies.
+
+The Dockerfile now copies the Node layer and the two default-vhost sources by name rather than sweeping in the whole repository, so documentation, CI metadata and untracked local files no longer reach the image.
+
+#### Inert TLS directives on the port-80 default vhost
+
+`ssl_certificate`, `ssl_certificate_key`, `ssl_ciphers` and the `map` feeding them were copied to the port-80 default vhost from the HTTPS one, where they are load-bearing. A plain `listen 80` server never reaches the TLS path, so they had no effect. The HTTPS default vhost is unchanged.
+
+---
+
+### Fixed
+
+#### Documentation describing behaviour that no longer exists
+
+- The README no longer advertises a renewal "port-80 restore" step; renewal uses webroot and nginx keeps port 80 throughout.
+- Comments in the port-80 vhost, the HTTP-redirect template and the Dockerfile no longer say renewal uses standalone mode. Only *initial issuance* does.
+- The backup-validation, restore and bootstrap modules no longer claim nothing calls them — all three are wired into Let's Encrypt startup.
+- The troubleshooting guide's partial-renewal log excerpt now matches the message the renewal script actually emits.
+- The security notes now state the rule that holds: self-signed certificates are generated in development mode only.
+
+---
+
 ---
 
 ### Internal

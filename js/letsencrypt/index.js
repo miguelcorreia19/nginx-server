@@ -515,11 +515,15 @@ module.exports = async () => {
         }
         await createConf(id, final_certificates[id]);
       } else if (suppressed.has(id)) {
-        // No fallback: the site has real certificate material on disk that
-        // Certbot cannot currently see, and writing a self-signed fragment
-        // would neither serve it (nothing links this site while it has no
-        // parsed certificate) nor reflect what is actually there.
+        // Nothing is written: the site has real certificate material on disk
+        // that Certbot cannot currently see, so any fragment written here would
+        // misrepresent what is actually there — and it would not be served
+        // either, since nothing links this site while it has no parsed
+        // certificate.
       } else {
+        // No certificate was obtained for a site that is not suppressed.
+        // createConf() writes nothing for an invalid status; the call is what
+        // reports it (see ./manage_certs.js), and the summary below records it.
         await createConf(id, { status: 'invalid', cert_path: '', cert_key_path: '' });
       }
     }

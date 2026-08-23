@@ -92,7 +92,8 @@ module.exports = async () => {
   }
 };
 
+// Test seams. warnIfUnrecognizedFlag() and DEFAULTS are intentionally not
+// exported — both are reached through the orchestrator and buildConfig(), which
+// is what the suite drives.
 module.exports.isEnabled = isEnabled;
-module.exports.warnIfUnrecognizedFlag = warnIfUnrecognizedFlag;
 module.exports.buildConfig = buildConfig;
-module.exports.DEFAULTS = DEFAULTS;

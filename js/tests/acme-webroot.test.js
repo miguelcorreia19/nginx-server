@@ -1,10 +1,15 @@
-// Phase A (webroot-readiness) tests.
+// ACME webroot tests.
 //
-// These assert that the project-controlled port-80 nginx config can serve ACME
+// These assert that the project-controlled port-80 nginx config serves ACME
 // http-01 challenge files from the shared webroot (/var/www/certbot) WITHOUT
 // redirecting them, while leaving normal-request behavior (the HTTP→HTTPS
-// redirect and the default-server 444) unchanged. Renewal still uses standalone
-// mode — there are intentionally no renewal tests here.
+// redirect and the default-server 444) unchanged.
+//
+// This is what renewal depends on: `certbot renew --webroot -w /var/www/certbot`
+// writes its challenge tokens there and nginx keeps port 80 throughout, so these
+// two blocks are live renewal infrastructure rather than preparation for it.
+// (Initial issuance still uses --standalone, before nginx is listening.) The
+// renewal flow itself is covered by certbot-renew.test.js and partial-renewal.test.js.
 
 const fs = require('fs');
 const path = require('path');
@@ -92,6 +97,47 @@ describe('ACME webroot — default port-80 vhost', () => {
 
   it('is structurally valid (balanced braces)', () => {
     expect(bracesBalanced(vhost)).toBe(true);
+  });
+
+  // The block used to carry `ssl_ciphers aNULL`, `ssl_certificate data:$empty`
+  // and `ssl_certificate_key data:$empty`, plus the `map` that fed them —
+  // copied from the :443 default vhost, where they are load-bearing. This
+  // listener has no `ssl` parameter, so nginx never enters the TLS path for it
+  // and none of them had any effect. Verified with a real `nginx -t` in the
+  // built image, before and after removal.
+  it('carries no TLS directives, which a plain :80 listener never uses', () => {
+    expect(vhost).not.toMatch(/ssl_certificate/);
+    expect(vhost).not.toMatch(/ssl_certificate_key/);
+    expect(vhost).not.toMatch(/ssl_ciphers/);
+  });
+
+  it('declares no map, since nothing in it consumes one', () => {
+    expect(vhost).not.toMatch(/^\s*map\s/m);
+    expect(vhost).not.toMatch(/\$empty/);
+  });
+
+  it('does not turn the listener into an SSL one', () => {
+    expect(vhost).not.toMatch(/listen\s+80\s+ssl/);
+  });
+});
+
+// The :443 default vhost is the one that genuinely needs the certificate-less
+// trick: nginx requires a certificate on an SSL listener, so it synthesises an
+// empty inline one. Pinned here so cleaning the :80 block above can never be
+// mirrored onto this one by mistake.
+describe('default HTTPS vhost — keeps its certificate-less mechanism', () => {
+  const vhost443 = read(path.join(__dirname, '../../nginx/nginx.vh.default.443.conf'));
+
+  it('still synthesises an empty inline certificate', () => {
+    expect(vhost443).toMatch(/^\s*map\s+""\s+\$empty\s*\{/m);
+    expect(vhost443).toContain('ssl_certificate data:$empty;');
+    expect(vhost443).toContain('ssl_certificate_key data:$empty;');
+    expect(vhost443).toContain('ssl_ciphers aNULL;');
+  });
+
+  it('remains the default_server on port 443 and still returns 444', () => {
+    expect(vhost443).toMatch(/listen\s+443\s+ssl\s+default_server;/);
+    expect(vhost443).toMatch(/return 444;/);
   });
 });
 

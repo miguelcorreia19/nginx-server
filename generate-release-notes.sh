@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Simple release notes generator
-# Usage: ./scripts/generate-release-notes.sh [from-ref] [to-ref]
+# Usage: ./generate-release-notes.sh [from-ref] [to-ref]   (run from the repository root)
 # If no from-ref is provided, the script will use the latest tag; if none, uses the initial commit.
 
 FROM_REF=${1-}
