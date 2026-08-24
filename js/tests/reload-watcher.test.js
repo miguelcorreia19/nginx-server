@@ -14,10 +14,11 @@
 // silently dropped or reordered into something weaker. They deliberately do
 // NOT claim to prove inotify's runtime semantics — a string match cannot
 // establish which events the kernel delivers. That half was established by
-// running this script against the pinned runtime (inotify-tools 4.23.9.0 on
-// Alpine 3.24) with `nginx` stubbed by a counter; the observed sequences are
-// recorded in the comments in reload.sh, and the per-event rationale below
-// exists so a future edit has to argue with the evidence rather than guess.
+// running this script against this image's runtime (observed with
+// inotify-tools 4.23.9.0 on Alpine 3.24) with `nginx` stubbed by a counter;
+// the observed sequences are recorded in the comments in reload.sh, and the
+// per-event rationale below exists so a future edit has to argue with the
+// evidence rather than guess.
 
 const fs = require('fs');
 const path = require('path');

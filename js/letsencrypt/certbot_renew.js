@@ -29,8 +29,8 @@ const { log, warn, error } = createLogger("certbot_renew.js");
 //
 // Quoting is not the whole job: it settles what the *shell* does with the
 // value, not what touch(1) then does with its own argv. A quoted '-d' is still
-// one word, and still an option to touch — verified against the pinned
-// runtime's BusyBox 1.37.0, which answers `touch: unrecognized option: x` for
+// one word, and still an option to touch — verified against BusyBox 1.37.0 as
+// shipped by this image, which answers `touch: unrecognized option: x` for
 // '-x'. So the hook below ends touch's options with `--` before the quoted
 // path.
 //

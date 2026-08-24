@@ -300,10 +300,10 @@ exports.backupCertbotState = async (options = {}) => {
 
   // `--` on every copy below. execFile removes the shell, but not cp(1)'s own
   // option parsing, and `backupPath` is unvalidated operator input: a
-  // CERTBOT_BACKUP_PATH beginning with `-` is read as flags by the pinned
-  // runtime's BusyBox 1.37.0 (`cp: unrecognized option: e` for `-dest`). The
-  // sources cannot lead with `-` — they are built from LETSENCRYPT_DIR — but
-  // the destination is the last operand, so it needs the guard.
+  // CERTBOT_BACKUP_PATH beginning with `-` is read as flags by this image's
+  // BusyBox 1.37.0 (`cp: unrecognized option: e` for `-dest`). The sources
+  // cannot lead with `-` — they are built from LETSENCRYPT_DIR — but the
+  // destination is the last operand, so it needs the guard.
 
   // With nothing to protect this is the same copy it has always been — same
   // binary, same flags, same set of sources — just spelled as one execFile per

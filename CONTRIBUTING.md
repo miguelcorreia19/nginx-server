@@ -8,7 +8,7 @@ Clone the repository and work from its root. The Node.js startup layer (which ge
 
 ## Architecture
 
-Before making non-trivial changes, read the **[architecture guide](docs/architecture.md)** — it covers the process model, startup flow, configuration generation, security model, and the certbot, healthcheck, and Fail2ban internals.
+Before making non-trivial changes, read the **[architecture guide](docs/architecture.md)** — it covers the process model, startup flow, configuration generation, the runtime versioning policy, the security model, and the certbot, healthcheck, and Fail2ban internals.
 
 ## Running locally (dev mode)
 

@@ -110,8 +110,8 @@ exports.validateNginxConfig = validateNginxConfig = () => {
 // `--` because execFile removes the *shell*, not ln's own option parsing.
 // Nothing validates CUSTOM_NGINX_CONFIG_FILES_PATH, so `conf_file` begins with
 // whatever the operator set; a value starting with `-` (`-t/nginx.conf`) is
-// read as a flag by this image's ln — verified against the pinned runtime's
-// BusyBox 1.37.0, which answers `ln: unrecognized option: t` — and `--` there
+// read as a flag by this image's ln — behaviour characterized against BusyBox
+// 1.37.0, which answers `ln: unrecognized option: t` — and `--` there
 // makes it an operand again. The link target is the fixed `/etc/nginx/` prefix
 // and can never lead with `-`.
 exports.mapCustomNginxConf = mapCustomNginxConf = async (files, dirPath) => {

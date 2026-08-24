@@ -106,12 +106,12 @@ describe('Dockerfile — required runtime packages are installed', () => {
 // load-bearing: js/letsencrypt/utils.js parses `certbot certificates` output
 // and targets the 5.6 format, so an unnoticed Certbot bump is a startup risk,
 // not merely a dependency change.
-describe('Dockerfile — pinned runtime version contract', () => {
+describe('Dockerfile — runtime version contract', () => {
   it('pins the base image to an exact nginx and Alpine version', () => {
     expect(dockerfile).toMatch(/FROM nginx:1\.31\.4-alpine3\.24/);
   });
 
-  it('leaves no floating base tag', () => {
+  it('leaves no version-floating base tag', () => {
     // nginx:alpine, nginx:1.31-alpine and nginx:alpine3.24 all still let the
     // nginx patch/minor selection drift between rebuilds.
     expect(dockerfile).not.toMatch(/FROM nginx:alpine/);

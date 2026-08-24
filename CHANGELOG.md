@@ -267,7 +267,7 @@ Detection is a filename set difference, not a reading of Certbot's warning text 
 
 ---
 
-#### Changed: pinned runtime version contract
+#### Changed: explicit runtime version contract
 
 The image now targets one explicit, tested runtime stack instead of whatever the floating `nginx:alpine` tag happened to resolve to at build time:
 
@@ -280,6 +280,29 @@ The image now targets one explicit, tested runtime stack instead of whatever the
 Both build stages use `nginx:1.31.4-alpine3.24`, and Certbot is installed as `certbot=5.6.0-r0` rather than resolved by name. Tags such as `nginx:1.31-alpine` or `nginx:alpine3.24` were not used, since they still leave the nginx patch selection floating.
 
 The Certbot pin is load-bearing rather than cosmetic: startup parses `certbot certificates` output, so a silent Certbot upgrade is a startup risk and not merely a dependency change. If the pinned package ever stops being available, the build now fails rather than quietly installing a different version. This does not pin every transitive Alpine package, and no base-image digest is used.
+
+---
+
+#### Changed: runtime versioning and rebuild guarantees are now stated accurately
+
+The Dockerfile header claimed that "both the base tag and the certbot package version are pinned explicitly, so neither can drift on a rebuild". Only the Certbot half was true. `nginx:1.31.4-alpine3.24` is a mutable tag rather than a digest, and most runtime packages are installed by name, so a rebuild can legitimately produce different package versions. The header now describes what the build actually constrains, and the rationale moved to [docs/architecture.md → Runtime Versioning and Rebuilds](docs/architecture.md#runtime-versioning-and-rebuilds).
+
+Documented there as deliberate project decisions:
+
+- **The base image stays on a mutable tag.** A digest would fix the starting image exactly, but would also hold it at that snapshot until someone manually updated it; this project prefers to take compatible upstream changes to the nginx/Alpine line it targets as they arrive. A digest alone would not make the build reproducible in any case — `apk upgrade --available` and the unversioned `apk add` packages resolve against the Alpine repositories at build time no matter how `FROM` is written. The guide describes base-image resolution and APK repository resolution as the two independent sources of drift, and states the tag choice as this project's trade-off rather than general advice.
+- **`apk upgrade --available` stays.** It is what let the image clear the base image's eight OpenSSL findings (3.5.7 → 3.5.8) with no repository change at all — evidence for retaining that instruction specifically, not an argument about how `FROM` is written.
+- **A rebuild needs the normal validation.** Because package patch versions can move without a repository change, a rebuilt image is not assumed identical to the previous one; it gets the existing Jest suite and shell syntax checks rather than a new workflow.
+- **`certbot=5.6.0-r0` is a compatibility pin, not housekeeping.** The Let's Encrypt parser targets the `certbot certificates` output contract observed in Certbot 5.6, including the `Identifiers:` field. The guide records what a future Certbot upgrade has to validate first — the real binary's output and the existing certificate test suite.
+
+Comments describing BusyBox and inotify-tools as "the pinned runtime" were corrected: neither package is version-pinned. They now say the behaviour was verified/observed/characterized against the versions the image currently ships (BusyBox 1.37.0, inotify-tools 4.23.9.0), which the runtime audit re-confirmed. The behavioural explanations themselves are unchanged.
+
+#### Documented: accepted `py3-cryptography` security exposure
+
+A runtime scan of the built image (Docker Scout, September 2026) reported no Critical findings and three High findings, all against `cryptography 47.0.0` — Alpine's `py3-cryptography-47.0.0-r0`, which arrives transitively with the pinned Certbot/ACME stack. Alpine v3.24 published no fixed build, so rebuilding or changing the base tag within the same Alpine branch does not clear them.
+
+The project accepts this exposure for now rather than migrating to a different Alpine/Certbot stack solely to clear a scanner report, and [docs/architecture.md → Security Model](docs/architecture.md#accepted-exposure-transitive-py3-cryptography-findings) records the reasoning together with the conditions that should trigger a revisit.
+
+**This is not a security fix.** No package version was upgraded, and the record deliberately does not claim the findings are false positives, inapplicable, or harmless — applicability of the vulnerable code paths to this project's Certbot usage was not established, and the scan was not corroborated with a second scanner.
 
 ---
 

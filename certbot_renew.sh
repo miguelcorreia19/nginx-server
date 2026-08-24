@@ -133,7 +133,7 @@ log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [certbot_renew] $*"; }
 # operator-settable override (see the header comment above), so a value whose
 # entire string begins with "-" must not reach rm/rmdir's own option parsers.
 # `--` ends option parsing for all four external commands in the lock
-# lifecycle below, verified against the pinned runtime's BusyBox 1.37.0
+# lifecycle below, verified against BusyBox 1.37.0 as shipped by this image
 # (mkdir, rmdir, cat and rm each answer "unrecognized option" without it).
 release_lock() {
   rm -f -- "$LOCK_PID_FILE" 2>/dev/null
@@ -221,7 +221,7 @@ fi
 # No `--` needed for the redirections inside init_lock_metadata: `>` is bash's
 # own syntax for choosing a target file, not an argument handed to an external
 # command's option parser, so a leading "-" in either path is never at risk
-# here (verified in the pinned runtime).
+# here (verified in this image's runtime).
 #
 # The lock directory exists and is this invocation's either way by now — freshly
 # created above, or re-created after a verified stale one was cleared — so the
@@ -248,7 +248,7 @@ log "certbot renew started"
 # this script owns; running them before it would be deleting files under a
 # directory an operator may merely have pointed CERTBOT_LOCK_DIR at. `--` ends
 # rm's option parsing so the operand is always read as a filename, verified
-# against the pinned runtime's BusyBox 1.37.0 rm — both paths are absolute
+# against this image's BusyBox 1.37.0 rm — both paths are absolute
 # here, but the guard costs nothing and outlives assumptions about LOCK_DIR.
 rm -f -- "$RENEWED_FLAG"
 rm -f -- "$RELOAD_READY_MARKER"
@@ -282,7 +282,7 @@ fi
 #
 # No `--` needed here: unlike `rm`, bash's `[ -f <operand> ]` takes -f as an
 # explicit, unambiguous unary operator and treats whatever follows as a
-# literal string — verified in the pinned runtime, including a value that is
+# literal string — verified in this image's runtime, including a value that is
 # itself "--help". There is no option parser here for a leading "-" to enter.
 if [ ! -f "$RENEWED_FLAG" ]; then
   log "No certificates renewed; nginx reload skipped"

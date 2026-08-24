@@ -224,8 +224,8 @@ describe('backup directory creation — operator path never reaches a shell', ()
   });
 
   it('keeps a path beginning with a hyphen behind the end-of-options marker', async () => {
-    // BusyBox 1.37.0 in the pinned runtime reads `-mybackup` as `-m ybackup`
-    // and fails with `mkdir: invalid mode 'ybackup'`.
+    // BusyBox 1.37.0, the version this image ships, reads `-mybackup` as
+    // `-m ybackup` and fails with `mkdir: invalid mode 'ybackup'`.
     process.env.CERTBOT_BACKUP_PATH = '-mybackup';
     withConfiguredSite();
 

@@ -28,9 +28,9 @@ trap 'log "Reload watcher stopping (signal received)"; kill "$WATCH_PID" 2>/dev/
 # Watched events. `close_write` alone only ever saw a config written in place:
 # every other way the effective configuration changes — a rename into the
 # directory, a symlink swap, a removal — emits no CLOSE_WRITE at all and was
-# silently missed. The set below is what the pinned runtime (inotify-tools
-# 4.23.9.0) was observed to actually emit for those operations, and nothing
-# more:
+# silently missed. The set below is what inotify-tools 4.23.9.0 — the version
+# this image currently ships — was observed to actually emit for those
+# operations, and nothing more:
 #
 #   close_write  in-place write to an existing config (the only event it emits),
 #                and the tail of a plain create-then-write of a new one.

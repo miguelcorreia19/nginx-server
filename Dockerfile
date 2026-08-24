@@ -3,10 +3,25 @@
 #   nginx    1.31.4
 #   Alpine   3.24
 #   certbot  5.6.0-r0
-# Both the base tag and the certbot package version are pinned explicitly, so
-# neither can drift on a rebuild. The Certbot pin is load-bearing beyond the
-# binary itself: js/letsencrypt/utils.js parses `certbot certificates` output,
-# and 5.6 labels a certificate's domain list `Identifiers:`.
+#
+# What that does and does not promise. Two things move independently here. The
+# base reference is a mutable tag rather than a digest, so a rebuild may start
+# from a newer image published for this nginx/Alpine line. Separately, the
+# `apk upgrade --available` and the unversioned `apk add` packages below resolve
+# against the Alpine repositories at build time — which they would do from a
+# digest-pinned base as well, so a digest alone would not make this build
+# reproducible. Both are deliberate: the image is meant to collect compatible
+# upstream and package updates. It is therefore version-constrained, not
+# bit-for-bit reproducible — a rebuild is a new image to validate, not a copy of
+# the last one.
+#
+# certbot=5.6.0-r0 is the one exact pin that is load-bearing for the
+# application rather than for tidiness: js/letsencrypt/utils.js parses
+# `certbot certificates` output, and 5.6 labels a certificate's domain list
+# `Identifiers:`. Bumping it means validating that contract against the real
+# binary and the certificate test suite first.
+#
+# Full rationale: docs/architecture.md -> Runtime Versioning and Rebuilds.
 #
 # ---- Build stage: install Node dependencies --------------------------------
 # npm is only needed here; the binary is intentionally absent from the
@@ -34,6 +49,15 @@ ENV CUSTOM_CERTS_PATH=/home/custom-certificates
 ENV CUSTOM_NGINX_CONFIG_FILES_PATH=/home/nginx/configs
 
 # Install runtime dependencies in a single layer.
+#
+# `apk upgrade --available` runs first on purpose: it lifts the base image's own
+# packages to the newest builds in this Alpine line, which is how a rebuild
+# collects base-image security fixes without changing the base reference — it
+# does this identically whether that reference is a tag or a digest. It cannot
+# move nginx off 1.31.4 — the base image records exact version constraints for
+# nginx and its modules in /etc/apk/world, and this Alpine branch currently
+# carries no newer nginx either.
+#
 # - certbot: Let's Encrypt certificate management (also brings python3 as a dep).
 #            Pinned exactly: the startup parser targets 5.6's certificate
 #            output format, so an unnoticed Certbot bump is a startup risk,

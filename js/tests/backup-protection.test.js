@@ -405,7 +405,7 @@ describe('a source with no visible entries', () => {
 // CERTBOT_BACKUP_PATH is operator-supplied and validated nowhere. execFile
 // keeps a shell away from it; `--` keeps cp's own option parser away from it.
 // Exercised with a relative path, since that is the only way an operand can
-// actually begin with `-` — the pinned runtime's BusyBox 1.37.0 answers
+// actually begin with `-` — the BusyBox 1.37.0 this image ships answers
 // `cp: unrecognized option: e` for a `-dest` operand without the marker.
 describe('a backup path beginning with a hyphen', () => {
   const { commandSafe } = require('../utils.js');

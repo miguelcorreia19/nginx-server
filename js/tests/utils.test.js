@@ -130,8 +130,8 @@ describe('mapCustomNginxConf — async sequencing', () => {
   });
 
   // The half execFile does not cover: ln parses its own argv, so a relative
-  // override directory beginning with `-` would be read as flags. The pinned
-  // runtime's BusyBox 1.37.0 answers `ln: unrecognized option: t` for
+  // override directory beginning with `-` would be read as flags. The BusyBox
+  // 1.37.0 this image ships answers `ln: unrecognized option: t` for
   // `-target/nginx.conf`; `--` ahead of it makes it an operand again.
   it('keeps a path beginning with a hyphen behind the end-of-options marker', async () => {
     execFile.mockImplementation((bin, args, opts, cb) => cb(null, 'ok', ''));
