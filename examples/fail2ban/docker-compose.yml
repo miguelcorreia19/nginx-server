@@ -1,5 +1,3 @@
-version: "3"
-
 services:
   nginx-server:
     image: miguelcorreia19/nginx-server:latest

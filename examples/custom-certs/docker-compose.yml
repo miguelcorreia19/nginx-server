@@ -1,12 +1,8 @@
-version: "3"
-
 services:
   nginx-server:
     image: miguelcorreia19/nginx-server:latest
     container_name: nginx-server
     restart: always
-    cap_add:
-      - NET_ADMIN
     ports:
       - 80:80
       - 443:443
@@ -18,7 +14,8 @@ services:
       - ENVIRONMENT=production
 
   service1:
-    image: service1
+    image: traefik/whoami
     container_name: service1
+    command: --port 12345
     ports:
       - 12345:12345

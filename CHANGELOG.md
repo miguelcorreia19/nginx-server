@@ -130,7 +130,7 @@ New rules, enforced after schema validation and before any handler mutates certi
 This replaces the previous warn-and-skip behavior for a `custom` entry with a missing certificate/key file. It does not change:
 
 - the live-symlink behavior for HTTP-mode site files (added previously);
-- how a Certbot issuance/renewal failure is handled (unchanged — still governed by the existing self-signed fallback, not this preflight);
+- how a Certbot issuance/renewal failure is handled — a site whose certificate cannot be obtained is simply left unserved (see *Removed → Self-signed fallback* below); this preflight does not change that;
 - development mode, which has its own preflight — see the next entry.
 
 ---
@@ -331,6 +331,10 @@ An invalid Let's Encrypt certificate used to trigger a self-signed certificate p
 Nothing is generated now. The site gets no SSL configuration, is not linked, and is reported as `Certificate "<id>" is invalid — no SSL configuration written`. **Traffic behaviour is unchanged**: such a site was not served before either, and the container still starts and serves every other configured site. Self-signed certificates remain a development-mode feature.
 
 The undocumented `FORCE_INVALID_ON_FAIL` variable is removed with it — it existed only to disable this fallback.
+
+#### Undocumented `FORCE_VALID2STAGING` override
+
+The undocumented `FORCE_VALID2STAGING` environment variable is removed. When set, it made startup reject a real (production) certificate held for a `letsencrypt-staging` site and reissue it against the staging CA. A production certificate is strictly better than a staging one, so it is now always kept regardless of the configured mode string. Normal staging/production reconciliation is unaffected: a staging certificate for a plain `letsencrypt` site is still reissued.
 
 #### Unused image environment variables
 

@@ -346,8 +346,6 @@ exports.checkCertFiles = (id, { cert_path, cert_key_path, cert_domains, status }
 
   if (status === 'staging' && certs[id].mode === 'letsencrypt') return false;
 
-  if (status === 'valid' && certs[id].mode === 'letsencrypt-staging' && process.env.FORCE_VALID2STAGING) return false;
-
   if (!fs.existsSync(cert_path) || !fs.existsSync(cert_key_path)) return false;
 
   const delete_domains = cert_domains.filter(c => !certs[id].names.includes(c));

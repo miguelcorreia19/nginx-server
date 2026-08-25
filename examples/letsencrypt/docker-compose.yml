@@ -1,12 +1,8 @@
-version: "3"
-
 services:
   nginx-server:
     image: miguelcorreia19/nginx-server:latest
     container_name: nginx-server
     restart: always
-    cap_add:
-      - NET_ADMIN
     ports:
       - 80:80
       - 443:443

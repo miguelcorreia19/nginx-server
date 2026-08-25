@@ -1,55 +1,71 @@
-# Example with Custom Certificates
+# Example: Custom Certificates
 
-This example demonstrates how to run the service with custom SSL certificates using Nginx.
+This example runs the service in `custom` SSL mode: you supply the certificate
+and private key, and nginx serves them directly. No CA is contacted.
 
 ## Directory Structure
 
-In the `docker-compose.yml` file, the following directory is mapped:
+```
+custom-certs/
+├── docker-compose.yml
+└── nginx/
+    ├── config.json               # one "custom" site ("someid")
+    ├── custom-certificates/      # your certificate + key are mounted from here
+    └── sites/
+        └── someid.conf           # nginx server block for example.com
+```
 
-- **nginx**: Contains necessary Nginx configurations.
-  - **custom-certificates**: Holds the SSL certificates.
-  - **sites**: Nginx domain configuration files.
-  - **config.json**: Configuration file that sets up the Nginx service.
+`nginx/config.json` names the two files it expects under `custom-certificates/`:
+
+```json
+{
+  "someid": {
+    "names": ["example.com"],
+    "mode": "custom",
+    "cert_file": "example.com.pem",
+    "privkey_file": "example.com.key"
+  }
+}
+```
 
 ## Usage
 
-1. **Custom SSL Certificates**: Store your custom SSL certificates in the `custom-certificates` directory.
+### 1. Provide the certificate and key
 
-2. **Domain Configuration**: Adjust Nginx domain configurations in the `sites` directory as required.
+In production you mount your real certificate and key into
+`nginx/custom-certificates/` under the names referenced by `config.json`.
 
-3. **Configuration Setup**: Modify `config.json` to configure the Nginx service according to your setup.
+For a local demonstration, generate a throwaway self-signed pair (the files are
+git-ignored so they are never committed):
 
-## Docker Compose Configuration
-
-Example excerpt from `docker-compose.yml`:
-
-```yaml
-services:
-  nginx-server:
-    build: ./nginx-server
-    container_name: nginx-server
-    restart: always
-    cap_add:
-      - NET_ADMIN
-    ports:
-      - 80:80
-      - 443:443
-    volumes:
-      - ./nginx/sites/:/home/nginx/sites
-      - ./nginx/config.json:/home/config.json
-      - ./nginx/custom-certificates:/home/custom-certificates
-    environment:
-      - ENVIRONMENT=production
+```bash
+cd examples/custom-certs
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+  -keyout nginx/custom-certificates/example.com.key \
+  -out   nginx/custom-certificates/example.com.pem \
+  -subj  "/CN=example.com"
 ```
 
-Ensure the volumes are correctly mapped to the respective directories.
+If `cert_file` or `privkey_file` is missing when the container starts, the
+startup preflight fails immediately with a message naming the expected path
+(`Entry "someid": required certificate file … does not exist`) — nginx is never
+started with an incomplete SSL setup.
 
-## Customization
+### 2. Start
 
-Feel free to customize Nginx configurations, SSL certificates, domain settings, and other parameters as needed to suit your specific requirements.
+```bash
+docker compose up -d
+docker compose logs -f nginx-server
+```
+
+`service1` is a small `traefik/whoami` backend that `someid.conf` proxies `/`
+to; replace it with your own upstream.
 
 ## Notes
 
-- Make sure SSL certificates are correctly configured and match the domain settings.
-- Test the Nginx configurations to ensure proper functioning of the service.
-- Refer to Nginx documentation for advanced configurations and troubleshooting.
+- The demo certificate is self-signed, so browsers will warn. Use a real
+  certificate for anything reachable from the internet.
+- `NET_ADMIN` is **not** required here — it is only needed when Fail2ban is
+  enabled (see `examples/fail2ban/`).
+- Keep the `server_name` in `sites/someid.conf` and the `names` in
+  `config.json` in sync with the certificate's subject/SANs.

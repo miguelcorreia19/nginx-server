@@ -17,7 +17,6 @@ exports.createConf = async (id, { cert_file, privkey_file }) => {
   const templatePath = path.join(__dirname, 'templates/ssl-custom-certificate.conf');
   let data = fs.readFileSync(templatePath, 'utf8');
   data = data
-    .replace(/\$\{COMMENT\}/g, '')
     .replace('${CERT}', `/etc/ssl/certs/${cert_file}`)
     .replace('${PRIVKEY}', `/etc/ssl/certs/${privkey_file}`);
 

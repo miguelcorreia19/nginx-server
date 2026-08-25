@@ -589,12 +589,11 @@ module.exports = async () => {
     // handler wiped both directories on behalf of every mode — but only when it
     // had at least one entry of its own, which left removed custom/http/LE
     // sites still being served after a restart of the same container.
-    if(Object.keys(final_certificates).length > 0)
-      for (let id in certs) {
-        if (!final_certificates[id]) continue;
-        const { status, cert_domains } = final_certificates[id];
-        await configFiles(id, status, certs[id].http_redirect, cert_domains);
-      }
+    for (let id in certs) {
+      if (!final_certificates[id]) continue;
+      const { status, cert_domains } = final_certificates[id];
+      await configFiles(id, status, certs[id].http_redirect, cert_domains);
+    }
 
     log("Let's Encrypt startup completed");
   } catch (err) {

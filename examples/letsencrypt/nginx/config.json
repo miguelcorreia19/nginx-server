@@ -1,16 +1,16 @@
 {
   "main": {
     "names": [
-      "mydomain.com",
-      "www.mydomain.com"
+      "example.com",
+      "www.example.com"
     ],
     "mode": "letsencrypt"
   },
   "scripts": {
     "names": [
-      "scripts.mydomain.com"
+      "scripts.example.com"
     ],
-    "email": "anotheradmin@mail.com",
+    "email": "webmaster@example.com",
     "mode": "letsencrypt"
   }
 }

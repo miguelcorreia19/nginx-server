@@ -1,10 +1,10 @@
 {
   "someid": {
     "names": [
-      "mydomain.com"
+      "example.com"
     ],
     "mode": "custom",
-    "cert_file": "mydomain_com.pem",
-    "privkey_file": "mydomain.com.key"
+    "cert_file": "example.com.pem",
+    "privkey_file": "example.com.key"
   }
 }

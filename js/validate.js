@@ -46,6 +46,7 @@ const stripWildcardPrefix = (domain) =>
 // True when a domain carries the wildcard prefix accepted by validateDomain.
 // Syntax only: it says nothing about whether a given SSL mode can obtain a
 // certificate for that name — that capability rule belongs to each mode handler.
+// Internal: the sole consumer is validateConfigEntry below.
 const isWildcardDomain = (domain) =>
   typeof domain === 'string' && domain.startsWith(WILDCARD_PREFIX);
 
@@ -245,7 +246,6 @@ const validateConfigEntry = (id, entry, certbotEmailFallback) => {
 module.exports = {
   validateCertId,
   validateDomain,
-  isWildcardDomain,
   validateCertFilename,
   validateEmail,
   validateCronExpression,
