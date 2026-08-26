@@ -32,8 +32,21 @@ module.exports = async () => {
         );
       }
 
-      await commandSafe('cp', [`${process.env.CUSTOM_CERTS_PATH}/${certs[id].cert_file}`, `/etc/ssl/certs/${certs[id].cert_file}`]);
-      await commandSafe('cp', [`${process.env.CUSTOM_CERTS_PATH}/${certs[id].privkey_file}`, `/etc/ssl/certs/${certs[id].privkey_file}`]);
+      // `--` because commandSafe (execFile) removes the *shell*, not cp(1)'s own
+      // option parsing, and nothing validates CUSTOM_CERTS_PATH — so the source
+      // operand begins with whatever the operator set. Verified against this
+      // image's BusyBox 1.37.0: a `-badcerts/site.pem` source answers
+      // `cp: unrecognized option: b` and dumps cp's usage, which surfaced as the
+      // fatal startup error in place of any message naming the certificate or
+      // the path. Behind `--` the same value copies literally.
+      //
+      // Same guard, same reasoning, as the backup copies in
+      // js/letsencrypt/utils.js and the symlink in mapCustomNginxConf. Only the
+      // source needs it — the destination is built from the fixed
+      // `/etc/ssl/certs/` prefix and can never lead with `-` — but `--` ends
+      // option parsing for the whole operand list either way.
+      await commandSafe('cp', ['--', `${process.env.CUSTOM_CERTS_PATH}/${certs[id].cert_file}`, `/etc/ssl/certs/${certs[id].cert_file}`]);
+      await commandSafe('cp', ['--', `${process.env.CUSTOM_CERTS_PATH}/${certs[id].privkey_file}`, `/etc/ssl/certs/${certs[id].privkey_file}`]);
 
       await createConf(id, certs[id]);
       await configFiles(id, "valid", certs[id].http_redirect, certs[id].names);

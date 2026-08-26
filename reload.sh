@@ -2,7 +2,20 @@
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [reload] $*"; }
 
-mkdir -p "$CUSTOM_NGINX_CONFIG_FILES_PATH"
+# `--` for the same reason the Node layer already passes it wherever an
+# operator-supplied path reaches a command's own option parser (mapCustomNginxConf
+# in js/utils.js, the backup mkdir/cp in js/letsencrypt/). Nothing validates
+# CUSTOM_NGINX_CONFIG_FILES_PATH, and quoting only stops the *shell* from
+# word-splitting it — it does not stop mkdir(1) from reading a leading `-` as
+# flags. Verified against this image's BusyBox 1.37.0: `mkdir -p -badcfg`
+# answers `mkdir: unrecognized option: b` and creates nothing, while
+# `mkdir -p -- -badcfg` creates the directory literally.
+#
+# This mattered more than a failed mkdir: the same value is handed to
+# inotifywait below, which failed the same way, so an option-like path took the
+# whole watcher down while nginx kept serving and the container kept reporting
+# healthy — automatic reload silently gone.
+mkdir -p -- "$CUSTOM_NGINX_CONFIG_FILES_PATH"
 
 # Exit cleanly and visibly on SIGTERM/SIGINT (e.g. `docker exec ... kill <pid>`,
 # manual debugging — under the container's normal shutdown path nginx is PID 1
@@ -55,9 +68,18 @@ trap 'log "Reload watcher stopping (signal received)"; kill "$WATCH_PID" 2>/dev/
 # Editor debris (`.site.conf.swp`, `site.conf~`, `site.tmp`, vim's numbered
 # `4913` probe) never matches, so inotifywait drops it rather than this loop
 # waking up to discard it.
+#
+# `--` ends option parsing before the watched directories, so an option-like
+# CUSTOM_NGINX_CONFIG_FILES_PATH is read as a path rather than as flags — the
+# same guard the mkdir above now carries, and for the same unvalidated value.
+# inotify-tools 4.23.9.0, the version this image ships, does honour it: with a
+# `-badcfg` watch target it answers `inotifywait: unrecognized option: b` and
+# exits, and behind `--` it reports `Watches established` instead. The literal
+# `/home/nginx/sites/` operand can never lead with `-`; it sits after the
+# separator only because `--` applies to the whole operand list.
 inotifywait -m -e close_write -e create -e delete -e moved_to -e moved_from \
 	--include '\.conf$' \
-	"/home/nginx/sites/" "$CUSTOM_NGINX_CONFIG_FILES_PATH" |
+	-- "/home/nginx/sites/" "$CUSTOM_NGINX_CONFIG_FILES_PATH" |
 	while read path action file; do
 		log "File '$file' was changed — reloading nginx"
 		sleep 1

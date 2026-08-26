@@ -139,8 +139,103 @@ describe('reload.sh — watched directories', () => {
     // An operator-supplied path may contain spaces or glob characters;
     // unquoted it would word-split into several bogus watch targets (or
     // silently expand) instead of one directory.
-    expect(codeOnly).toMatch(/mkdir -p "\$CUSTOM_NGINX_CONFIG_FILES_PATH"/);
+    expect(codeOnly).toMatch(/mkdir -p -- "\$CUSTOM_NGINX_CONFIG_FILES_PATH"/);
     expect(codeOnly).not.toMatch(/\$CUSTOM_NGINX_CONFIG_FILES_PATH(?!")/);
+  });
+});
+
+// Quoting and end-of-options guarding solve two different halves of the same
+// problem, and only the first was ever in place here. Quoting stops the *shell*
+// from word-splitting the value; it does nothing about the command's own option
+// parser, so a CUSTOM_NGINX_CONFIG_FILES_PATH beginning with `-` was still read
+// as flags by both commands this script hands it to. Observed against this
+// image with `CUSTOM_NGINX_CONFIG_FILES_PATH=-badcfg`: `mkdir` dumped its usage,
+// `inotifywait` answered `unrecognized option: b`, reload.sh exited, and the
+// container went on serving traffic and reporting healthy with automatic reload
+// permanently gone.
+//
+// The same guard the Node layer already applies to every operator-supplied path
+// that reaches a command (mapCustomNginxConf in js/utils.js; the backup mkdir
+// and copies in js/letsencrypt/).
+describe('reload.sh — end-of-options guarding for the operator path', () => {
+  it('ends mkdir option parsing before the directory operand', () => {
+    expect(codeOnly).toMatch(/mkdir\s+-p\s+--\s+"\$CUSTOM_NGINX_CONFIG_FILES_PATH"/);
+  });
+
+  it('ends inotifywait option parsing before the watched directories', () => {
+    // Pins `--` immediately ahead of both operands: dropping it, or letting a
+    // path drift back in front of it, fails here.
+    expect(invocation).toMatch(
+      /(^|\s)--\s+"\/home\/nginx\/sites\/"\s+"\$CUSTOM_NGINX_CONFIG_FILES_PATH"\s*\|?$/
+    );
+  });
+
+  it('places the separator after the option list, not inside it', () => {
+    // `--` before `--include` would turn the pattern into a watch target and
+    // drop the filter entirely, which is a worse failure than the one being
+    // fixed. `--include` itself starts with two dashes, so the separator is
+    // matched as a standalone token rather than by substring.
+    const include = invocation.indexOf("--include");
+    const separator = invocation.search(/(^|\s)--(\s|$)/);
+    expect(include).toBeGreaterThan(-1);
+    expect(separator).toBeGreaterThan(include);
+  });
+
+  it('guards every command the operator path is passed to', () => {
+    // Both call sites, so a future one cannot be added without the guard.
+    const uses = [...codeOnly.matchAll(/^.*\$CUSTOM_NGINX_CONFIG_FILES_PATH.*$/gm)]
+      .map(([line]) => line);
+    expect(uses).toHaveLength(2);
+    for (const line of uses) {
+      expect(line).toMatch(/(^|\s)--\s/);
+    }
+  });
+});
+
+// The block above pins what the script asks for; this one checks that the ask
+// is the right one against the binaries actually present. It is a narrow claim —
+// option parsing only — and deliberately not a claim about which inotify events
+// the kernel delivers, which no test here establishes (see the file header).
+describe('reload.sh — the guarded invocations against the real binaries', () => {
+  const { spawnSync } = require('child_process');
+  const os = require('os');
+
+  const available = (bin) => spawnSync('sh', ['-c', `command -v ${bin}`]).status === 0;
+  const OPTION_ERROR = /unrecognized option|invalid option|unknown option|illegal option/i;
+
+  let workdir;
+  beforeEach(() => {
+    workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'reload-guard-'));
+  });
+  afterEach(() => {
+    fs.rmSync(workdir, { recursive: true, force: true });
+  });
+
+  it('mkdir needs the separator to treat an option-like path as a directory', () => {
+    const bare = spawnSync('mkdir', ['-p', '-badcfg'], { cwd: workdir, encoding: 'utf8' });
+    expect(bare.status).not.toBe(0);
+    expect(`${bare.stderr}`).toMatch(OPTION_ERROR);
+
+    const guarded = spawnSync('mkdir', ['-p', '--', '-badcfg'], { cwd: workdir, encoding: 'utf8' });
+    expect(guarded.status).toBe(0);
+    expect(fs.statSync(path.join(workdir, '-badcfg')).isDirectory()).toBe(true);
+  });
+
+  // inotify-tools is present in the runtime image but not on every machine the
+  // suite runs on (it is absent from the GitHub runner and from macOS), so this
+  // reports as skipped rather than failing where the binary does not exist.
+  const withInotify = available('inotifywait') ? it : it.skip;
+
+  withInotify('inotifywait needs the separator to treat an option-like path as a watch target', () => {
+    fs.mkdirSync(path.join(workdir, '-badcfg'));
+    const args = ['-t', '1', '-e', 'close_write', '--include', '\\.conf$'];
+
+    const bare = spawnSync('inotifywait', [...args, '-badcfg'], { cwd: workdir, encoding: 'utf8' });
+    expect(`${bare.stderr}`).toMatch(OPTION_ERROR);
+
+    const guarded = spawnSync('inotifywait', [...args, '--', '-badcfg'], { cwd: workdir, encoding: 'utf8' });
+    expect(`${guarded.stderr}`).not.toMatch(OPTION_ERROR);
+    expect(`${guarded.stderr}`).toMatch(/Watches established/);
   });
 });
 
