@@ -137,6 +137,7 @@ COPY entrypoint.sh /usr/local/bin/
 COPY certbot_renew.sh /usr/local/bin/
 COPY reload.sh /usr/local/bin/
 COPY fail2ban.sh /usr/local/bin/
+COPY healthcheck.sh /usr/local/bin/
 # certbot_renew.log is appended to directly by cron (`>> .../certbot_renew.log`
 # in the crontab line built by js/letsencrypt/index.js) — its content bypasses
 # Docker's stdout/stderr log pipeline entirely, unlike every other script's
@@ -168,7 +169,7 @@ COPY fail2ban.sh /usr/local/bin/
 # mode for all four helpers, so the image is identical whatever it was handed.
 # The log gets 0644 — root-writable, world-readable for the two read paths
 # above (`touch` alone would leave it at the builder's umask as well).
-RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/reload.sh /usr/local/bin/fail2ban.sh /usr/local/bin/certbot_renew.sh \
+RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/reload.sh /usr/local/bin/fail2ban.sh /usr/local/bin/certbot_renew.sh /usr/local/bin/healthcheck.sh \
     && mkdir /var/log/certbot \
     && touch /var/log/certbot/certbot_renew.log \
     && chmod 0644 /var/log/certbot/certbot_renew.log
@@ -221,20 +222,26 @@ WORKDIR /home/scripts
 # conf.d/*.conf and would otherwise pick it up.
 RUN rm -f /etc/nginx/conf.d/default.conf
 
-# Lightweight, no-load, no-network healthcheck: confirms the nginx master
-# process recorded in its pidfile is alive AND that the on-disk config it
-# would (re)load is currently valid. Both checks are mode-agnostic — they
-# don't depend on which vhosts/certs are configured, so they don't produce
-# false negatives in modes where port 80/443 may have no server blocks
-# (e.g. dev mode awaiting a user-supplied dev.conf).
+# Lightweight, no-load, no-network healthcheck. The logic lives in
+# healthcheck.sh rather than inline here: it now covers three components and
+# emits a diagnostic for each, which is more than a readable one-liner can
+# carry — and as a real script the suite can execute it against a controlled
+# tree instead of asserting on the string in this file.
 #
-# The PID is read into a variable and explicitly checked for non-emptiness
-# before being passed to `kill -0`: in this image's /bin/sh, `kill -0 ""`
-# (an empty/missing pidfile — e.g. nginx crashed mid-write, or got signaled
-# during the brief pre-pidfile startup window) returns exit 0, which would
-# otherwise be a false "healthy" report despite nginx being down.
+# What it reports on is documented in that script and in
+# docs/architecture.md -> Healthcheck Architecture. In short: nginx (alive and
+# holding a valid configuration), the reload watcher, and crond *only* when
+# this container has actually registered certificate renewal. Fail2ban is
+# deliberately excluded, unchanged.
+#
+# All checks stay mode-agnostic — none depends on which vhosts or certificates
+# are configured — so no mode produces a false negative, including dev mode
+# awaiting a user-supplied dev.conf.
+#
+# Observation only: it never restarts a helper and never signals nginx, so an
+# unhealthy container keeps running and keeps serving whatever it still can.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-	CMD pid="$(cat /var/run/nginx.pid 2>/dev/null)" && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && nginx -t >/dev/null 2>&1 || exit 1
+	CMD ["healthcheck.sh"]
 
 ENTRYPOINT ["entrypoint.sh"]
 

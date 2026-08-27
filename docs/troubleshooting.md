@@ -6,22 +6,44 @@ See also: [Configuration](configuration.md) · [SSL modes](ssl-modes.md) · [Let
 
 ## Healthcheck
 
-The container includes a built-in Docker healthcheck that runs every 30 seconds:
+The container includes a built-in Docker healthcheck that runs every 30 seconds. It checks:
 
-1. Reads `/var/run/nginx.pid` and verifies the nginx master process is alive (`kill -0 <pid>`).
-2. Runs `nginx -t` to confirm the on-disk configuration is valid.
+1. **nginx** — the master process recorded in `/var/run/nginx.pid` is alive, and `nginx -t` confirms the on-disk configuration is still valid.
+2. **The reload watcher** — the `reload.sh` process started for this container is still running. If it dies, automatic config reload is silently gone, so health fails.
+3. **`crond`** — only if this container registered certificate renewal (the `certbot_renew.sh` entry in `/etc/crontabs/root`). Deployments that never register it — `http` mode, custom-certificate-only, development — stay healthy with no cron running.
 
-Both checks must pass for the container to report `healthy`. The check does not send any HTTP requests, so it works correctly in all modes.
+**Fail2ban is deliberately not checked.** It is optional and protective, never part of serving traffic, so a Fail2ban failure never marks the container unhealthy.
+
+All checks must pass for the container to report `healthy`. None sends an HTTP request, so they work correctly in every mode.
 
 ```bash
 # Check container health status
 docker inspect --format='{{.State.Health.Status}}' <container>
 
-# View recent health check output
+# View recent health check output — this is where the failure reason appears
 docker inspect --format='{{range .State.Health.Log}}{{.Output}}{{end}}' <container>
 ```
 
-**Healthcheck parameters**: `--interval=30s --timeout=5s --start-period=15s --retries=3`
+A passing check prints nothing. A failing one names the component, for example:
+
+```text
+reload watcher is not running (PID 24 has exited)
+certificate renewal is configured but crond is not running
+nginx configuration is invalid:
+nginx: [emerg] unknown directive "bogus_directive" in /etc/nginx/conf.d/80/broken.conf:1
+```
+
+**Healthcheck parameters**: `--interval=30s --timeout=5s --start-period=15s --retries=3` — so a persistent failure takes about 90 seconds to show up as `unhealthy`.
+
+### An unhealthy container keeps running
+
+Helper processes are not supervised and are never restarted internally: nginx is PID 1 and there is no init system inside the container. The healthcheck only *reports* — it never restarts a helper, signals nginx, or stops the container. A container whose reload watcher or `crond` has died goes `unhealthy` and carries on serving traffic.
+
+That has a practical consequence worth being explicit about: **`restart: always` (and the other Docker/Compose restart policies) react to a container *stopping*, not to it becoming `unhealthy`.** They will not recycle a container in this state. Recovering automatically requires something that acts on health — an orchestrator with health-aware scheduling, or your own monitoring — otherwise restart it yourself:
+
+```bash
+docker restart <container>
+```
 
 ## Logs
 

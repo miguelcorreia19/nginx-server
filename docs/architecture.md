@@ -50,7 +50,8 @@ Responsibilities:
 - **Helpers run in the background.** `reload.sh` and `fail2ban.sh` are started with `&` before the `exec`, so they become children re-parented to nginx (PID 1). The Node config layer has already exited by this point — it is one-shot, not a service.
 - **No supervisor.** There is no `supervisord`, `s6`, or init system. The image deliberately avoids a process supervisor; nginx is the single supervised process and the helpers are best-effort.
 - **No sidecars.** All functionality (config generation, reload watching, certbot, Fail2ban) runs inside the single container; there is no companion container or external coordinator.
-- **Non-fatal helper startup.** Helpers must never take nginx down. `reload.sh` and `fail2ban.sh` log clearly and exit cleanly on failure; the Fail2ban config step in `entrypoint.js` is wrapped in its own `try/catch`. The container's health reflects nginx alone (see [Healthcheck Architecture](#healthcheck-architecture)).
+- **Non-fatal helper startup.** Helpers must never take nginx down. `reload.sh` and `fail2ban.sh` log clearly and exit cleanly on failure; the Fail2ban config step in `entrypoint.js` is wrapped in its own `try/catch`. nginx keeps serving whatever a failed helper leaves behind.
+- **Helpers are never restarted.** Nothing respawns a helper that exits — that is what "no supervisor" means in practice. A dead helper stays dead for the life of the container. What the healthcheck does is make that *visible*: losing the reload watcher, or losing `crond` once renewal is registered, marks the container unhealthy without stopping it (see [Healthcheck Architecture](#healthcheck-architecture)). Fail2ban is deliberately excluded from that.
 
 ## Configuration Generation
 
@@ -230,13 +231,24 @@ Renewal uses a **webroot** model: nginx keeps port 80 permanently and certbot wr
 
 ## Healthcheck Architecture
 
-The image defines a Docker `HEALTHCHECK` (`--interval=30s --timeout=5s --start-period=15s --retries=3`) that, on each run:
+The image defines a Docker `HEALTHCHECK` (`--interval=30s --timeout=5s --start-period=15s --retries=3`) that runs `healthcheck.sh`. On each run it checks three things:
 
-1. Reads `/var/run/nginx.pid` and verifies the nginx master process is alive (`kill -0 <pid>`), explicitly rejecting an empty/missing PID so a crashed nginx can't be reported healthy.
-2. Runs `nginx -t` to confirm the on-disk configuration is still valid.
+1. **nginx** — reads `/var/run/nginx.pid` and verifies the master process is alive (`kill -0 <pid>`), explicitly rejecting an empty/missing PID so a crashed nginx can't be reported healthy, then runs `nginx -t` to confirm the on-disk configuration is still valid.
+2. **The reload watcher** — verifies the `reload.sh` process whose PID `entrypoint.sh` recorded in `/run/nginx-server/reload.pid` is still alive. A zombie is treated as dead (it still answers `kill -0`), and the process's `argv` is checked so a recycled PID can't stand in for it.
+3. **`crond`** — but *only* when this container has actually registered the renewal job, i.e. the `certbot_renew.sh` line is present in `/etc/crontabs/root`. That line is written by the Let's Encrypt handler, so the check follows real runtime state rather than a second notion of when renewal is expected.
 
-- **Why it focuses on nginx.** nginx is the load-bearing process (PID 1); both checks are mode-agnostic and send no HTTP request, so they work the same way regardless of mode or which vhosts/certs are configured. An HTTP probe would risk false negatives depending on configuration.
+All checks are mode-agnostic and send no HTTP request, so they behave the same way regardless of which vhosts or certificates are configured. An HTTP probe would risk false negatives depending on configuration.
+
+- **Why the reload watcher is health-critical.** Automatic config reload is an advertised capability, and losing it is otherwise completely silent — nginx keeps serving the configuration it already had, so no request fails and nothing else reports the loss.
+- **Why `crond` is only conditionally health-critical.** Certbot ships in every image, but renewal is not registered in every deployment. `http`, custom-certificate-only and development deployments never register it and stay healthy with no cron running at all. Once the entry exists, a dead `crond` means certificates will silently stop renewing, so it counts.
 - **Why Fail2ban does not affect health.** Fail2ban is an optional, best-effort protective helper, not part of serving traffic. The healthcheck intentionally never inspects it, so a Fail2ban problem (or it being disabled) never marks the container unhealthy. This mirrors the non-fatal helper philosophy in the [Process Model](#process-model).
+- **Diagnostics.** A passing check prints nothing, so the health log doesn't fill with identical lines. A failing one prints a single line naming the component (`reload watcher is not running (PID 24 has exited)`, `certificate renewal is configured but crond is not running`), and for a configuration failure the real `nginx -t` output. Read it with `docker inspect --format='{{range .State.Health.Log}}{{.Output}}{{end}}' <container>`.
+
+### Health is an observation, not a recovery mechanism
+
+The healthcheck never restarts a helper, never signals nginx and never stops the container. There is no supervisor (see [Process Model](#process-model)), so a helper that dies stays dead until the container is recreated — the healthcheck's only job is to make that visible.
+
+An unhealthy container therefore keeps running and keeps serving whatever it still can. This matters operationally: **plain Docker/Compose `restart:` policies react to a container *stopping*, not to it becoming `unhealthy`**, so they will not recycle a container in this state. Acting on health automatically requires an orchestrator that understands health (for example Kubernetes liveness probes or Swarm services); otherwise recovery is a manual `docker restart`.
 
 ## Fail2ban Integration
 
