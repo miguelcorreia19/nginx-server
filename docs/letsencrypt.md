@@ -158,7 +158,7 @@ This applies whenever an entry stops being a managed Let's Encrypt site:
 - the entry's `mode` changes to `custom` or `http`;
 - **including when it was the last Let's Encrypt site** — removing all of them deletes all of their certificates.
 
-> ⚠️ **This is destructive and immediate.** Deleting a site from `config.json` and restarting discards its certificate. Re-adding the site later means requesting a brand-new certificate, which counts against [rate limits](#rate-limits). If you want to keep a certificate while taking a site offline, keep its `config.json` entry and stop routing traffic to it instead — or enable [certificate backup](#certificate-backup) before removing it.
+> ⚠️ **This is destructive and immediate.** Deleting a site from `config.json` and restarting discards its certificate — and its [backup copy](#certificate-backup) along with it, so re-adding the site later means requesting a brand-new certificate, which counts against [rate limits](#rate-limits). Enabling backup does **not** hold a certificate for a site you have removed. If you want to keep a certificate while taking a site offline, keep its `config.json` entry and stop routing traffic to it instead.
 
 Only certificates Certbot issued under this image's management are affected. Certificates you supply yourself for `custom` sites live under `CUSTOM_CERTS_PATH` and are never touched.
 
@@ -194,13 +194,15 @@ Restoring is per certificate and validated first. For each site configured as `l
 - a site whose certificate exists locally but which Certbot cannot read is repaired from its backup where possible, and otherwise [preserved and reported](#lineages-certbot-cannot-list) rather than reissued;
 - a certificate name holding leftover files with no renewal config is [preserved and reported](troubleshooting.md#a-site-has-leftover-certificate-files-but-no-renewal-config); nothing is installed over it and no certificate is requested for it.
 
-Note that the backup is written from whatever certificates remain *after* [lifecycle reconciliation](#certificate-lifecycle-removing-a-site-deletes-its-certificate). A certificate whose site you removed is deleted first, so it will not be carried into the next backup.
+Note that the backup is written from whatever certificates remain *after* [lifecycle reconciliation](#certificate-lifecycle-removing-a-site-deletes-its-certificate). A certificate whose site you removed is deleted first, so it will not be carried into the next backup — and the copy the backup already held for it is removed at the same time, including its private key. Removing a site is therefore complete: nothing of that certificate is kept anywhere this image manages, and re-adding the site later requests a new certificate rather than quietly reinstating the one you deleted. Only the removed certificate is affected; every other lineage, and shared state such as your ACME account, is left untouched.
+
+Startup also reconciles the backup itself against `config.json`, so a backup written by an earlier version of this image — which kept removed certificates indefinitely — is brought in line on the first start after upgrading. Any managed certificate in the backup that `config.json` no longer configures as `letsencrypt`/`letsencrypt-staging` is removed, whether or not it still exists under `/etc/letsencrypt`. This reads the backup directory only; Certbot is not involved, so it costs nothing in deployments that use no Let's Encrypt sites. Two things it will not touch: a certificate that is still configured — whether its backup is currently usable is decided at restore time, not here — and any entry whose name is not a valid certificate name, which is reported and left in place rather than removed on a guess.
 
 One lineage is deliberately excluded from every backup write: a certificate that is [still configured but which Certbot cannot list](#lineages-certbot-cannot-list). Its local state is suspect, so whatever the backup already holds for that certificate — its renewal config, `live/` and `archive/` together — is left exactly as it is rather than being overwritten, and if the backup has no copy, none is created from the suspect state. Every other certificate continues to back up normally.
 
 This preserves the last known-good copy instead of replacing it on the first restart after the problem appears — which is also what makes automatic recovery possible: see [Lineages Certbot cannot list](#lineages-certbot-cannot-list). A certificate recovered during a startup keeps its previous backup copy for that startup; the next healthy startup updates it normally.
 
-Leaving `CERTBOT_BACKUP` unset, empty, or set to `false` disables the feature completely — no backup is written, and an existing backup is never restored.
+Leaving `CERTBOT_BACKUP` unset, empty, or set to `false` disables the feature completely — no backup is written, and an existing backup is never restored. Removing a site still clears that site's copy out of an existing backup, though: the flag governs keeping and using backups, not holding on to one for a certificate you have deleted. Nothing is ever created by that cleanup, so a deployment that has never taken a backup stays without one.
 
 ## Relevant environment variables
 

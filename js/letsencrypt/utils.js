@@ -1,6 +1,8 @@
 const fs = require("fs");
 const { DateTime } = require("luxon");
 const { command, commandSafe } = require("../utils.js");
+const { validateCertId } = require("../validate.js");
+const { exists, removeIfPresent } = require("./lineage_files.js");
 
 const { createLogger } = require("../logger.js");
 const { error } = createLogger("letsencrypt");
@@ -335,6 +337,162 @@ exports.backupCertbotState = async (options = {}) => {
       await commandSafe('cp', ['-rf', '--', `${source}/${entry}/${child}`, destDir]);
     }
   }
+};
+
+// Every artifact one cert-name owns inside a backed-up Certbot tree.
+//
+// The first three are Certbot's own, and they are the complete set: verified
+// against the pinned Certbot 5.6.0, `certbot delete --cert-name X` removes
+// renewal/X.conf, live/X and archive/X and nothing else, and storage.py's
+// delete_files() does exactly that. The private key is only ever in archive/X —
+// constants.KEY_DIR ("keys") still exists in 5.6 but nothing reads it, and
+// client.py passes key_dir=None, so issuance writes the key straight into the
+// archive rather than into a separate key store.
+//
+// renewal-backup/X.conf is this project's own: migrate_renewal.js copies a
+// renewal config there before rewriting it to webroot, and backupCertbotState
+// above copies that directory along with every other top-level entry. It holds
+// no key material, but it is lineage-specific and just as stale once the site
+// is gone.
+const backupLineagePaths = (backupPath, id) => [
+  `${backupPath}/renewal/${id}.conf`,
+  `${backupPath}/renewal-backup/${id}.conf`,
+  `${backupPath}/live/${id}`,
+  `${backupPath}/archive/${id}`,
+];
+
+// Remove one obsolete lineage from the backup.
+//
+// Called from the cleanup that has just removed the same lineage from live
+// Certbot state (letsencrypt/index.js), so both halves are driven by one
+// notion of which lineage is obsolete rather than by a second scan of the
+// backup.
+//
+// Deliberately NOT gated on certbotBackupEnabled(). That flag decides whether
+// *current* certificate state is written to the backup; this deletes state
+// that is already there. A deployment that took backups and later set
+// CERTBOT_BACKUP=false would otherwise keep a removed site's private key —
+// and stay able to resurrect its certificate — indefinitely, which is the
+// retention this exists to end. Nothing here ever creates a backup tree: with
+// no backup configured, or none on disk, there is simply nothing stale to
+// remove.
+//
+// Scoped to exactly one name. validateCertId is the same check config.json
+// entries pass, and its pattern (must begin alphanumeric, then only
+// alphanumerics, dots, hyphens and underscores) admits no path separator and
+// cannot spell "..", so each path below can only ever name one entry inside
+// its directory. That is what keeps "main" from touching "main2", "main-old"
+// or "domain-main" — no prefix matching, no globbing, no shell.
+exports.pruneBackupLineage = pruneBackupLineage = (id, overrides = {}) => {
+  const backupPath = 'backupPath' in overrides ? overrides.backupPath : process.env.CERTBOT_BACKUP_PATH;
+
+  if (!backupPath) return { pruned: [], reason: 'no-backup-path' };
+  if (!fs.existsSync(backupPath)) return { pruned: [], reason: 'no-backup' };
+
+  validateCertId(id);
+
+  const pruned = [];
+  for (const target of backupLineagePaths(backupPath, id)) {
+    // `exists` from lineage_files.js rather than a bare existsSync: that one
+    // follows symlinks, so a dangling live/<id>/*.pem link — exactly what a
+    // half-copied backup leaves behind — would read as absent and be skipped.
+    if (!exists(target)) continue;
+    // The same removal primitive the lineage transactions use, so pruning and
+    // rollback agree on how a lineage is taken off disk.
+    removeIfPresent(target);
+    pruned.push(target);
+  }
+
+  return { pruned, reason: pruned.length > 0 ? 'pruned' : 'nothing-to-prune' };
+};
+
+// The lineage-specific locations of a backup, and what a lineage looks like in
+// each: renewal/ and renewal-backup/ hold `<id>.conf` files, live/ and archive/
+// hold `<id>` directories. Same four places pruneBackupLineage removes, read
+// the other way round.
+const BACKUP_LINEAGE_SOURCES = [
+  { dir: 'renewal', suffix: '.conf' },
+  { dir: 'renewal-backup', suffix: '.conf' },
+  { dir: 'live', suffix: null },
+  { dir: 'archive', suffix: null },
+];
+
+// Which lineages an existing backup holds, read from the filesystem alone.
+//
+// This exists for one case the deletion-time pruning cannot reach: a backup
+// written by a release that did not prune. Its stale lineages were never
+// deleted from live Certbot state by *this* startup — there is usually no live
+// state for them at all any more — so they never pass through the cleanup loops
+// that call pruneBackupLineage. Discovering them means reading the backup
+// directly.
+//
+// Certbot is deliberately not involved. A stale name is a directory entry, and
+// asking Certbot for it would both be pointless (it does not know about the
+// backup) and would couple http/custom-only startups to Certbot being healthy —
+// exactly what the fast path in index.js exists to avoid.
+//
+// The union of all four locations, not just renewal/: the old backup write was
+// additive and non-atomic, so a historical backup can hold live/<id> and
+// archive/<id> with no renewal config, or a renewal-backup entry on its own.
+// Requiring a complete lineage before cleaning up would leave precisely the
+// partial residue this is meant to collect.
+//
+// Names are taken from the entries themselves and then validated, never
+// constructed. Anything whose name is not a valid cert-id is reported back
+// rather than deleted: the backup path is operator-supplied, and an entry this
+// module cannot account for is not something to remove on a guess.
+exports.listBackupLineages = listBackupLineages = (overrides = {}) => {
+  const backupPath = 'backupPath' in overrides ? overrides.backupPath : process.env.CERTBOT_BACKUP_PATH;
+
+  // No backup configured, or none on disk: nothing to read, and nothing is
+  // created to read it.
+  if (!backupPath || !fs.existsSync(backupPath)) return { lineages: [], unsafe: [] };
+
+  const lineages = new Set();
+  const unsafe = [];
+
+  for (const { dir, suffix } of BACKUP_LINEAGE_SOURCES) {
+    const sourceDir = `${backupPath}/${dir}`;
+
+    let entries;
+    try {
+      entries = fs.readdirSync(sourceDir, { withFileTypes: true });
+    } catch (err) {
+      // A location this backup simply does not have is not a problem; anything
+      // else leaves the answer unknown and is raised, so the caller can report
+      // an incomplete cleanup rather than treat "unreadable" as "empty".
+      if (err.code === 'ENOENT') continue;
+      throw err;
+    }
+
+    for (const entry of entries) {
+      // Dotfiles are skipped for the same reason backupCertbotState never
+      // copies them: they are not lineage material.
+      if (entry.name.startsWith('.')) continue;
+
+      let id;
+      if (suffix) {
+        if (entry.isDirectory() || !entry.name.endsWith(suffix)) continue;
+        id = entry.name.slice(0, -suffix.length);
+      } else {
+        // live/<id> is a directory; a torn backup can leave it a dangling
+        // symlink instead, which still names a lineage.
+        if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+        id = entry.name;
+      }
+
+      try {
+        validateCertId(id);
+      } catch (_) {
+        unsafe.push({ name: entry.name, path: `${sourceDir}/${entry.name}` });
+        continue;
+      }
+
+      lineages.add(id);
+    }
+  }
+
+  return { lineages: [...lineages].sort(), unsafe };
 };
 
 exports.checkCertFiles = (id, { cert_path, cert_key_path, cert_domains, status }) => {

@@ -30,6 +30,11 @@ jest.mock('../letsencrypt/utils.js', () => {
     backupCertbotState: actual.backupCertbotState,
     listRenewalStems: jest.fn(() => []),
     renewalConfigPath: actual.renewalConfigPath,
+    // The real pruner too: this suite is about what CERTBOT_BACKUP does and
+    // does not gate, and pruning is deliberately outside that gate. The same
+    // goes for the stale-backup reconciliation that drives it on upgrade.
+    pruneBackupLineage: actual.pruneBackupLineage,
+    listBackupLineages: actual.listBackupLineages,
   };
 });
 

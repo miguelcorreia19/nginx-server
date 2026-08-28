@@ -43,6 +43,8 @@ jest.mock('../letsencrypt/utils.js', () => ({
   listRenewalStems: jest.fn(() => []),
   renewalConfigPath: jest.fn((stem) => `/etc/letsencrypt/renewal/${stem}.conf`),
   backupCertbotState: jest.fn(() => Promise.resolve()),
+  pruneBackupLineage: jest.fn(() => ({ pruned: [], reason: 'no-backup' })),
+  listBackupLineages: jest.fn(() => ({ lineages: [], unsafe: [] })),
 }));
 
 jest.mock('../utils.js', () => ({

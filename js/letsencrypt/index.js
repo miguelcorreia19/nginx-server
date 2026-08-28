@@ -1,4 +1,4 @@
-const { parseCerts, checkCertFiles, hasManagedCertbotState, certbotBackupEnabled, listRenewalStems, renewalConfigPath, backupCertbotState } = require("./utils.js");
+const { parseCerts, checkCertFiles, hasManagedCertbotState, certbotBackupEnabled, listRenewalStems, renewalConfigPath, backupCertbotState, pruneBackupLineage, listBackupLineages } = require("./utils.js");
 const fs = require("fs");
 const path = require("path");
 const { command, commandSafe, configFiles } = require("../utils.js");
@@ -64,6 +64,85 @@ module.exports = async () => {
   // Both transaction namespaces are independent, so their leftovers cannot
   // interact; replacement is resolved first only because it is the older of the
   // two and nothing depends on the order.
+  // Take an obsolete lineage out of the backup as part of removing it from live
+  // Certbot state, so a site removed from config.json cannot leave its private
+  // key — or a certificate a later startup would silently reinstall — behind.
+  //
+  // Runs for every lineage this cleanup considers obsolete, including when the
+  // live deletion itself reported failure: config.json no longer wants the site
+  // either way, and pruning only on success would let a repeatedly-failing
+  // deletion retain the removed key forever, which is the retention this is
+  // here to end.
+  //
+  // Never fatal. A backup is recovery material, not serving state, so failing
+  // to tidy it must not stop nginx from starting — the failure is reported and
+  // folded into the existing cleanup-incomplete reporting instead, and the next
+  // startup retries it.
+  const pruneBackup = (id) => {
+    try {
+      const { pruned } = pruneBackupLineage(id);
+      if (pruned.length > 0) {
+        log(`Certificate ${id}: removed ${pruned.length} stale artifact(s) from the certificate backup`);
+      }
+      return true;
+    } catch (err) {
+      error(
+        `Certificate ${id}: backup cleanup failed (${err.message}) — stale certificate material may remain ` +
+        `under ${process.env.CERTBOT_BACKUP_PATH || '(no backup path configured)'}; startup continues and ` +
+        `cleanup will be retried on the next startup`
+      );
+      return false;
+    }
+  };
+
+  // Stale lineages a previous *release* left in the backup.
+  //
+  // The pruning above is tied to deleting a lineage from live Certbot state, so
+  // it only ever sees sites removed from this version onwards. An installation
+  // upgrading from a release that did not prune carries backups whose live
+  // counterpart was deleted long ago: nothing deletes them now, so nothing
+  // prunes them, and re-adding one of those names would still reinstall the old
+  // certificate. This closes that on the first startup after the upgrade.
+  //
+  // Ownership is the rule live cleanup already uses, applied to the other tree:
+  // config.json is the source of truth, and a lineage sitting in a directory
+  // this image writes and owns — /etc/letsencrypt there, CERTBOT_BACKUP_PATH
+  // here — that config.json no longer asks for is obsolete. The one addition is
+  // that an entry whose name is not a valid cert-id is left alone and reported
+  // (see listBackupLineages), because the backup path is operator-supplied and
+  // an unrecognisable entry is not this module's to delete.
+  //
+  // Placed here, before the recovery block and the zero-site fast path below,
+  // so it runs in the case that needs it most: no configured sites, no live
+  // Certbot state, and a backup full of certificates nobody asked for. It reads
+  // the filesystem only — no Certbot invocation — so an http/custom-only
+  // startup gains no dependency on Certbot being healthy, and it creates
+  // nothing: with no backup on disk there is simply nothing to read.
+  let staleBackupCleanupIncomplete = false;
+  try {
+    const { lineages, unsafe } = listBackupLineages();
+
+    for (const { name, path: entryPath } of unsafe) {
+      staleBackupCleanupIncomplete = true;
+      warn(`Certificate backup contains "${name}", which is not a valid certificate name — left untouched at ${entryPath}`);
+    }
+
+    for (const id of lineages) {
+      // Configured is configured. Whether the backup is currently usable —
+      // valid, complete, matching, unexpired — is validateBackupLineage's
+      // decision at restore time, not a reason to delete it here.
+      if (certs[id]) continue;
+
+      log(`Removing stale certificate backup ${id} (no longer in config.json)`);
+      if (!pruneBackup(id)) staleBackupCleanupIncomplete = true;
+    }
+  } catch (err) {
+    // Could not enumerate the backup, so which lineages are stale is unknown.
+    // Nothing has been deleted on that evidence, and startup carries on.
+    staleBackupCleanupIncomplete = true;
+    error(`Could not read the certificate backup to check for stale lineages (${err.message}) — stale certificate material may remain under ${process.env.CERTBOT_BACKUP_PATH || '(no backup path configured)'}; startup continues and cleanup will be retried on the next startup`);
+  }
+
   let recovered;
   try {
     recovered = [...recoverInterruptedRestores(), ...recoverInterruptedBootstraps()];
@@ -97,7 +176,13 @@ module.exports = async () => {
   // Every uncertain case (any renewal *.conf, a populated backup, an
   // unreadable directory) keeps the full path below.
   if (Object.keys(certs).length === 0 && !hasManagedCertbotState()) {
-    log("No Let's Encrypt sites configured and no Certbot state to reconcile");
+    // The stale-backup reconciliation above has already run, so this return
+    // still reports what it did rather than reading as an unqualified no-op.
+    if (staleBackupCleanupIncomplete) {
+      warn("No Let's Encrypt sites configured and no Certbot state to reconcile; stale certificate backup cleanup incomplete (see above)");
+    } else {
+      log("No Let's Encrypt sites configured and no Certbot state to reconcile");
+    }
     return;
   }
 
@@ -141,7 +226,10 @@ module.exports = async () => {
     // that was never checked.
     let lineagesClassified = true;
     // Unresolved managed state still present after this pass.
-    let cleanupIncomplete = false;
+    // Seeded from the stale-backup reconciliation above, so an unreadable or
+    // unprunable backup lineage reaches the same summary as every other
+    // incomplete cleanup instead of being reported only as a stray error line.
+    let cleanupIncomplete = staleBackupCleanupIncomplete;
     // Renewal metadata gone, but Certbot reported failure and inert files may
     // remain. Nothing is left to reconcile, so this is not "incomplete" — but
     // the summary should not read as an unqualified success either.
@@ -174,6 +262,12 @@ module.exports = async () => {
       log(`Removing undiscoverable certificate ${stem} (no longer in config.json)`);
 
       const deleted = await deleteCert(stem);
+
+      // Before branching on the deletion result: the site is gone from
+      // config.json whichever way that went, so its backup copy is stale
+      // regardless.
+      if (!pruneBackup(stem)) cleanupIncomplete = true;
+
       if (deleted) {
         log(`Certificate ${stem} deleted`);
         continue;
@@ -476,6 +570,11 @@ module.exports = async () => {
         const deleted = await deleteCert(id);
         if (deleted) log(`Certificate ${id} deleted`);
         else error(`Certificate ${id} deletion failed`);
+
+        // Same rule as the undiscoverable branch above, and reached before the
+        // zero-configured-sites return below — so removing the *last* Let's
+        // Encrypt site still prunes its backup rather than returning first.
+        if (!pruneBackup(id)) cleanupIncomplete = true;
       }
     }
 
