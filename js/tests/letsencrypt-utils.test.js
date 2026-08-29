@@ -293,3 +293,112 @@ describe('parseCertbotCertificatesOutput — the shared parser', () => {
     expect(certbotReportedNoCertificates(certbotOutput([EXAMPLE]))).toBe(false);
   });
 });
+
+// ──────────────────────────────────────────────
+//  An empty successful response is outside the contract
+// ──────────────────────────────────────────────
+//
+// command()/commandSafe() resolve with *no value* when a command exits 0 having
+// written nothing to stdout, so an empty Certbot response reaches the parser as
+// `undefined` rather than as a string. Every scan in the parser then failed on
+// it with a raw `TypeError: Cannot read properties of undefined (reading
+// 'indexOf')`, which told an operator nothing about what had actually gone
+// wrong.
+//
+// Reproduced during runtime validation only by substituting a stub binary: real
+// Certbot 5.6.0 either exits 0 with output — a listing, "No certificates
+// found.", or an invalid-renewal-config diagnostic — or exits non-zero with
+// none, which the command layer already rejects. The guard exists because the
+// parser should not depend on that external invariant holding, not because a
+// reachable Certbot state produces it.
+describe('parseCertbotCertificatesOutput — empty successful output', () => {
+  const { parseCertbotCertificatesOutput } = require('../letsencrypt/utils.js');
+  const EMPTY_RESPONSE = /reported success but produced no output/;
+
+  it.each([
+    ['undefined — what an empty stdout actually resolves to', undefined],
+    ['null', null],
+    ['an empty string', ''],
+    ['spaces', '   '],
+    ['a bare newline', '\n'],
+    ['CRLF', '\r\n'],
+    ['mixed blank whitespace', ' \t\n \r\n '],
+  ])('rejects %s', (_label, output) => {
+    expect(() => parseCertbotCertificatesOutput(output)).toThrow(EMPTY_RESPONSE);
+  });
+
+  it('fails with an application error, never a raw TypeError', () => {
+    // The whole point of the guard: the operator-facing diagnostic must not be
+    // the parser tripping over its own input.
+    expect(() => parseCertbotCertificatesOutput(undefined)).not.toThrow(TypeError);
+    try {
+      parseCertbotCertificatesOutput(undefined);
+      throw new Error('expected a throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).not.toMatch(/indexOf/);
+      expect(err.message).toMatch(/certbot certificates/);
+    }
+  });
+
+  it('does not quietly report zero certificates', () => {
+    // Silence is evidence of nothing, and this result decides which lineages
+    // get deleted or reissued — so it must not be read as an empty set.
+    expect(() => parseCertbotCertificatesOutput('')).toThrow();
+    expect(parseCertbotCertificatesOutput('No certificates found.')).toEqual({});
+  });
+
+  it('says what it expected instead', () => {
+    expect(() => parseCertbotCertificatesOutput('')).toThrow(/No certificates found/);
+  });
+});
+
+describe('parseCerts — an empty successful command response', () => {
+  it('surfaces the empty-output diagnostic rather than a TypeError', async () => {
+    // command() resolving with no argument is exactly what an exit-0 run that
+    // wrote nothing to stdout produces.
+    command.mockResolvedValueOnce(undefined);
+
+    await expect(parseCerts()).rejects.toThrow(/reported success but produced no output/);
+  });
+
+  it('rejects a blank string response too', async () => {
+    command.mockResolvedValueOnce('   \n');
+
+    await expect(parseCerts()).rejects.toThrow(/reported success but produced no output/);
+  });
+
+  it('returns nothing rather than throwing for the real no-certificates report', async () => {
+    command.mockResolvedValueOnce(NO_CERTS_OUTPUT);
+
+    await expect(parseCerts()).resolves.toEqual({});
+  });
+
+  it('still parses a real certificate listing unchanged', async () => {
+    command.mockResolvedValueOnce(certbotOutput([EXAMPLE]));
+
+    const result = await parseCerts();
+
+    expect(Object.keys(result)).toEqual(['example']);
+    expect(result.example.cert_domains).toEqual(['example.com', 'www.example.com']);
+  });
+
+  it('leaves non-empty malformed output on its existing path', async () => {
+    // The invalid-renewal-config report Certbot 5.6 prints for an unparseable
+    // lineage: non-empty, no certificate blocks. It must keep yielding an empty
+    // map, which is what drives the undiscoverable-lineage handling — not the
+    // new fatal guard.
+    command.mockResolvedValueOnce(
+      '\n- - - - -\n\nThe following renewal configurations were invalid:\n' +
+      '  /etc/letsencrypt/renewal/main.conf\n- - - - -\n'
+    );
+
+    await expect(parseCerts()).resolves.toEqual({});
+  });
+
+  it('keeps command failures on the existing rejection path', async () => {
+    command.mockRejectedValueOnce({ error: 'Permission denied' });
+
+    await expect(parseCerts()).rejects.toThrow(/Failed to query certbot certificates/);
+  });
+});

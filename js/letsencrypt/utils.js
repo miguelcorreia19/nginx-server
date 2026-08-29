@@ -36,6 +36,25 @@ exports.certbotBackupEnabled = certbotBackupEnabled = (value = process.env.CERTB
 // deliberately not accepted. Output this parser does not recognise fails loudly
 // rather than being guessed at.
 exports.parseCertbotCertificatesOutput = parseCertbotCertificatesOutput = (output) => {
+  // Both callers get this text from a helper that resolves with *no value* when
+  // a command exits 0 having written nothing to stdout (command() in
+  // ../utils.js for parseCerts below, commandSafe() for the sandbox validator in
+  // validate_backup.js). An empty response therefore arrives here as `undefined`
+  // rather than as a string, and every scan below would fail on it with a raw
+  // TypeError naming `.indexOf` — no use at all to whoever has to act on it.
+  //
+  // Rejected rather than read as "no certificates": Certbot 5.6.0 says that in
+  // words, and every state reproduced against it either exits 0 with output or
+  // exits non-zero with none. Silence is outside that contract, so it is
+  // evidence of nothing — and this result decides which lineages get deleted or
+  // reissued, which is not a decision to make on an answer that never arrived.
+  if (typeof output !== 'string' || output.trim() === '') {
+    throw new Error(
+      'Failed to parse "certbot certificates" output: the command reported success but produced no output ' +
+      '(expected a certificate listing or "No certificates found.")'
+    );
+  }
+
   const found_certs = {};
 
   const CERT_NAME = 'Certificate Name:';
