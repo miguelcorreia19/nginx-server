@@ -50,7 +50,7 @@ describe('reload.sh — watcher invocation', () => {
 
 describe('reload.sh — watched event mask', () => {
   // Every event here earns its place from an observed sequence; see reload.sh.
-  const REQUIRED_EVENTS = [
+  const CHILD_EVENTS = [
     // In-place write to an existing config — the only event it emits.
     'close_write',
     // `ln -sf` creating a link emits CREATE and no CLOSE_WRITE, so a symlink
@@ -65,6 +65,16 @@ describe('reload.sh — watched event mask', () => {
     // nothing was written.
     'moved_from',
   ];
+
+  // These are about the watched directories themselves, not their contents.
+  // inotify follows the inode, so `rm -rf <dir> && mkdir <dir>` leaves the
+  // watch on the directory that is gone while an unwatched one takes its
+  // place — and inotifywait does not exit, because the other directory still
+  // has a live watch. Without these the watcher went on running with half its
+  // coverage silently missing.
+  const SELF_EVENTS = ['delete_self', 'move_self', 'unmount'];
+
+  const REQUIRED_EVENTS = [...CHILD_EVENTS, ...SELF_EVENTS];
 
   it.each(REQUIRED_EVENTS)('subscribes to %s', (event) => {
     expect(invocation).toMatch(new RegExp(`-e\\s+${event}\\b`));
@@ -91,12 +101,12 @@ describe('reload.sh — watched event mask', () => {
 
 describe('reload.sh — .conf filename filter', () => {
   it('filters at inotifywait rather than in the shell loop', () => {
-    expect(invocation).toMatch(/--include\s+'\\\.conf\$'/);
+    expect(invocation).toMatch(/--include\s+'\(\\\.conf\|\/\)\$'/);
   });
 
-  it('matches only entries whose final name ends in .conf', () => {
+  it('matches config files and the watched directories, and nothing else', () => {
     const pattern = (invocation.match(/--include\s+'([^']+)'/) || [])[1];
-    expect(pattern).toBe('\\.conf$');
+    expect(pattern).toBe('(\\.conf|/)$');
 
     // inotifywait's --include is an extended regular expression matched
     // against the event's full path, so exercising it with a JS RegExp on
@@ -111,6 +121,13 @@ describe('reload.sh — .conf filename filter', () => {
       expect(re.test(`${dir}site.tmp`)).toBe(false);
       expect(re.test(`${dir}4913`)).toBe(false);
       expect(re.test(`${dir}notes.txt`)).toBe(false);
+
+      // The `/$` half. A self-event names the watched directory itself, which
+      // inotifywait prints with its trailing slash — `\.conf$` alone rejected
+      // those, so delete_self would have been filtered out before the loop
+      // ever saw it. A child path never ends in a slash, so this admits the
+      // directory events and nothing more.
+      expect(re.test(dir)).toBe(true);
     }
   });
 
@@ -246,8 +263,20 @@ describe('reload.sh — duplicate-event coalescing', () => {
   // queued in the pipe and would each drive their own reload on a later pass.
   it('drains queued events between the settle sleep and the reload', () => {
     expect(codeOnly).toMatch(
-      /sleep 1\s*\n\s*while read -r -t 0\.1 _ _ _; do :; done\s*\n\s*nginx -s reload/
+      /sleep 1\s*\n\s*while read -r -t 0\.1 [\s\S]*?\n\s*done\s*\n\s*nginx -s reload/
     );
+  });
+
+  it('inspects what it drains instead of discarding it blind', () => {
+    // The drain used to be `while read ... do :; done`. `rm -rf <watched-dir>`
+    // unlinks the configs first, so the DELETE of the last `.conf` arrives
+    // before the directory's own DELETE_SELF — the child event starts the
+    // reload cycle and the blind drain swallowed the event that says the watch
+    // is gone. Every empty-directory test passed while runtime did not.
+    const drain = codeOnly.match(/while read -r -t 0\.1[\s\S]*?\n\t\tdone/);
+    expect(drain).not.toBeNull();
+    expect(drain[0]).toMatch(/DELETE_SELF/);
+    expect(drain[0]).toMatch(/watch_lost/);
   });
 
   it('drains strictly before the reload, never after it', () => {
@@ -285,5 +314,296 @@ describe('reload.sh — existing reload behaviour preserved', () => {
 
   it('keeps the trap that stops the watcher cleanly on a signal', () => {
     expect(codeOnly).toMatch(/trap '.*pkill inotifywait.*' TERM INT/);
+  });
+});
+
+// ──────────────────────────────────────────────
+//  Losing a watch is fatal to the watcher
+// ──────────────────────────────────────────────
+//
+// inotify follows the inode, so `rm -rf <dir> && mkdir <dir>` leaves the watch
+// on the directory that is gone while an unwatched one stands in its place.
+// inotifywait does not exit — the other watched directory still has a live
+// watch — so the container went on running with half its coverage missing:
+// changes in the replaced directory produced no reload, no error, and a
+// healthy container.
+//
+// These drive the real reload.sh against the real inotify-tools, because the
+// thing under test is what the kernel delivers and how the script reacts to
+// it — a source assertion could not establish either. They skip where the
+// binary or the image's own watched directory is genuinely absent (the GitHub
+// runner has neither); the source assertions above stay portable.
+
+describe('reload.sh — a lost watch stops the watcher', () => {
+  const os = require('os');
+  const { spawn, spawnSync } = require('child_process');
+
+  const hasInotify = spawnSync('sh', ['-c', 'command -v inotifywait']).status === 0;
+  const hasSitesDir = fs.existsSync('/home/nginx/sites');
+  const runnable = hasInotify && hasSitesDir;
+  const withWatcher = runnable ? it : it.skip;
+
+  const WATCH_LOST_RC = 3;
+  let tmp;
+  let watcher;
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-lost-'));
+    // `nginx -s reload` must not actually run, or fail loudly, during a test.
+    fs.mkdirSync(path.join(tmp, 'bin'));
+    fs.writeFileSync(path.join(tmp, 'bin', 'nginx'), '#!/bin/sh\nexit 0\n');
+    fs.chmodSync(path.join(tmp, 'bin', 'nginx'), 0o755);
+  });
+
+  afterEach(async () => {
+    if (watcher) {
+      if (watcher.exitCode === null && watcher.signalCode === null) {
+        // SIGTERM, not SIGKILL: reload.sh traps it and reaps its own
+        // inotifywait. A hard kill skips the trap and leaves that child
+        // orphaned, and once its parent is gone nothing in the container reaps
+        // it — it lingers as a zombie into the next test.
+        watcher.kill('SIGTERM');
+        if (!(await closed(watcher, 1500))) {
+          watcher.kill('SIGKILL');
+          await closed(watcher, 1000);
+        }
+      }
+      // Wait for 'close', not just 'exit': the stdio pipes outlive the process
+      // and are what keeps the Jest worker from shutting down cleanly.
+      await closed(watcher, 1000);
+      watcher.stdout.destroy();
+      watcher.stderr.destroy();
+      watcher.unref();
+    }
+    watcher = undefined;
+    spawnSync('pkill', ['inotifywait']);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  // Races a promise against a deadline, clearing the timer whichever side wins.
+  // Promise.race leaves the losing timer pending, and a still-armed multi-second
+  // timeout holds the event loop open long after the test has finished — which
+  // is what makes Jest force-exit the worker at the end of the run.
+  const within = (promise, ms, onTimeout) => new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve(onTimeout);
+    }, ms);
+    promise.then((value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    });
+  });
+
+  // Resolves true once the child's stdio has closed, false on timeout.
+  const closed = (child, ms) => {
+    if (child.stdout.destroyed && child.exitCode !== null) return Promise.resolve(true);
+    return within(new Promise((resolve) => child.once('close', () => resolve(true))), ms, false);
+  };
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // Running inotifywait processes. Deliberately not `pgrep -x`: a zombie keeps
+  // its /proc entry and pgrep still matches it, so an already-dead process
+  // would read as an orphan. Same live-vs-zombie distinction healthcheck.sh
+  // makes, and here it is the difference between "still watching" and "gone".
+  const liveInotifywaits = () => {
+    if (!fs.existsSync('/proc')) return [];
+    return fs.readdirSync('/proc')
+      .filter((entry) => /^\d+$/.test(entry))
+      .filter((pid) => {
+        try {
+          if (fs.readFileSync(`/proc/${pid}/comm`, 'utf8').trim() !== 'inotifywait') return false;
+          const state = (fs.readFileSync(`/proc/${pid}/status`, 'utf8').match(/^State:\s*(\S+)/m) || [])[1];
+          return state !== 'Z';
+        } catch (_) {
+          return false;
+        }
+      });
+  };
+
+  // Starts the real script with its operator-configurable directory pointed at
+  // a temp path. /home/nginx/sites/ is hard-coded in the script and is the
+  // *other* watch — the one that must not save a half-working watcher.
+  const startWatcher = async () => {
+    const configs = path.join(tmp, 'configs');
+    fs.mkdirSync(configs);
+
+    const output = [];
+    watcher = spawn('bash', [path.join(root, 'reload.sh')], {
+      env: {
+        PATH: `${path.join(tmp, 'bin')}:${process.env.PATH}`,
+        CUSTOM_NGINX_CONFIG_FILES_PATH: configs,
+      },
+    });
+    watcher.stdout.on('data', (d) => output.push(String(d)));
+    watcher.stderr.on('data', (d) => output.push(String(d)));
+
+    const exited = new Promise((resolve) => watcher.on('exit', (code) => resolve(code)));
+    // Long enough for inotifywait to report "Watches established".
+    await sleep(1500);
+    return { configs, output, exited, log: () => output.join('') };
+  };
+
+  const alive = () => watcher.exitCode === null && watcher.signalCode === null;
+
+  const exitedWithin = (exited, ms) => within(exited, ms, 'timeout');
+
+  withWatcher('keeps running when a .conf inside a watched directory is deleted', async () => {
+    const { configs, exited, log } = await startWatcher();
+
+    fs.writeFileSync(path.join(configs, 'site.conf'), 'x');
+    await sleep(4000);
+    fs.rmSync(path.join(configs, 'site.conf'));
+    await sleep(4000);
+
+    expect(alive()).toBe(true);
+    expect(await exitedWithin(exited, 100)).toBe('timeout');
+    // and it did treat both as ordinary reload events
+    expect(log()).toMatch(/File 'site\.conf' was changed/);
+    expect(log()).not.toMatch(/watch for .* was lost/);
+  }, 30000);
+
+  withWatcher('exits when a watched directory is deleted', async () => {
+    const { configs, exited, log } = await startWatcher();
+
+    fs.rmSync(configs, { recursive: true, force: true });
+
+    expect(await exitedWithin(exited, 8000)).toBe(WATCH_LOST_RC);
+    expect(log()).toMatch(/watch for .* was lost/);
+  }, 30000);
+
+  withWatcher('exits when a watched directory holding configs is deleted', async () => {
+    // The realistic shape, and the one an empty-directory test misses:
+    // `rm -rf` unlinks the configs first, so the DELETE of the last `.conf`
+    // arrives before the directory's own DELETE_SELF. That child event starts
+    // a reload cycle, and the cycle's drain would swallow the DELETE_SELF
+    // behind it — which is exactly what happened at runtime while every
+    // empty-directory test passed.
+    const { configs, exited, log } = await startWatcher();
+    fs.writeFileSync(path.join(configs, 'proxy.conf'), 'x');
+    await sleep(4000);
+
+    fs.rmSync(configs, { recursive: true, force: true });
+
+    expect(await exitedWithin(exited, 10000)).toBe(WATCH_LOST_RC);
+    expect(log()).toMatch(/watch for .* was lost/);
+  }, 40000);
+
+  withWatcher('exits when a watched directory is moved away', async () => {
+    const { configs, exited, log } = await startWatcher();
+
+    fs.renameSync(configs, path.join(tmp, 'moved-aside'));
+
+    expect(await exitedWithin(exited, 8000)).toBe(WATCH_LOST_RC);
+    expect(log()).toMatch(/watch for .* was lost/);
+  }, 30000);
+
+  withWatcher('exits when a watched directory is replaced by a new one', async () => {
+    // The reported reproduction: the path still exists afterwards, and looks
+    // fine, but the watch is on the inode that went away.
+    const { configs, exited, log } = await startWatcher();
+
+    fs.rmSync(configs, { recursive: true, force: true });
+    fs.mkdirSync(configs);
+    fs.writeFileSync(path.join(configs, 'new.conf'), 'x');
+
+    expect(await exitedWithin(exited, 8000)).toBe(WATCH_LOST_RC);
+    expect(log()).toMatch(/watch for .* was lost/);
+  }, 30000);
+
+  withWatcher('exits even though the other watched directory is still fine', async () => {
+    // The whole point: partial coverage is not a working watcher. The script's
+    // other watch, /home/nginx/sites/, is untouched here.
+    const { configs, exited } = await startWatcher();
+    expect(fs.existsSync('/home/nginx/sites')).toBe(true);
+
+    fs.rmSync(configs, { recursive: true, force: true });
+
+    expect(await exitedWithin(exited, 8000)).toBe(WATCH_LOST_RC);
+    expect(fs.existsSync('/home/nginx/sites')).toBe(true);
+  }, 30000);
+
+  withWatcher('names the directory and the reason in the diagnostic', async () => {
+    const { configs, exited, log } = await startWatcher();
+
+    fs.rmSync(configs, { recursive: true, force: true });
+    await exitedWithin(exited, 8000);
+
+    expect(log()).toMatch(new RegExp(configs.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    expect(log()).toMatch(/DELETE_SELF/);
+    expect(log()).toMatch(/automatic nginx reload is no longer reliable/);
+    expect(log()).toMatch(/restart the container/i);
+  }, 30000);
+
+  withWatcher('leaves no running inotifywait behind', async () => {
+    // The reader kills it before exiting; otherwise `wait` would hang and the
+    // process would outlive the script.
+    const before = liveInotifywaits();
+    const { configs, exited } = await startWatcher();
+    expect(liveInotifywaits().length).toBe(before.length + 1);
+
+    fs.rmSync(configs, { recursive: true, force: true });
+    await exitedWithin(exited, 8000);
+    await sleep(500);
+
+    expect(liveInotifywaits()).toEqual(before);
+  }, 30000);
+
+  withWatcher('does not restart itself after a lost watch', async () => {
+    const { configs, exited, log } = await startWatcher();
+
+    fs.rmSync(configs, { recursive: true, force: true });
+    await exitedWithin(exited, 8000);
+    fs.mkdirSync(configs);
+    await sleep(2000);
+    fs.writeFileSync(path.join(configs, 'after.conf'), 'x');
+    await sleep(3000);
+
+    expect(alive()).toBe(false);
+    expect(log()).not.toMatch(/File 'after\.conf' was changed/);
+  }, 30000);
+});
+
+describe('reload.sh — the lost-watch exit path', () => {
+  it('reports the failure through the exit status, not just the log', () => {
+    // `exit` inside the event loop ends only its subshell — the loop is the
+    // reader of a backgrounded pipeline — so the status has to be carried out
+    // through the join before it can end this script.
+    expect(codeOnly).toMatch(/WATCH_LOST_RC=3/);
+    expect(codeOnly).toMatch(/exit "\$WATCH_LOST_RC"/);
+    expect(codeOnly).toMatch(/wait "\$WATCH_PID"\s*\n\s*WATCH_RC=\$\?/);
+    expect(codeOnly).toMatch(/if \[ "\$WATCH_RC" -eq "\$WATCH_LOST_RC" \]/);
+  });
+
+  it('reaps inotifywait before exiting, not after', () => {
+    // After would be unreachable: the join waits for the whole pipeline, so a
+    // surviving inotifywait hangs the script instead of ending it.
+    const handler = codeOnly.match(/watch_lost\(\) \{[\s\S]*?\n\}/);
+    expect(handler).not.toBeNull();
+    const kill = handler[0].indexOf('pkill inotifywait');
+    const exit = handler[0].indexOf('exit "$WATCH_LOST_RC"');
+    expect(kill).toBeGreaterThan(-1);
+    expect(exit).toBeGreaterThan(kill);
+  });
+
+  it('reaches the failure path from both the arriving event and the drain', () => {
+    // Two call sites, one handler — so a future edit cannot fix one and leave
+    // the other silently discarding the event.
+    const calls = (codeOnly.match(/watch_lost "\$\w+" "\$\w+"/g) || []);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('adds no polling, re-watching or respawn loop', () => {
+    // The lifecycle policy is unchanged: nothing here supervises anything.
+    expect(codeOnly).not.toMatch(/\bwhile\s+true\b/);
+    expect(codeOnly).not.toMatch(/\bmkdir\b[^\n]*\$path/);
+    // exactly one inotifywait invocation, still not recursive
+    expect((codeOnly.match(/^inotifywait /gm) || []).length).toBe(1);
+    expect(invocation).not.toMatch(/(^|\s)(-r|--recursive)(\s|$)/);
   });
 });

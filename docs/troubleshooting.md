@@ -245,6 +245,20 @@ Deleting a config or moving it out can leave the configuration invalid — a dan
 - Check `docker logs <container>` for `[reload]` messages — if you see `inotifywait` errors, the watch may not have started.
 - If there is no `[reload]` line at all after a host-side edit, see the next section.
 
+#### Replacing a watched directory stops the watcher
+
+inotify watches an inode, not a path. Removing or renaming one of the two watched directories — `rm -rf` and re-creating it, remounting it, swapping it for a fresh copy — leaves the watch on the directory that went away, so changes in the new one are never seen.
+
+The watcher treats that as a fatal loss and exits rather than continuing with only its other directory still covered:
+
+```text
+[reload] ERROR: the watch for '/home/nginx/configs/' was lost (DELETE_SELF) — automatic nginx reload is no longer reliable
+```
+
+nginx keeps serving, and the container keeps running. What changes is that the reload watcher is gone, so the [healthcheck](#healthcheck) reports the container `unhealthy` — the same signal as any other dead helper, and recovered the same way. The directory is not re-created and the watch is not re-registered: restore the expected directory or mount, then restart the container.
+
+Editing files *inside* a watched directory is unaffected — deleting a `.conf` is an ordinary reload, not a lost watch.
+
 #### Host edits on Docker Desktop may not reach the watcher
 
 Automatic reload depends on the container actually receiving an inotify event for the bind mount, and that is a property of the filesystem underneath it, not of the watcher.
