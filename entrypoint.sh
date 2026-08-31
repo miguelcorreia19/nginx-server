@@ -33,10 +33,24 @@ mkdir -p /run/nginx-server
 # never make a fresh one look healthy.
 echo $! > /run/nginx-server/reload.pid
 
-# Optional Fail2ban (no-op unless FAIL2BAN_ENABLED=true). Launched as a
-# backgrounded helper like reload.sh; it never blocks or replaces nginx, and any
-# failure inside it is non-fatal — nginx still starts below.
-/usr/local/bin/fail2ban.sh &
+# Optional Fail2ban (no-op unless FAIL2BAN_ENABLED=true).
+#
+# Run in the foreground, unlike reload.sh above. Every path where it decides not
+# to start the daemon — disabled (the default), no generated jail config,
+# iptables unusable — returns here in milliseconds, and as an ordinary
+# foreground command this shell reaps it. Backgrounded, those same paths exited
+# while this shell was still on its way to the `exec` below, leaving a child it
+# never got to reap: nginx inherited it as a zombie and cleared it only
+# incidentally, on the next reload that made nginx sweep its children.
+#
+# It does not block on the daemon. When Fail2ban does start, fail2ban.sh
+# backgrounds that itself and returns immediately; that child is long-lived, so
+# it is still running at `exec` and is re-parented to nginx like reload.sh —
+# which nginx does reap when it eventually exits.
+#
+# Still non-fatal: fail2ban.sh exits 0 on every path, and this shell runs
+# without `set -e`, so nothing here can stop nginx from starting.
+/usr/local/bin/fail2ban.sh
 
 log "Entrypoint script ended — starting nginx"
 exec "$@"

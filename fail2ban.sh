@@ -1,17 +1,33 @@
 #!/bin/bash
 #
-# Optional Fail2ban launcher. Started in the background by entrypoint.sh
-# (alongside reload.sh) and gated entirely on FAIL2BAN_ENABLED.
+# Optional Fail2ban launcher. Run synchronously by entrypoint.sh and gated
+# entirely on FAIL2BAN_ENABLED.
 #
 # Design rules (see the project analysis reports):
 #   - No-op unless FAIL2BAN_ENABLED=true — disabled and "false" both mean off,
 #     and the disabled path changes nothing about existing behaviour.
-#   - Never blocks or replaces nginx: nginx remains PID 1 in the foreground;
-#     this script runs as a backgrounded helper, exactly like reload.sh.
+#   - Never blocks or replaces nginx: nginx remains PID 1 in the foreground.
+#     Every path that decides *not* to start the daemon returns in milliseconds,
+#     and only the daemon itself is backgrounded (see the run section below).
 #   - Non-fatal: every failure here logs a clear message and exits 0 so nginx
 #     keeps running. Fail2ban is protective, never load-bearing.
+#
+# The gate is synchronous on purpose. This whole script used to be backgrounded
+# by entrypoint.sh, so a skipped Fail2ban — the default — exited while that
+# shell was still on its way to `exec nginx`, leaving a child it never got to
+# reap. nginx inherited it as a zombie and cleared it only incidentally, on the
+# next reload that made nginx sweep its children. Nothing below creates a
+# background child unless the daemon actually runs.
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [fail2ban] $*"; }
+
+# Where js/fail2ban/index.js wrote the generated jail configuration. Same
+# variable and same default that module already uses (jailOutputPath there), so
+# the generator and this launcher cannot end up looking at different files —
+# and so the suite can drive the paths below against a temp tree instead of
+# /etc. Production sets neither and both resolve to the default, exactly as
+# before.
+FAIL2BAN_JAIL_PATH=${FAIL2BAN_JAIL_PATH:-/etc/fail2ban/jail.local}
 
 # ---- Feature gate ---------------------------------------------------------
 # Default off. Only the exact value "true" enables the feature.
@@ -39,8 +55,8 @@ touch /var/log/nginx/error.log
 # The generated jail.local is written by js/fail2ban during entrypoint.js. If it
 # is missing, the feature was not configured — skip rather than start a daemon
 # with no nginx jails.
-if [ ! -f /etc/fail2ban/jail.local ]; then
-  log "ERROR: /etc/fail2ban/jail.local not found — skipping Fail2ban startup (nginx continues)"
+if [ ! -f "$FAIL2BAN_JAIL_PATH" ]; then
+  log "ERROR: $FAIL2BAN_JAIL_PATH not found — skipping Fail2ban startup (nginx continues)"
   exit 0
 fi
 
@@ -54,16 +70,28 @@ if ! iptables -L >/dev/null 2>&1; then
 fi
 
 # ---- Run -------------------------------------------------------------------
-# Stop the daemon cleanly on SIGTERM/SIGINT (manual debugging / docker exec). In
-# normal shutdown nginx is PID 1 and the whole container is torn down together.
-trap 'log "Stopping Fail2ban (signal received)"; fail2ban-client stop 2>/dev/null; exit 0' TERM INT
+# The one background child this script creates, and the only path that reaches
+# it. It is backgrounded so this script can return to entrypoint.sh, which still
+# has to reach `exec nginx` — and it is the *opposite* of the short-lived child
+# the gate above avoids: it lives as long as fail2ban-server does, so it is
+# still running when nginx replaces the shell and is re-parented to it, exactly
+# like reload.sh. nginx reaps its unknown children when they eventually exit, so
+# a long-lived helper was never the problem a short-lived one was.
+(
+	# Stop the daemon cleanly on SIGTERM/SIGINT (manual debugging / docker exec).
+	# In normal shutdown nginx is PID 1 and the whole container is torn down
+	# together.
+	trap 'log "Stopping Fail2ban (signal received)"; fail2ban-client stop 2>/dev/null; exit 0' TERM INT
 
-log "Starting Fail2ban (foreground, polling backend, iptables-multiport)"
+	log "Starting Fail2ban (polling backend, iptables-multiport)"
 
-# Foreground (-f) so logs flow to Docker and this script supervises the process,
-# consistent with how reload.sh runs inotifywait. -x clears any stale socket.
-# A non-zero exit is logged but never propagated to nginx.
-fail2ban-server -xf start
-rc=$?
-log "Fail2ban exited (code ${rc}) — nginx is unaffected"
+	# -f keeps fail2ban-server in the foreground *of this subshell*, so its logs
+	# flow to Docker and its exit is observed here rather than silently. -x
+	# clears any stale socket. A non-zero exit is logged but never propagated to
+	# nginx.
+	fail2ban-server -xf start
+	rc=$?
+	log "Fail2ban exited (code ${rc}) — nginx is unaffected"
+) &
+
 exit 0
