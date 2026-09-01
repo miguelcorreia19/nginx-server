@@ -1,0 +1,11 @@
+{
+  "lan": {
+    "names": [
+      "lan.example.com",
+      "*.lan.example.com"
+    ],
+    "mode": "custom",
+    "cert_file": "lan_example_com_fullchain.pem",
+    "privkey_file": "lan_example_com_privkey.pem"
+  }
+}

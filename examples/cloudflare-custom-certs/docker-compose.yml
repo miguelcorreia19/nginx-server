@@ -1,0 +1,87 @@
+services:
+  # Obtains and renews one wildcard certificate over the Cloudflare DNS-01
+  # challenge, then exports it into the shared `certs` volume under the exact
+  # filenames nginx/config.json names. nginx-server never contacts a CA here.
+  #
+  # Pinned to v5.6.0, the same Certbot release nginx-server itself pins, so the
+  # two halves of this example agree on one Certbot version.
+  certbot-cloudflare:
+    image: certbot/dns-cloudflare:v5.6.0
+    container_name: certbot-cloudflare
+    restart: unless-stopped
+    # The image's entrypoint is `certbot`; this example needs a script around it.
+    entrypoint: ["/bin/sh", "/certbot-entrypoint.sh"]
+    environment:
+      # Replace every value below with your own before running this.
+      - CERT_NAME=lan.example.com
+      - CERT_DOMAINS=lan.example.com *.lan.example.com
+      - ACME_EMAIL=admin@example.com
+      - FULLCHAIN_NAME=lan_example_com_fullchain.pem
+      - PRIVKEY_NAME=lan_example_com_privkey.pem
+      - EXPORT_DIR=/export
+      - CLOUDFLARE_CREDENTIALS=/run/secrets/cloudflare.ini
+      # Cloudflare usually propagates in well under a minute; raise it if
+      # validation intermittently fails.
+      - DNS_PROPAGATION_SECONDS=60
+      # 12 hours, the interval Certbot itself recommends for renewal checks.
+      - RENEW_INTERVAL_SECONDS=43200
+    volumes:
+      - ./certbot-entrypoint.sh:/certbot-entrypoint.sh:ro
+      # Your API token. Read-only, and never committed — see cloudflare.ini.example.
+      - ./cloudflare.ini:/run/secrets/cloudflare.ini:ro
+      # Certbot's own state: the lineage, account key and renewal config. Kept
+      # separate from the export so the certificate survives a rebuild and is
+      # not re-requested against Let's Encrypt's rate limits.
+      - letsencrypt:/etc/letsencrypt
+      - letsencrypt-lib:/var/lib/letsencrypt
+      # Only the two exported files cross into nginx-server.
+      - certs:/export
+    # Healthy only once both exported files exist and are non-empty. This is
+    # what nginx-server waits for below — without it, the first start would race
+    # initial issuance and fail its certificate preflight.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - test -s /export/lan_example_com_fullchain.pem && test -s /export/lan_example_com_privkey.pem
+      interval: 10s
+      timeout: 5s
+      # DNS-01 issuance includes a propagation wait, so allow a few minutes.
+      retries: 30
+      start_period: 30s
+
+  nginx-server:
+    image: miguelcorreia19/nginx-server:latest
+    container_name: nginx-server
+    restart: unless-stopped
+    depends_on:
+      certbot-cloudflare:
+        # Start only once the certificate has actually been exported.
+        condition: service_healthy
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - ./nginx/config.json:/home/config.json:ro
+      - ./nginx/sites/:/home/nginx/sites
+      # The exported certificate, read-only. This is CUSTOM_CERTS_PATH's default
+      # location, which is where `mode: custom` looks for cert_file/privkey_file.
+      - certs:/home/custom-certificates:ro
+    environment:
+      # No CERTBOT_EMAIL and no letsencrypt mode: certificates come from the
+      # sidecar above and are consumed as custom certificates.
+      - ENVIRONMENT=production
+
+  # Stand-in for whatever you actually serve. `home.lan.example.com` proxies
+  # here, which is what demonstrates the wildcard certificate working.
+  example-backend:
+    image: traefik/whoami
+    container_name: example-backend
+    restart: unless-stopped
+    command: --port 80
+
+volumes:
+  # Certbot's state, and the exported certificate, kept apart on purpose: the
+  # first is the lineage you must not lose, the second is a derived copy.
+  letsencrypt:
+  letsencrypt-lib:
+  certs:
