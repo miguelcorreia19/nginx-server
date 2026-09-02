@@ -25,6 +25,12 @@ docker compose logs -f nginx-server
 
 - HTTP is published on `http://localhost:81`, HTTPS on `https://localhost:444`
   (the browser will warn about the self-signed certificate).
+- **The certificate is regenerated on every start.** Each `docker compose up` or
+  `restart` produces a fresh self-signed certificate and private key, so the
+  trust exception you clicked through last time will not be remembered and
+  anything pinning the certificate will break. That is expected here —
+  development mode exists to get you HTTPS locally, not to provide a stable
+  certificate. Use [`custom`](../custom-certs/) if you need one that persists.
 - `dev.conf` must exist at `/home/nginx/sites/dev.conf` — a missing file is a
   fatal startup error.
 - `example` is a small `traefik/whoami` backend that `dev.conf` proxies

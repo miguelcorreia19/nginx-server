@@ -51,7 +51,13 @@ module.exports = async () => {
       await createConf(id, certs[id]);
       await configFiles(id, "valid", certs[id].http_redirect, certs[id].names);
 
-      log(`Certificate ${id} configured`);
+      // Deliberately narrower than "configured": at this point the files have
+      // been copied and the SSL fragment and site links written, but nothing has
+      // asked nginx whether it can actually load them. `nginx -t` runs once for
+      // the whole assembled configuration after every handler (js/entrypoint.js),
+      // so malformed or mismatched material fails *after* this line — and the
+      // old wording read as a success the site had not yet earned.
+      log(`Custom certificate configuration generated for ${id}`);
     }
   } catch (err) {
     fatal("setup failed —", err);

@@ -72,10 +72,15 @@ jest.mock('../letsencrypt/manage_certs.js', () => ({
 jest.mock('fs', () => ({
   appendFileSync: jest.fn(),
   readdirSync: jest.fn(() => ['accounts', 'archive', 'live', 'renewal']),
+  // The backup write creates its own destination directory now, instead of the
+  // handler doing it unconditionally on entry.
+  mkdirSync: jest.fn(),
+  existsSync: jest.fn(() => false),
 }));
 
+const fs = require('fs');
 const { parseCerts, checkCertFiles, hasManagedCertbotState } = require('../letsencrypt/utils.js');
-const { commandSafe } = require('../utils.js');
+const { command, commandSafe } = require('../utils.js');
 const letsencryptMode = require('../letsencrypt/index.js');
 
 const ENV_KEYS = ['CERTBOT_BACKUP', 'CERTBOT_BACKUP_PATH'];
@@ -192,61 +197,73 @@ describe('backup write gate — honours the shared enablement predicate', () => 
   });
 });
 
-// The handler creates CERTBOT_BACKUP_PATH before doing anything else. That path
-// is operator-supplied, so it is created with an argument vector rather than
-// interpolated into `mkdir -p <path>` as a shell string — a backup directory
-// containing a space used to be created as two separate directories.
+// The handler used to create CERTBOT_BACKUP_PATH unconditionally on entry, so
+// every deployment that never backs anything up still ended up with an empty
+// directory that looked like certificate backup state. It is now created by the
+// backup write itself, and only then.
 //
-// The vector ends its options with `--` as well: execFile removes the shell,
-// not mkdir's own argv parsing, and this path is not validated anywhere.
-describe('backup directory creation — operator path never reaches a shell', () => {
-  const mkdirCalls = () => commandSafe.mock.calls.filter(([bin]) => bin === 'mkdir');
+// That path is operator-supplied and still never reaches a shell — it now goes
+// to fs.mkdirSync, which has no option parser for a leading "-" to fall into at
+// all, so the `--` guard the old `mkdir -p --` needed is simply not applicable.
+describe('backup directory creation — only when something is written', () => {
+  const mkdirCalls = () => fs.mkdirSync.mock.calls;
 
-  it('creates the backup path with mkdir -p as separate arguments', async () => {
+  it('is not created merely because the handler ran', async () => {
+    // It used to be, unconditionally, on entry — so an http-only or
+    // custom-only deployment ended up with an empty CERTBOT_BACKUP_PATH that
+    // only looked like certificate backup state.
+    process.env.CERTBOT_BACKUP = 'false';
     withConfiguredSite();
 
     await letsencryptMode();
 
-    expect(mkdirCalls()).toEqual([['mkdir', ['-p', '--', '/home/letsencrypt']]]);
+    expect(mkdirCalls()).toEqual([]);
+    expect(backupWritten()).toBe(false);
   });
 
-  it('passes a path containing spaces as one literal argument', async () => {
-    process.env.CERTBOT_BACKUP_PATH = '/mnt/my backup dir';
-    withConfiguredSite();
-
-    await letsencryptMode();
-
-    expect(mkdirCalls()).toEqual([['mkdir', ['-p', '--', '/mnt/my backup dir']]]);
-  });
-
-  it('passes shell metacharacters through literally', async () => {
-    process.env.CERTBOT_BACKUP_PATH = '/mnt/a b;$(id)&&`x`';
-    withConfiguredSite();
-
-    await letsencryptMode();
-
-    expect(mkdirCalls()).toEqual([['mkdir', ['-p', '--', '/mnt/a b;$(id)&&`x`']]]);
-  });
-
-  it('keeps a path beginning with a hyphen behind the end-of-options marker', async () => {
-    // BusyBox 1.37.0, the version this image ships, reads `-mybackup` as
-    // `-m ybackup` and fails with `mkdir: invalid mode 'ybackup'`.
-    process.env.CERTBOT_BACKUP_PATH = '-mybackup';
-    withConfiguredSite();
-
-    await letsencryptMode();
-
-    expect(mkdirCalls()).toEqual([['mkdir', ['-p', '--', '-mybackup']]]);
-  });
-
-  it('runs the directory creation before any backup copy', async () => {
+  it('is created when the backup is actually written', async () => {
     process.env.CERTBOT_BACKUP = 'true';
     withConfiguredSite();
 
     await letsencryptMode();
 
-    const bins = commandSafe.mock.calls.map(([bin]) => bin);
-    expect(bins.indexOf('mkdir')).toBe(0);
+    expect(mkdirCalls()).toEqual([['/home/letsencrypt', { recursive: true }]]);
     expect(backupWritten()).toBe(true);
+  });
+
+  it('creates the directory before copying into it', async () => {
+    process.env.CERTBOT_BACKUP = 'true';
+    withConfiguredSite();
+
+    await letsencryptMode();
+
+    expect(fs.mkdirSync).toHaveBeenCalled();
+    // Scoped to the first *backup* copy: the handler's earlier `cp` calls are
+    // the certificate export into /etc/ssl/certs, which has nothing to do with
+    // the backup directory and legitimately runs before it.
+    const firstBackupCopy = commandSafe.mock.calls.findIndex(isBackupCopy);
+    expect(firstBackupCopy).toBeGreaterThan(-1);
+    // mkdirSync is synchronous and runs first inside backupCertbotState, so the
+    // copies cannot have gone into a directory that did not exist yet.
+    expect(fs.mkdirSync.mock.invocationCallOrder[0])
+      .toBeLessThan(commandSafe.mock.invocationCallOrder[firstBackupCopy]);
+  });
+
+  // The operator path still never reaches a shell — it just gets there through
+  // a filesystem call now, which has no option parser to fall into at all.
+  it.each([
+    ['a path containing spaces', '/mnt/my backup dir'],
+    ['shell metacharacters', '/mnt/a b;$(id)&&`x`'],
+    ['a path beginning with a hyphen', '-mybackup'],
+  ])('passes %s through literally', async (_label, backupPath) => {
+    process.env.CERTBOT_BACKUP = 'true';
+    process.env.CERTBOT_BACKUP_PATH = backupPath;
+    withConfiguredSite();
+
+    await letsencryptMode();
+
+    expect(mkdirCalls()).toEqual([[backupPath, { recursive: true }]]);
+    // and nothing about it was ever handed to the shell helper
+    expect(command).not.toHaveBeenCalledWith(expect.stringContaining(backupPath));
   });
 });

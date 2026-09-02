@@ -8,21 +8,25 @@ const { validateBackupLineage } = require("./validate_backup.js");
 const { restoreLineageFromBackup, recoverInterruptedRestores } = require("./restore_lineage.js");
 const { bootstrapLineageFromBackup, recoverInterruptedBootstraps } = require("./bootstrap_lineage.js");
 const { exists, localLineagePaths } = require("./lineage_files.js");
+const migrateRenewalConfigs = require("./migrate_renewal.js");
 
 const { createLogger } = require("../logger.js");
 const { log, warn, error, fatal } = createLogger("letsencrypt");
 
 module.exports = async () => {
-  // execFile, not a shell string: CERTBOT_BACKUP_PATH is operator-supplied, so
-  // interpolating it would word-split on whitespace and interpret any shell
-  // metacharacter it contains. Same binary and same flag as before.
+  // The backup directory is deliberately NOT created here. This used to run an
+  // unconditional mkdir, so simply entering this handler was enough to leave an
+  // empty CERTBOT_BACKUP_PATH behind — in an http-only or custom-only
+  // deployment, in development, with CERTBOT_BACKUP=false, in every startup
+  // that had nothing to back up. An empty directory that looks like certificate
+  // backup state, and never is one.
   //
-  // `--` because dropping the shell does not stop mkdir(1) from parsing its own
-  // argv, and nothing validates this path: `CERTBOT_BACKUP_PATH=-mybackup` is
-  // read as flags by this image's BusyBox 1.37.0 (`mkdir: invalid mode
-  // 'ybackup'`, since -m takes the next characters as a mode). `--` ends option
-  // parsing, so the path is treated as the directory to create.
-  await commandSafe('mkdir', ['-p', '--', process.env.CERTBOT_BACKUP_PATH]);
+  // Nothing that only *reads* the backup needs it to exist: listBackupLineages,
+  // pruneBackupLineage and validateBackupLineage all treat a missing path as
+  // "nothing there". The one operation that needs the directory is the backup
+  // write, and backupCertbotState now creates it at that point (js/letsencrypt/
+  // utils.js) — so a directory appears when, and only when, something is
+  // actually persisted into it.
   const _certs = require("../config.json");
 
   const certs = { ..._certs };
@@ -643,6 +647,34 @@ module.exports = async () => {
         log(`- ${id}: ${status}`);
         log(`  domains: ${cert_domains.join(', ')}`);
       }
+    }
+
+    // Migrate legacy standalone renewal configs to webroot BEFORE the backup
+    // below, so what gets persisted is the state this container actually ends
+    // up running.
+    //
+    // js/entrypoint.js also calls this, after nginx is validated, and still
+    // does — that call is what covers the paths this handler returns early
+    // from. Running it here as well is cheap and idempotent: a config that is
+    // already webroot is skipped and the second pass stays silent.
+    //
+    // The ordering was the problem, not the migration. It only ever ran after
+    // this backup, so the backup recorded the pre-migration `authenticator =
+    // standalone` — and a container that later bootstrapped or restored from
+    // that backup got standalone back and migrated it again. Not a loop, and
+    // never a correctness issue (certbot_renew.sh forces webroot with an
+    // explicit flag regardless), but the persisted copy did not describe the
+    // running state.
+    //
+    // Non-fatal, matching the contract in js/entrypoint.js and migrate_renewal.js
+    // itself: migration failing must never stop nginx from starting. A config
+    // that fails to migrate is left standalone and the backup then records it
+    // as standalone — which is correct, because the backup is a snapshot of
+    // live state, not an aspiration for it.
+    try {
+      migrateRenewalConfigs();
+    } catch (err) {
+      warn(`renewal-config migration error — continuing: ${err.message || err}`);
     }
 
     // Back up Let's Encrypt state (optional)

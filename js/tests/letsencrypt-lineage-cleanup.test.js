@@ -161,7 +161,9 @@ describe('letsencrypt handler — zero configured entries, an orphaned lineage e
     // ahead of everything here — it only moved from `command` to `commandSafe`
     // when that operator path stopped being interpolated into a shell string.
     // Asserted as the complete list, so any *other* call still fails this.
-    expect(commandSafe.mock.calls.map(([bin]) => bin)).toEqual(['mkdir']);
+    // Nothing at all now: the backup directory used to be created here
+    // unconditionally, even on a path that backs nothing up.
+    expect(commandSafe.mock.calls.map(([bin]) => bin)).toEqual([]);
   });
 
   it('does not start crond', async () => {
@@ -369,7 +371,9 @@ describe('letsencrypt handler — skips Certbot entirely when there is no state 
     expect(createConf).not.toHaveBeenCalled();
     expect(configFiles).not.toHaveBeenCalled();
     // As above: only the backup-directory `mkdir` the handler opens with.
-    expect(commandSafe.mock.calls.map(([bin]) => bin)).toEqual(['mkdir']);
+    // Nothing at all now: the backup directory used to be created here
+    // unconditionally, even on a path that backs nothing up.
+    expect(commandSafe.mock.calls.map(([bin]) => bin)).toEqual([]);
     expect(crondStarted()).toBe(false);
   });
 

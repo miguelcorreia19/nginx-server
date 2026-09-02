@@ -298,6 +298,19 @@ exports.backupCertbotState = async (options = {}) => {
   const backupPath = 'backupPath' in options ? options.backupPath : process.env.CERTBOT_BACKUP_PATH;
   const protectedLineages = new Set(options.protectedLineages || []);
 
+  // The one place the backup directory is created, so it comes into existence
+  // only when something is actually being written into it. Its callers used to
+  // rely on an unconditional mkdir at the top of the Let's Encrypt handler,
+  // which left an empty directory behind in every deployment that never backs
+  // anything up.
+  //
+  // mkdirSync rather than mkdir(1): a filesystem call has no option parser for
+  // an operator-supplied path beginning with "-" to fall into, so it needs no
+  // `--` guard — the same reason preflight and the lineage transactions use
+  // fs directly. `recursive` also makes it a no-op when the directory is
+  // already there, which is the common case.
+  fs.mkdirSync(backupPath, { recursive: true });
+
   // Top-level entries, minus dotfiles. This used to be the shell glob in
   // `cp -rf ${source}/* ${backupPath}`, which never matches dotfiles; the
   // enumeration is done here instead so `backupPath` (CERTBOT_BACKUP_PATH, an

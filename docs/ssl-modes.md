@@ -159,6 +159,7 @@ volumes:
 - **When to use:** local development and testing over HTTPS without a real CA.
 - **Advantages:** no CA contact, no public domain, instant certificate.
 - **Limitations:** the certificate is **self-signed** (browsers warn); **never use in production**.
+- **The certificate is ephemeral.** A new self-signed certificate and private key are generated on **every container start**, so the certificate changes each time you restart. A browser trust exception you granted will not carry over, and anything pinning the certificate or its key will break across restarts. Development mode is for reaching an app over HTTPS locally, not for providing a stable certificate identity — if you need one that survives restarts, supply your own with [`custom`](#custom).
 - **Switching environments:** development startup rebuilds the generated nginx configuration from scratch, so restarting an existing container into development leaves none of its previous production sites or redirects active (and the reverse holds too). See [Configuration → generated configuration is rebuilt on every startup](configuration.md#generated-configuration-is-rebuilt-on-every-startup).
 - **See:** [`examples/dev/`](../examples/dev/) for a complete Docker Compose example.
 
