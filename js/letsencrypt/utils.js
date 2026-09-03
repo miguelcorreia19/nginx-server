@@ -330,7 +330,16 @@ exports.backupCertbotState = async (options = {}) => {
   // listing is never empty. Backing up nothing is also the harmless direction
   // for this feature (see the caller in index.js: skipping a write costs an
   // update, overwriting a good copy costs the recovery material).
-  const visible = (dir) => fs.readdirSync(dir).filter((name) => !name.startsWith('.'));
+  //
+  // Sorted explicitly rather than relying on readdirSync's incidental order.
+  // This is load-bearing, not cosmetic: an interrupted backup leaves whatever
+  // has been copied so far, so archive/<id> — the certificate and key
+  // material live/<id>'s symlinks point at — must land in the backup before
+  // live/<id> itself. Sorting lexically guarantees "archive" < "live"
+  // regardless of what any given filesystem's directory enumeration happens
+  // to return, and needs no per-entry knowledge of what "archive" or "live"
+  // mean to do it.
+  const visible = (dir) => fs.readdirSync(dir).filter((name) => !name.startsWith('.')).sort();
 
   // `--` on every copy below. execFile removes the shell, but not cp(1)'s own
   // option parsing, and `backupPath` is unvalidated operator input: a

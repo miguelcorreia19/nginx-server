@@ -342,6 +342,76 @@ describe('with nothing protected', () => {
 });
 
 // ──────────────────────────────────────────────
+//  I0. archive is always copied before live
+// ──────────────────────────────────────────────
+//
+// Interrupted-write safety depends on this: an interrupted backup leaves
+// whatever has been copied so far, and live/<id>'s symlinks point into
+// archive/<id>. If live landed in the backup before archive, a crash between
+// the two would leave live symlinks pointing at certificate material the
+// backup does not have yet. visible() now sorts explicitly rather than
+// trusting the filesystem's enumeration order, so this must hold even when
+// readdirSync itself hands back an unsafe order.
+describe('archive is always copied before live', () => {
+  const { commandSafe } = require('../utils.js');
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  // Reorders only the top-level listing of `source` — the one readdirSync
+  // call visible() applies to the entries under test — and leaves every
+  // other (nested, per-lineage) readdirSync call untouched.
+  const reverseTopLevelEnumeration = (dir) => {
+    const real = fs.readdirSync.bind(fs);
+    jest.spyOn(fs, 'readdirSync').mockImplementation((target, opts) => {
+      const entries = real(target, opts);
+      return target === dir ? [...entries].reverse() : entries;
+    });
+  };
+
+  it('sorts the bulk copy even when readdirSync enumerates live before archive', async () => {
+    lineage(source, 'A', 'healthy');
+    // An unknown, operator-added top-level entry — proves the explicit
+    // ordering does not turn this into a whitelist of known Certbot dirs.
+    fs.mkdirSync(path.join(source, 'operator-extra'), { recursive: true });
+    fs.writeFileSync(path.join(source, 'operator-extra', 'note.txt'), 'unknown entry');
+    reverseTopLevelEnumeration(source);
+
+    await run([]);
+
+    const copiedEntries = commandSafe.mock.calls.map(([, args]) => path.basename(args[2]));
+    const archiveIndex = copiedEntries.indexOf('archive');
+    const liveIndex = copiedEntries.indexOf('live');
+
+    expect(archiveIndex).toBeGreaterThanOrEqual(0);
+    expect(liveIndex).toBeGreaterThan(archiveIndex);
+    // The enumeration is deterministic (lexical), not merely "not the
+    // filesystem's order" — same input, same output every time.
+    expect(copiedEntries).toEqual(['archive', 'live', 'operator-extra', 'renewal']);
+    expect(read(backup, 'operator-extra', 'note.txt')).toBe('unknown entry');
+  });
+
+  it('keeps archive before live in the protected-lineage branch too', async () => {
+    lineage(source, 'A', 'healthy');
+    lineage(source, 'B', 'healthy');
+    reverseTopLevelEnumeration(source);
+
+    await run(['B']);
+
+    const sourcePaths = commandSafe.mock.calls.map(([, args]) => args[2]);
+    const archiveIndex = sourcePaths.findIndex((p) => p.startsWith(`${source}/archive/`));
+    const liveIndex = sourcePaths.findIndex((p) => p.startsWith(`${source}/live/`));
+
+    expect(archiveIndex).toBeGreaterThanOrEqual(0);
+    expect(liveIndex).toBeGreaterThan(archiveIndex);
+    // Protection is independent of the ordering fix: B stays untouched.
+    expect(sourcePaths.some((p) => p.endsWith('/A') || p.endsWith('/A.conf'))).toBe(true);
+    expect(sourcePaths.some((p) => p.endsWith('/B') || p.endsWith('/B.conf'))).toBe(false);
+  });
+});
+
+// ──────────────────────────────────────────────
 //  I. a source with nothing visible in it
 // ──────────────────────────────────────────────
 //
