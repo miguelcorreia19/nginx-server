@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [4.0.0] — 2026-09-03
+
 ### Added
 
 #### Optional Fail2ban support
