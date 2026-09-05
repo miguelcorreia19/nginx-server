@@ -85,6 +85,14 @@ beforeEach(() => {
   logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
   errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
   jest.spyOn(console, 'warn').mockImplementation(() => {});
+  // letsencryptMode() unconditionally appends the renewal cron line to
+  // /etc/crontabs/root once it reaches that point — a container-only absolute
+  // path unrelated to backup pruning, the thing under test here. Every other
+  // suite that drives the real letsencryptMode() stubs this same write (see
+  // e.g. letsencrypt-lineage-cleanup.test.js); spying on just this one fs call
+  // keeps the real fs used everywhere else, matching the file's other
+  // targeted spies (rmSync, readdirSync) below.
+  jest.spyOn(fs, 'appendFileSync').mockImplementation(() => {});
 });
 
 afterEach(() => {
