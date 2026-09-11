@@ -70,7 +70,15 @@ bash -n fail2ban.sh
 bash -n generate-release-notes.sh
 ```
 
-Both the Jest suite and these syntax checks run automatically in CI (`.github/workflows/test.yml`) on every push and pull request to `main`; running them locally first catches failures before CI does.
+Docker integration test — needs Docker and `curl`. It builds the image, then proves on a real Docker network that a proxied backend recreated under a new IP is reached again through DNS re-resolution alone, with no nginx reload or restart:
+
+```bash
+tests/integration/dynamic-upstream-dns.sh
+# against an image you already built:
+NGINX_SERVER_IMAGE=nginx-server tests/integration/dynamic-upstream-dns.sh
+```
+
+The Jest suite, these syntax checks and the Docker integration test all run automatically in CI (`.github/workflows/test.yml`) on every push and pull request to `main`; running them locally first catches failures before CI does. The Docker test is a separate CI job, so the fast checks stay fast.
 
 The test suite covers:
 - Config generation for all four SSL modes
@@ -82,5 +90,6 @@ The test suite covers:
 - Logging format and severity correctness
 - The reload watcher's event mask, `.conf` filtering, and duplicate-event coalescing
 - Build-time and startup-time assertions
+- Every proxying example using a dynamically resolved upstream, and no global `resolver` in the base nginx files
 
 Please run both the Jest suite and the shell syntax checks before opening a pull request.

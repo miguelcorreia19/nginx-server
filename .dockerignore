@@ -24,6 +24,7 @@ examples/
 
 # Test sources and coverage artifacts — never executed inside the image
 js/tests/
+tests/
 coverage/
 
 # Dependencies: the runtime node_modules is produced by the builder stage

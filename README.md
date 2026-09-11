@@ -116,7 +116,7 @@ In-depth topic guides live under [`docs/`](docs/):
 
 | Guide | What it covers |
 |---|---|
-| [docs/configuration.md](docs/configuration.md) | Canonical configuration reference — `config.json` fields and examples, site nginx config files, the full environment-variable reference, and nginx config overrides. |
+| [docs/configuration.md](docs/configuration.md) | Canonical configuration reference — `config.json` fields and examples, site nginx config files, proxying to other Docker containers, the full environment-variable reference, and nginx config overrides. |
 | [docs/ssl-modes.md](docs/ssl-modes.md) | The SSL/TLS modes (`http`, `letsencrypt`, `letsencrypt-staging`, `custom`, and development self-signed) — when to use each, advantages, limitations, and how they relate. |
 | [docs/letsencrypt.md](docs/letsencrypt.md) | Let's Encrypt operational guide — prerequisites, staging workflow, automatic renewal, rate limits, and certificate backup. |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Troubleshooting & operations — the healthcheck, log locations and examples, and step-by-step fixes for startup, certificate, reload, and renewal problems. |
@@ -130,7 +130,7 @@ Runnable end-to-end examples live under [`examples/`](examples/) — see the [Ex
 
 Configuration is a JSON file mounted at `/home/config.json` — one entry per site, each selecting a `mode` and its domains — plus a matching nginx server-block file per site in a mounted `sites/` directory. Runtime behavior is tuned with environment variables, and the built-in nginx config files (`nginx.conf`, `proxy.conf`, `http-common.conf`) can be overridden by mounting your own.
 
-📖 **[docs/configuration.md](docs/configuration.md)** — `config.json` fields and a full example, site nginx config files, the complete **environment-variable reference**, and nginx config overrides.
+📖 **[docs/configuration.md](docs/configuration.md)** — `config.json` fields and a full example, site nginx config files, **proxying to other Docker containers** (dynamic upstream DNS), the complete **environment-variable reference**, and nginx config overrides.
 
 ---
 

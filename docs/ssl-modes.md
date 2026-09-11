@@ -138,15 +138,23 @@ Generates a self-signed certificate locally. No CA contact, no public domain req
 
 ```nginx
 # nginx/sites/dev.conf
+upstream myapp_upstream {
+  zone myapp_upstream 64k;
+  resolver 127.0.0.11 valid=10s;
+  server myapp:3000 resolve;
+}
+
 server {
   include /etc/nginx/conf/dev.conf;
   server_name localhost;
 
   location / {
-    proxy_pass http://myapp:3000/;
+    proxy_pass http://myapp_upstream/;
   }
 }
 ```
+
+`myapp` is another container on the same Docker network; the `upstream` block is what lets nginx follow it when it is recreated with a new IP — see [Configuration → Proxying to other Docker containers](configuration.md#proxying-to-other-docker-containers).
 
 ```yaml
 environment:

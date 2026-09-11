@@ -222,6 +222,36 @@ Nothing is done automatically, on purpose. Requesting a certificate would not wo
 
 Inspect those paths, keep anything you still need, then remove or rename them. The site then returns to the normal path: it is restored from a valid backup if one exists, and otherwise requests a new certificate.
 
+### 502 Bad Gateway after a backend container was recreated
+
+**Symptoms**: a site that proxies to another container works after startup. Then that backend is recreated — `docker compose up` after pulling a new image, `docker rm` and `docker run`, a redeploy — and every request through nginx returns `502 Bad Gateway`, although the backend itself is up and reachable from other containers. Restarting or reloading nginx makes it work again, until the next time.
+
+The nginx error log names the address nginx is still trying to reach:
+
+```text
+2026/09/11 16:13:32 [error] 29#29: *3 connect() failed (111: Connection refused) while connecting to upstream, client: 10.213.79.1, server: app.test, request: "GET / HTTP/1.1", upstream: "http://10.213.79.2:8080/", host: "app.test"
+```
+
+Compare that IP with the backend's current address on the network it shares with nginx:
+
+```bash
+docker exec <container> tail /var/log/nginx/error.log
+docker inspect --format='{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' <backend-container>
+```
+
+If they differ, the cause is a literal hostname in `proxy_pass` (`proxy_pass http://backend:8080/;`): nginx resolved it once when it loaded the configuration and has kept that IP, and the recreated container got a different one. Docker names are stable; container IPs are not. A plain `restart` of the same container usually keeps its IP, which is why this only shows up after a *recreate*. Depending on whether anything now answers at the old address, the error may instead read `113: Host is unreachable` or `upstream timed out`.
+
+**Temporary workaround** — make nginx resolve the name again:
+
+```bash
+docker exec nginx-server nginx -t &&
+docker exec nginx-server nginx -s reload
+```
+
+(`nginx-server` is the container name the examples use.) Run this only once the backend is running and its name resolves: with a literal `proxy_pass` hostname, `nginx -t` fails with `host not found in upstream` while it does not, and the reload is refused. This restores service but does nothing to prevent the next occurrence.
+
+**Fix**: migrate the site to a dynamically resolved upstream — a named `upstream` with `zone`, `resolver 127.0.0.11` and `server backend:8080 resolve;` — so nginx re-resolves the name at runtime and follows the new address on its own, without a reload. Adding a `resolver` directive while keeping the literal `proxy_pass` hostname does not help. See [Configuration → Proxying to other Docker containers](configuration.md#proxying-to-other-docker-containers) for the pattern and the migration notes; the bundled examples already use it.
+
 ### Nginx not reloading after config change
 
 `reload.sh` watches the mounted `sites/` directory and `CUSTOM_NGINX_CONFIG_FILES_PATH` with `inotifywait` and reloads nginx when a **`.conf` entry** in either one changes. The watch is on those two directories only — it is not recursive, so changes in a subdirectory are not seen.

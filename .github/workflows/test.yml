@@ -44,3 +44,17 @@ jobs:
           bash -n certbot_renew.sh
           bash -n fail2ban.sh
           bash -n generate-release-notes.sh
+          bash -n tests/integration/dynamic-upstream-dns.sh
+
+  # Runtime coverage the Jest suite cannot give: builds the image and proves,
+  # on a real Docker network, that a proxied backend recreated under a new IP
+  # is reached again without any nginx reload or restart. Kept separate so the
+  # fast checks above stay fast.
+  dynamic-upstream-dns:
+    name: Docker integration (dynamic upstream DNS)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build the image and exercise DNS re-resolution
+        run: tests/integration/dynamic-upstream-dns.sh

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Proxying to Docker services now uses dynamically resolved upstreams.** A site that proxied to another container with a literal `proxy_pass http://service:port` had that name resolved once, at configuration load, so a backend recreated under a new IP kept receiving connections at the old address (`502 Bad Gateway`) until nginx was reloaded or restarted. Every proxying example (`examples/custom-certs`, `examples/custom-configs`, `examples/dev`, `examples/cloudflare-custom-certs`) and the documented site configs now proxy through a named `upstream` with `zone`, `resolver 127.0.0.11 valid=10s` and `server <service>:<port> resolve`, which re-resolves the name through Docker's embedded DNS at runtime. Verified against nginx 1.31.4, including that nginx now starts while the backend does not exist yet. Existing site files with a literal `proxy_pass` are accepted exactly as before; they gain the fix only once migrated. See `docs/configuration.md` → Proxying to other Docker containers, and the new troubleshooting entry for the stale-IP symptom and its temporary reload workaround.
+
+### Added
+
+- `tests/integration/dynamic-upstream-dns.sh`, a Docker integration test (also a CI job) that builds the image and proves the re-resolution end to end: nginx starts with the backend absent, the backend is recreated on a different IP, and traffic reaches the replacement with no nginx reload or restart.
+
 ## [4.0.0] — 2026-09-03
 
 ### Added

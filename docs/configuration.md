@@ -102,6 +102,12 @@ Each site ID in `config.json` requires a corresponding nginx server block file i
 
 ```nginx
 # nginx/sites/main.conf
+upstream backend_upstream {
+  zone backend_upstream 64k;
+  resolver 127.0.0.11 valid=10s;
+  server backend:8080 resolve;
+}
+
 server {
   # This line is required — it injects the SSL/TLS directives generated for this site.
   include /etc/nginx/conf/main.conf;
@@ -109,7 +115,7 @@ server {
   server_name example.com www.example.com;
 
   location / {
-    proxy_pass http://backend:8080/;
+    proxy_pass http://backend_upstream/;
   }
 
   error_page 500 502 503 504 /50x.html;
@@ -120,6 +126,65 @@ server {
 ```
 
 The site config filename must match the key in `config.json` (e.g., key `"main"` → file `main.conf`).
+
+The `upstream` block is how a site should reach another container — see [Proxying to other Docker containers](#proxying-to-other-docker-containers) for why it is written this way.
+
+## Proxying to other Docker containers
+
+A site usually forwards to another container in the same Compose project or Docker network, addressed by its service or container name. That name is a stable identity; the container's **IP address is not**. Whenever the container is *recreated* — `docker compose up` after an image or configuration change, `docker rm` and `docker run`, a redeploy — it may come back with a different address. A plain `docker restart` of the same container generally keeps its IP, so that is not the case this section is about.
+
+nginx resolves a literal hostname in `proxy_pass` **once**, when it reads the configuration, and keeps that IP for as long as that configuration is loaded:
+
+```nginx
+location / {
+  proxy_pass http://backend:8080/;   # resolved once, when nginx (re)loads its configuration
+}
+```
+
+After the backend is recreated under a new address, nginx keeps connecting to the old one and answers `502 Bad Gateway` until it is reloaded or restarted. Adding a `resolver` directive alone does **not** change this — a literal `proxy_pass` hostname is never re-resolved, resolver or not. [Troubleshooting → 502 after a backend container was recreated](troubleshooting.md#502-bad-gateway-after-a-backend-container-was-recreated) shows what this looks like in the logs.
+
+### Dynamic upstream pattern
+
+Proxy through a **named upstream** whose server carries the `resolve` parameter. The nginx this image ships supports it (open-source nginx re-resolves upstream servers since 1.27.3), and every proxying example under [`examples/`](../examples/) uses it:
+
+```nginx
+upstream backend_upstream {
+  zone backend_upstream 64k;
+  resolver 127.0.0.11 valid=10s;
+  server backend:8080 resolve;
+}
+
+server {
+  include /etc/nginx/conf/main.conf;
+  server_name example.com;
+
+  location / {
+    proxy_pass http://backend_upstream/;
+  }
+}
+```
+
+- `server backend:8080 resolve;` — the name is resolved at runtime and re-resolved as its answer expires, instead of once at configuration load.
+- `zone backend_upstream 64k;` — required: a dynamically resolved upstream group must live in shared memory. Use the upstream's own name as the zone name.
+- `resolver 127.0.0.11 valid=10s;` — `127.0.0.11` is Docker's embedded DNS server, available to containers on a user-defined (custom) network, which includes the default network Compose creates for a project. `valid=10s` caps how long an answer is reused, so an IP change is picked up within about ten seconds; a lookup that fails (the backend is not up yet) is retried on the same interval.
+- The `resolver` is declared **inside** the upstream block on purpose. It leaves the bundled `nginx.conf`, `proxy.conf` and `http-common.conf` untouched, so nothing changes for a deployment that overrides those files, and it cannot collide with a global `resolver` you already ship there.
+- IPv6 lookups stay enabled; add `ipv6=off` only if your network actually needs it.
+
+Requirements:
+
+- nginx-server and the backend must share a **user-defined Docker network** on which the name is resolvable — the Compose project's default network, or one created with `docker network create`. Docker's built-in `bridge` network does **not** resolve container names, so this pattern does not work there.
+- Upstream names are global to the nginx configuration and every site file is loaded into the same `http` context, so give each site's upstream a unique name (for example `<service>_upstream`).
+
+With this pattern nginx **starts even when the backend does not exist yet** — verified against this image: `nginx -t` and startup succeed with the name unresolvable, requests get `502` (`no live upstreams` in the error log) until it appears, and traffic flows once the name resolves, with no reload. The literal form instead fails validation at startup (`host not found in upstream`), which also makes the container's own start depend on the backend being up first.
+
+### Migrating an existing site
+
+Site files with a literal `proxy_pass http://service:port` **keep working unchanged** — they are accepted exactly as before and simply remain exposed to the stale-IP problem until migrated. To migrate, move the host and port into an `upstream` block and point `proxy_pass` at the upstream name, leaving everything else as it is:
+
+- **Keep the URI part exactly as it was.** `proxy_pass http://service:8080/;` becomes `proxy_pass http://service_upstream/;`, and `proxy_pass http://service:8080;` (no trailing slash) becomes `proxy_pass http://service_upstream;`. The trailing `/` decides whether the matched location prefix is replaced or passed through, and a named upstream does not change that.
+- **Host header.** The bundled `proxy.conf` sets `proxy_set_header Host $http_host;`, so the backend keeps seeing the client's host. If you override `proxy.conf` without a `Host` header, nginx's default is `$proxy_host`, which is now the upstream name (`service_upstream`) rather than `service:8080` — set it explicitly if the backend cares.
+- **HTTPS upstreams.** `proxy_pass https://service_upstream;` works the same way, but `$proxy_host` — the default for `proxy_ssl_name`, and therefore the SNI sent with `proxy_ssl_server_name on` — is now the upstream name. Add `proxy_ssl_name service;` (the backend's real hostname) so certificate verification and SNI keep behaving as before.
+- Headers, timeouts and buffering directives are unaffected; leave them where they are.
 
 ## Environment Variables
 
