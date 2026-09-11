@@ -6,6 +6,15 @@
 // upstream with `server <name>:<port> resolve`, a shared-memory `zone`, and
 // Docker's embedded resolver declared inside that upstream block.
 //
+// Two more things the pattern depends on. The validity is one second because
+// Docker can hand a freed address to another container, and nginx keeps
+// sending to the old address until the cached answer expires — a longer value
+// widens that window (measured: ~1s at 1s, ~10s at 10s). And upstream/zone
+// names are global to the whole http context, into which every site file is
+// loaded, so a name derived from the service alone (`service1_upstream`)
+// collides as soon as two sites proxy the same service; names are scoped to
+// the site as well (`someid_service1_upstream`).
+//
 // The runtime behaviour itself is proven against the real image by
 // tests/integration/dynamic-upstream-dns.sh. What this suite protects is the
 // shipped configuration: every example stays on the pattern, and the resolver
@@ -53,6 +62,8 @@ describe('examples — Docker backends are proxied through dynamically resolved 
     const text = read(file);
     const upstreams = upstreamBlocks(text);
     const targets = proxyTargets(text);
+    // The site id: the file name is the config.json key by contract.
+    const site = path.basename(file, '.conf');
 
     it('proxies only to named upstreams defined in the same file', () => {
       expect(targets.length).toBeGreaterThan(0);
@@ -85,14 +96,45 @@ describe('examples — Docker backends are proxied through dynamically resolved 
         expect(body).toMatch(/\bzone\s+\S+\s+\d+[kKmM]?\s*;/);
       });
 
-      it("uses Docker's embedded DNS, with a short validity, inside the block", () => {
-        expect(body).toMatch(/\bresolver\s+127\.0\.0\.11\b[^;]*\bvalid=\d+s?\b[^;]*;/);
+      it("uses Docker's embedded DNS, inside the block, with a one-second validity", () => {
+        expect(body).toMatch(/\bresolver\s+127\.0\.0\.11\b[^;]*\bvalid=1s\b[^;]*;/);
+      });
+
+      it('is named after the site as well as the backend', () => {
+        expect(name.startsWith(`${site}_`)).toBe(true);
+        expect(name.length).toBeGreaterThan(site.length + 1);
+      });
+
+      it('names its zone after itself', () => {
+        expect(body).toMatch(new RegExp(`\\bzone\\s+${name}\\s`));
       });
 
       it('leaves IPv6 resolution enabled', () => {
         expect(body).not.toMatch(/ipv6=off/);
       });
     });
+  });
+});
+
+// Within one example every site file lands in the same http context, so a
+// name repeated across two of its files would be refused as a duplicate.
+describe('examples — upstream and zone names are unique across each example', () => {
+  const byExample = {};
+  for (const file of proxyingConfigs) {
+    const example = path.relative(examplesDir, file).split(path.sep)[0];
+    (byExample[example] = byExample[example] || []).push(file);
+  }
+
+  it.each(Object.keys(byExample).sort())('%s', (example) => {
+    const upstreamNames = [];
+    const zoneNames = [];
+    for (const file of byExample[example]) {
+      const text = read(file);
+      upstreamNames.push(...Object.keys(upstreamBlocks(text)));
+      zoneNames.push(...[...text.matchAll(/\bzone\s+(\S+)\s/g)].map((m) => m[1]));
+    }
+    expect(new Set(upstreamNames).size).toBe(upstreamNames.length);
+    expect(new Set(zoneNames).size).toBe(zoneNames.length);
   });
 });
 

@@ -250,7 +250,11 @@ docker exec nginx-server nginx -s reload
 
 (`nginx-server` is the container name the examples use.) Run this only once the backend is running and its name resolves: with a literal `proxy_pass` hostname, `nginx -t` fails with `host not found in upstream` while it does not, and the reload is refused. This restores service but does nothing to prevent the next occurrence.
 
-**Fix**: migrate the site to a dynamically resolved upstream — a named `upstream` with `zone`, `resolver 127.0.0.11` and `server backend:8080 resolve;` — so nginx re-resolves the name at runtime and follows the new address on its own, without a reload. Adding a `resolver` directive while keeping the literal `proxy_pass` hostname does not help. See [Configuration → Proxying to other Docker containers](configuration.md#proxying-to-other-docker-containers) for the pattern and the migration notes; the bundled examples already use it.
+**Fix**: migrate the site to a dynamically resolved upstream — a named `upstream` with `zone`, `resolver 127.0.0.11 valid=1s` and `server backend:8080 resolve;` — so nginx re-resolves the name at runtime and follows the new address on its own, without a reload. Adding a `resolver` directive while keeping the literal `proxy_pass` hostname does not help. See [Configuration → Proxying to other Docker containers](configuration.md#proxying-to-other-docker-containers) for the pattern and the migration notes; the bundled examples already use it.
+
+Even with the fix, convergence is not instantaneous: nginx keeps the last resolved address for the `valid=` period, so for about a second after a recreate, requests can still go to the old IP — which Docker may by then have handed to another container. If a brief burst of wrong-application or refused responses shows up right after a redeploy and then stops on its own, that is this window, not the stale-IP problem above. See [Configuration → What re-resolution does not make instantaneous](configuration.md#what-re-resolution-does-not-make-instantaneous), including why unrelated services are better kept on separate Docker networks.
+
+If instead nginx **fails to start** with `duplicate upstream "<name>"`, two site files declare an upstream with the same name — typically two sites proxying the same service. Upstream and `zone` names are global to the whole configuration; name them after the site as well as the backend (`<site>_<service>_upstream`).
 
 ### Nginx not reloading after config change
 

@@ -102,9 +102,9 @@ Each site ID in `config.json` requires a corresponding nginx server block file i
 
 ```nginx
 # nginx/sites/main.conf
-upstream backend_upstream {
-  zone backend_upstream 64k;
-  resolver 127.0.0.11 valid=10s;
+upstream main_backend_upstream {
+  zone main_backend_upstream 64k;
+  resolver 127.0.0.11 valid=1s;
   server backend:8080 resolve;
 }
 
@@ -115,7 +115,7 @@ server {
   server_name example.com www.example.com;
 
   location / {
-    proxy_pass http://backend_upstream/;
+    proxy_pass http://main_backend_upstream/;
   }
 
   error_page 500 502 503 504 /50x.html;
@@ -148,9 +148,9 @@ After the backend is recreated under a new address, nginx keeps connecting to th
 Proxy through a **named upstream** whose server carries the `resolve` parameter. The nginx this image ships supports it (open-source nginx re-resolves upstream servers since 1.27.3), and every proxying example under [`examples/`](../examples/) uses it:
 
 ```nginx
-upstream backend_upstream {
-  zone backend_upstream 64k;
-  resolver 127.0.0.11 valid=10s;
+upstream main_backend_upstream {
+  zone main_backend_upstream 64k;
+  resolver 127.0.0.11 valid=1s;
   server backend:8080 resolve;
 }
 
@@ -159,31 +159,39 @@ server {
   server_name example.com;
 
   location / {
-    proxy_pass http://backend_upstream/;
+    proxy_pass http://main_backend_upstream/;
   }
 }
 ```
 
 - `server backend:8080 resolve;` — the name is resolved at runtime and re-resolved as its answer expires, instead of once at configuration load.
-- `zone backend_upstream 64k;` — required: a dynamically resolved upstream group must live in shared memory. Use the upstream's own name as the zone name.
-- `resolver 127.0.0.11 valid=10s;` — `127.0.0.11` is Docker's embedded DNS server, available to containers on a user-defined (custom) network, which includes the default network Compose creates for a project. `valid=10s` caps how long an answer is reused, so an IP change is picked up within about ten seconds; a lookup that fails (the backend is not up yet) is retried on the same interval.
+- `zone main_backend_upstream 64k;` — required: a dynamically resolved upstream group must live in shared memory. Use the upstream's own name as the zone name.
+- `resolver 127.0.0.11 valid=1s;` — `127.0.0.11` is Docker's embedded DNS server, available to containers on a user-defined (custom) network, which includes the default network Compose creates for a project. `valid=1s` caps how long an answer is reused, so an IP change is picked up within about a second; a lookup that fails (the backend is not up yet) is retried on the same interval. Why so short is explained under [What re-resolution does not make instantaneous](#what-re-resolution-does-not-make-instantaneous).
 - The `resolver` is declared **inside** the upstream block on purpose. It leaves the bundled `nginx.conf`, `proxy.conf` and `http-common.conf` untouched, so nothing changes for a deployment that overrides those files, and it cannot collide with a global `resolver` you already ship there.
 - IPv6 lookups stay enabled; add `ipv6=off` only if your network actually needs it.
 
 Requirements:
 
 - nginx-server and the backend must share a **user-defined Docker network** on which the name is resolvable — the Compose project's default network, or one created with `docker network create`. Docker's built-in `bridge` network does **not** resolve container names, so this pattern does not work there.
-- Upstream names are global to the nginx configuration and every site file is loaded into the same `http` context, so give each site's upstream a unique name (for example `<service>_upstream`).
+- **Upstream and zone names must be unique across the whole nginx configuration, not just within one file.** Every site file is loaded into the same `http` context, so two sites that each declare `upstream service1_upstream` — a perfectly natural thing when both proxy the same service — make nginx refuse the entire configuration with `duplicate upstream "service1_upstream"`, and nothing is served. Name upstreams after the site *and* the backend, `<site>_<service>_upstream`, and give the `zone` the same name: `someid_service1_upstream` in one site, `other_service1_upstream` in the next. Several locations in one site file that reach the same backend should share that one upstream rather than declare another.
 
 With this pattern nginx **starts even when the backend does not exist yet** — verified against this image: `nginx -t` and startup succeed with the name unresolvable, requests get `502` (`no live upstreams` in the error log) until it appears, and traffic flows once the name resolves, with no reload. The literal form instead fails validation at startup (`host not found in upstream`), which also makes the container's own start depend on the backend being up first.
 
+### What re-resolution does not make instantaneous
+
+Re-resolution is periodic, not atomic. nginx keeps using the address it last resolved until that answer is `valid=` old and it asks again, so after a backend is recreated there is a short window — up to the validity period, plus one lookup — in which requests still go to the **old** address. That matters more than it sounds, because Docker hands a freed address to the next container that needs one: during that window the old address may already belong to a *different* container, and if that container accepts connections on the same port, those requests are answered by the wrong application. Measured against this image on a real Docker network, with the old address deliberately reoccupied by another container: with `valid=1s`, requests reached the wrong container for about one second after the replacement backend started, then every request reached the replacement and stayed there; with the `10s` originally used, that exposure lasted about ten seconds.
+
+`valid=1s` is deliberately short for that reason, and it is what keeps nginx from relying on the far longer TTL Docker's embedded DNS itself reports. It does not make the window zero, and it should not be `0s`, which is not a no-cache setting. Dynamic resolution removes the *indefinite* stale-IP state — nginx now follows the backend on its own — but not this brief convergence window.
+
+The other side of the same coin is **which containers can end up at that address at all**. Only containers on the same Docker network can be handed the freed IP and be reached by nginx there, so the exposure scales with what shares that network. Unrelated services do not need to share one large proxy network: nginx-server can be attached to several user-defined networks at once (Compose `networks:` on the service), one per application or trust boundary, so that a backend's old address can only be taken over by a container of the same application. Keeping unrelated services on separate networks is a hardening measure worth taking on its own, and it shrinks this window's consequences to a single application.
+
 ### Migrating an existing site
 
-Site files with a literal `proxy_pass http://service:port` **keep working unchanged** — they are accepted exactly as before and simply remain exposed to the stale-IP problem until migrated. To migrate, move the host and port into an `upstream` block and point `proxy_pass` at the upstream name, leaving everything else as it is:
+Site files with a literal `proxy_pass http://service:port` **keep working unchanged** — they are accepted exactly as before and simply remain exposed to the stale-IP problem until migrated. To migrate, move the host and port into an `upstream` block named after the site and the backend, and point `proxy_pass` at that name, leaving everything else as it is:
 
-- **Keep the URI part exactly as it was.** `proxy_pass http://service:8080/;` becomes `proxy_pass http://service_upstream/;`, and `proxy_pass http://service:8080;` (no trailing slash) becomes `proxy_pass http://service_upstream;`. The trailing `/` decides whether the matched location prefix is replaced or passed through, and a named upstream does not change that.
-- **Host header.** The bundled `proxy.conf` sets `proxy_set_header Host $http_host;`, so the backend keeps seeing the client's host. If you override `proxy.conf` without a `Host` header, nginx's default is `$proxy_host`, which is now the upstream name (`service_upstream`) rather than `service:8080` — set it explicitly if the backend cares.
-- **HTTPS upstreams.** `proxy_pass https://service_upstream;` works the same way, but `$proxy_host` — the default for `proxy_ssl_name`, and therefore the SNI sent with `proxy_ssl_server_name on` — is now the upstream name. Add `proxy_ssl_name service;` (the backend's real hostname) so certificate verification and SNI keep behaving as before.
+- **Keep the URI part exactly as it was.** In site `mysite`, `proxy_pass http://service:8080/;` becomes `proxy_pass http://mysite_service_upstream/;`, and `proxy_pass http://service:8080;` (no trailing slash) becomes `proxy_pass http://mysite_service_upstream;`. The trailing `/` decides whether the matched location prefix is replaced or passed through, and a named upstream does not change that.
+- **Host header.** The bundled `proxy.conf` sets `proxy_set_header Host $http_host;`, so the backend keeps seeing the client's host. If you override `proxy.conf` without a `Host` header, nginx's default is `$proxy_host`, which is now the upstream name (`mysite_service_upstream`) rather than `service:8080` — set it explicitly if the backend cares.
+- **HTTPS upstreams.** `proxy_pass https://mysite_service_upstream;` works the same way, but `$proxy_host` — the default for `proxy_ssl_name`, and therefore the SNI sent with `proxy_ssl_server_name on` — is now the upstream name. Add `proxy_ssl_name service;` (the backend's real hostname) so certificate verification and SNI keep behaving as before.
 - Headers, timeouts and buffering directives are unaffected; leave them where they are.
 
 ## Environment Variables

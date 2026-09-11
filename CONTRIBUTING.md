@@ -90,6 +90,6 @@ The test suite covers:
 - Logging format and severity correctness
 - The reload watcher's event mask, `.conf` filtering, and duplicate-event coalescing
 - Build-time and startup-time assertions
-- Every proxying example using a dynamically resolved upstream, and no global `resolver` in the base nginx files
+- Every proxying example using a dynamically resolved upstream with a site-scoped name and a one-second validity, and no global `resolver` in the base nginx files
 
 Please run both the Jest suite and the shell syntax checks before opening a pull request.

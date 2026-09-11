@@ -138,9 +138,9 @@ Generates a self-signed certificate locally. No CA contact, no public domain req
 
 ```nginx
 # nginx/sites/dev.conf
-upstream myapp_upstream {
-  zone myapp_upstream 64k;
-  resolver 127.0.0.11 valid=10s;
+upstream dev_myapp_upstream {
+  zone dev_myapp_upstream 64k;
+  resolver 127.0.0.11 valid=1s;
   server myapp:3000 resolve;
 }
 
@@ -149,7 +149,7 @@ server {
   server_name localhost;
 
   location / {
-    proxy_pass http://myapp_upstream/;
+    proxy_pass http://dev_myapp_upstream/;
   }
 }
 ```
