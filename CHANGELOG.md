@@ -2,9 +2,19 @@
 
 ## [Unreleased]
 
-### Security
+## [5.1.1] — 2026-11-18
 
-- **`examples/cloudflare-custom-certs`: the Certbot sidecar moves from `certbot/dns-cloudflare:v5.6.0` to `v5.10.0`.** Scanned with Trivy 0.76.2 on `linux/amd64` and `linux/arm64` (identical per version), `v5.6.0` has 5 CRITICAL and 34 HIGH findings, among them its CA bundle (`certifi` with the compromised emSign roots), the `urllib3` 2.6.3 under the ACME client and the OpenSSL bundled in its `cryptography` wheel; `v5.10.0` has none of those and 0 CRITICAL / 5 HIGH, all five in the copies pip vendors inside itself (`urllib3` 2.7.0, `msgpack` 1.1.2, `setuptools` 70.3.0), which Certbot never imports — they are in `v5.6.0` too, and only became visible through the SBOM pip 26.2.2 ships. Verified against a local ACME test server and a mock Cloudflare API on an isolated network, on both architectures: the unchanged sidecar script issues, exports with the same modes, gates `nginx-server` through the healthcheck, renews, and reuses and renews a lineage created by `v5.6.0`. The sidecar's pin is now documented as independent of the Certbot inside `nginx-server`, which this example never runs. The `nginx-server` image is unchanged.
+Maintenance release. The `nginx-server` image has no intended runtime change; it is rebuilt from the same Dockerfile and published so that the repository version and the Docker Hub tags stay aligned. The substantive changes are in the Cloudflare example and in the vulnerability monitoring.
+
+### nginx-server image
+
+- **No functional change.** nginx stays at 1.31.9 (`nginx:1.31.9-alpine3.24`), Alpine at 3.24 and Certbot at `certbot=5.6.0-r0`. Inside the image, only the version that `js/package.json` and `js/package-lock.json` report differs from 5.1.0. Rebuilt with `--pull --no-cache` before publication, the image has the same 147 Alpine packages at the same versions as 5.1.0 on both architectures (Alpine 3.24.4, OpenSSL 3.5.9, Node.js 24.22.3), with no pending `apk` upgrade; the upstream `nginx:1.31.9-alpine3.24` tag now resolves to a new index digest, but to the same `linux/amd64` and `linux/arm64` images as before.
+- **Known findings are not resolved by this release.** Scanned before publication with the workflow's settings on both architectures: 0 CRITICAL and the same five HIGH findings as 5.1.0 — `py3-cryptography-47.0.0-r0` (CVE-2026-69247, CVE-2026-69249, GHSA-537c-gmf6-5ccf) and `py3-urllib3-2.7.0-r0` (CVE-2026-97687, CVE-2026-97689) — plus the same three MEDIUM and one LOW, with no finding added or removed. Alpine 3.24 still publishes no fixed build for either package, so the policy reports them as HIGH findings awaiting an Alpine build and passes. Their triage is in [docs/architecture.md → Known scanner findings](docs/architecture.md#known-scanner-findings-in-the-released-image): one demonstrated false positive, two `cryptography` findings whose APIs are unused, one conditional and one reachable `urllib3` finding — documented, not formally accepted.
+
+### Cloudflare example
+
+- **`examples/cloudflare-custom-certs`: the Certbot sidecar moves from `certbot/dns-cloudflare:v5.6.0` to `v5.10.0`.** Scanned with Trivy 0.76.2 on `linux/amd64` and `linux/arm64` (identical per version), `v5.6.0` has 5 CRITICAL and 34 HIGH findings, among them its CA bundle (`certifi` with the compromised emSign roots), the `urllib3` 2.6.3 under the ACME client and the OpenSSL bundled in its `cryptography` wheel; `v5.10.0` has none of those and 0 CRITICAL / 5 HIGH, all five in the copies pip vendors inside itself (`urllib3` 2.7.0, `msgpack` 1.1.2, `setuptools` 70.3.0), which Certbot never imports — they are in `v5.6.0` too, and only became visible through the SBOM pip 26.2.2 ships. Verified against a local ACME test server and a mock Cloudflare API on an isolated network, on both architectures: the unchanged sidecar script issues, exports with the same modes, gates `nginx-server` through the healthcheck, renews, and reuses and renews a lineage created by `v5.6.0`. The sidecar's pin is now documented as independent of the Certbot inside `nginx-server`, which this example never runs.
+- **Existing deployments keep the old sidecar until they are updated.** The sidecar is a separate upstream image, not part of this release's image: take the updated `docker-compose.yml` (or change the tag yourself) and run `docker compose up -d certbot-cloudflare`. The lineage in the `letsencrypt` volume is kept and reused.
 
 ### Internal
 
@@ -12,6 +22,8 @@
 - nginx.org's `minor` and `none` advisory ratings are reported as LOW instead of UNKNOWN (CVE-2009-4487, rated "none", was the one UNKNOWN finding of 5.1.0). Neither rating fails the policy, before or after.
 - `docs/architecture.md` replaces the September 2026 Docker Scout record with the triage of the 5.1.0 findings (one demonstrated false positive, unused `cryptography` APIs, the conditional and the reachable `urllib3` paths), recorded as documented rather than accepted risk; `docs/security-scanning.md` documents the coverage check and the scanner's limitations.
 - The weekly fresh-rebuild check now resolves the published image to its per-architecture digest once and pulls, scans and inspects that digest, as the daily check already did. It used to scan the `latest` tag from the local Docker daemon, and Trivy's daemon source ignores `--platform` when the daemon holds several platforms of one tag, so the comparison could silently describe the other architecture. Regression tests cover the per-architecture digests and the independent per-architecture jobs.
+- The reload-watcher test accepts the uutils coreutils wording of an option error (`unexpected argument '-…' found`) alongside the GNU, BusyBox and BSD wordings. uutils is the coreutils of Ubuntu 26.04, which the `ubuntu-latest` runners moved to; the Jest job had failed there. Test-only.
+- `js/package.json` and `js/package-lock.json` report `5.1.1`.
 
 ## [5.1.0] — 2026-11-18
 

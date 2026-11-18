@@ -172,7 +172,7 @@ These principles shape the optional features, most visibly Fail2ban (full detail
 
 ### Known scanner findings in the released image
 
-**Scope.** nginx-server 5.1.0 (`linux/amd64` `sha256:c172e227…`, `linux/arm64` `sha256:e59c024f…`), scanned on 2026-11-18 with the pinned Trivy 0.76.2 and the [security scan](security-scanning.md)'s settings, then triaged by hand. Both architectures report the same findings: no CRITICAL, five HIGH, three MEDIUM and one LOW from Trivy, plus one nginx.org advisory. Every Trivy finding is in a Python package Alpine 3.24 installs for Certbot (`certbot`, `py3-acme`, `py3-josepy` and `py3-openssl` pull them in transitively). Alpine's 3.24 security database records no fix for `py3-cryptography-47.0.0-r0` or `py3-urllib3-2.7.0-r0`, so rebuilding does not clear any of them.
+**Scope.** nginx-server 5.1.0 (`linux/amd64` `sha256:c172e227…`, `linux/arm64` `sha256:e59c024f…`), scanned on 2026-11-18 with the pinned Trivy 0.76.2 and the [security scan](security-scanning.md)'s settings, then triaged by hand. The 5.1.1 rebuild has the same packages at the same versions, and its pre-release scan reported exactly the same findings. Both architectures report the same findings: no CRITICAL, five HIGH, three MEDIUM and one LOW from Trivy, plus one nginx.org advisory. Every Trivy finding is in a Python package Alpine 3.24 installs for Certbot (`certbot`, `py3-acme`, `py3-josepy` and `py3-openssl` pull them in transitively). Alpine's 3.24 security database records no fix for `py3-cryptography-47.0.0-r0` or `py3-urllib3-2.7.0-r0`, so rebuilding does not clear any of them.
 
 | Finding | Severity | Package | Assessment |
 | --- | --- | --- | --- |
