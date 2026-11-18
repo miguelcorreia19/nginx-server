@@ -218,7 +218,9 @@ describe('reload.sh — the guarded invocations against the real binaries', () =
   const os = require('os');
 
   const available = (bin) => spawnSync('sh', ['-c', `command -v ${bin}`]).status === 0;
-  const OPTION_ERROR = /unrecognized option|invalid option|unknown option|illegal option/i;
+  // GNU, BusyBox and BSD wordings, plus uutils coreutils (Ubuntu 26.04):
+  // "unexpected argument '-b' found".
+  const OPTION_ERROR = /unrecognized option|invalid option|unknown option|illegal option|unexpected argument '-/i;
 
   let workdir;
   beforeEach(() => {
