@@ -192,25 +192,41 @@ jobs:
       - name: Build a candidate image (never published)
         run: docker build --pull --no-cache --tag "$CANDIDATE" .
 
-      - name: Pull the published image
-        run: docker pull --platform "linux/$ARCH" "$IMAGE"
+      # Everything below uses this one per-architecture digest, so the scan, the
+      # package comparison and the report all describe the same image.
+      - name: Resolve and pull the published image
+        id: published
+        run: |
+          digest=$(docker buildx imagetools inspect "$IMAGE" --format \
+            "{{range .Manifest.Manifests}}{{if and .Platform (eq .Platform.OS \"linux\") (eq .Platform.Architecture \"$ARCH\")}}{{.Digest}}{{end}}{{end}}")
+          if [ -z "$digest" ]; then
+            echo "::error title=Missing architecture::$IMAGE publishes no linux/$ARCH image"
+            exit 1
+          fi
+          ref="${IMAGE%:*}@${digest}"
+          docker pull "$ref"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
 
       - name: Scan the candidate, the published image and the upstream base
         id: scan
+        env:
+          PUBLISHED: ${{ steps.published.outputs.ref }}
         run: |
           base=$(awk 'toupper($1) == "FROM" { i = 2; while ($i ~ /^--/) i++; image = $i } END { print image }' Dockerfile)
           echo "base=$base" >> "$GITHUB_OUTPUT"
-          scan() { trivy image --skip-db-update --format json "$@"; }
+          scan() { trivy image --skip-db-update --format json --platform "linux/$ARCH" "$@"; }
           scan --image-src docker --output "scan-results/candidate-$ARCH.json" "$CANDIDATE"
-          scan --image-src docker --output "scan-results/published-$ARCH.json" "$IMAGE"
-          scan --image-src remote --platform "linux/$ARCH" --output "scan-results/base-$ARCH.json" "$base"
+          scan --image-src remote --output "scan-results/published-$ARCH.json" "$PUBLISHED"
+          scan --image-src remote --output "scan-results/base-$ARCH.json" "$base"
 
       - name: Compare Alpine packages
+        env:
+          PUBLISHED: ${{ steps.published.outputs.ref }}
         run: |
           packages() { docker run --rm --platform "linux/$ARCH" --entrypoint apk "$1" info -v | sort; }
           packages "$CANDIDATE" > "scan-results/packages-candidate-$ARCH.txt"
-          packages "$IMAGE" > "scan-results/packages-published-$ARCH.txt"
-          docker run --rm --platform "linux/$ARCH" --entrypoint apk "$IMAGE" --no-cache list --upgradable \
+          packages "$PUBLISHED" > "scan-results/packages-published-$ARCH.txt"
+          docker run --rm --platform "linux/$ARCH" --entrypoint apk "$PUBLISHED" --no-cache list --upgradable \
             > "scan-results/upgradable-published-$ARCH.txt"
           changes=$(diff "scan-results/packages-published-$ARCH.txt" "scan-results/packages-candidate-$ARCH.txt" || true)
           {
@@ -233,6 +249,7 @@ jobs:
       - name: Apply the vulnerability policy to the candidate
         env:
           BASE: ${{ steps.scan.outputs.base }}
+          PUBLISHED: ${{ steps.published.outputs.ref }}
         run: |
           node .github/scripts/security-report.js \
             --report "scan-results/candidate-$ARCH.json" \
@@ -241,7 +258,7 @@ jobs:
             --nginx-advisories scan-results/nginx-advisories.html \
             --arch "$ARCH" \
             --title "Fresh rebuild of ${GITHUB_SHA::12} (not published)" \
-            --note "Built with \`docker build --pull --no-cache\` from \`$BASE\`; compared with \`$IMAGE\`." \
+            --note "Built with \`docker build --pull --no-cache\` from \`$BASE\`; compared with \`$PUBLISHED\` (\`$IMAGE\`)." \
             --trivy-version scan-results/trivy-version.json \
             --summary "$GITHUB_STEP_SUMMARY"
 

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Internal
+
+- The weekly fresh-rebuild check now resolves the published image to its per-architecture digest once and pulls, scans and inspects that digest, as the daily check already did. It used to scan the `latest` tag from the local Docker daemon, and Trivy's daemon source ignores `--platform` when the daemon holds several platforms of one tag, so the comparison could silently describe the other architecture. Regression tests cover the per-architecture digests and the independent per-architecture jobs.
+
 ## [5.1.0] — 2026-11-18
 
 Security and maintenance release: the nginx security upgrade, dynamically resolved upstreams for proxied Docker services, automated vulnerability monitoring, and `latest` brought back in line with the current release on both architectures.

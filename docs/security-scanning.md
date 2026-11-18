@@ -9,7 +9,7 @@ How the published image is watched for vulnerabilities, what makes a scan fail, 
 | **Published image** | daily, 04:23 | `miguelcorreia19/nginx-server:latest` exactly as Docker Hub serves it, resolved to each architecture's digest; plus the upstream base image recorded in that image's build provenance | `linux/amd64`, `linux/arm64` (one job each) |
 | **Fresh rebuild** | Mondays, 05:47 | A candidate built from the current Dockerfile with `docker build --pull --no-cache`, compared with the published image and with a fresh pull of the base image | `linux/amd64` on `ubuntu-24.04`, `linux/arm64` on `ubuntu-24.04-arm` (native builds, no emulation) |
 
-Both can also be started by hand (see [Running a scan manually](#running-a-scan-manually)). Neither job pushes, tags or publishes an image, changes a dependency, opens an issue or a pull request, or writes to the repository; neither has access to any secret. The rebuild's candidate exists only in the runner's local Docker daemon and is discarded with the runner.
+Each architecture runs as its own job, so a failure on one never cancels or hides the other's result. Both jobs resolve `latest` to the architecture's own image digest first and scan, pull and inspect only that digest. Both can also be started by hand (see [Running a scan manually](#running-a-scan-manually)). Neither job pushes, tags or publishes an image, changes a dependency, opens an issue or a pull request, or writes to the repository; neither has access to any secret. The rebuild's candidate exists only in the runner's local Docker daemon and is discarded with the runner.
 
 The daily job answers *"is the image people pull affected by something disclosed since it was built?"*. The weekly job answers *"would rebuilding today fix it, and does the current Dockerfile still build and pass?"* — it is the signal that a rebuild and re-release is worth doing, or that something now needs a code change.
 
@@ -84,7 +84,7 @@ The failed step says which kind of failure it is:
 | --- | --- | --- |
 | Download and verify Trivy | The scanner download failed, or its **SHA-256 did not match** | A mismatch is a supply-chain alarm, not a flake: do not update the hash to make it pass. Investigate (see [Updating the scanner](#updating-the-scanner)). |
 | Download the vulnerability database | The Trivy database could not be fetched | Scanner failure. Re-run; nothing was concluded about the image. |
-| Resolve the published image — *Missing architecture* | `latest` does not publish that architecture | A release defect: republish `latest` as a multi-platform image. |
+| Resolve the published image (daily) / Resolve and pull the published image (weekly) — *Missing architecture* | `latest` does not publish that architecture | A release defect: republish `latest` as a multi-platform image. |
 | Scan … / Fetch the nginx.org security advisories | Registry, network or scanner error | Scanner failure. Re-run. |
 | Build a candidate image | The Dockerfile no longer builds against current upstream (for example the pinned Certbot package stopped resolving) | A real maintenance signal; reproduce locally with `docker build --pull --no-cache .`. |
 | Apply the vulnerability policy — `::error` annotations naming CVEs | **Policy violation**: these findings fail the policy | Remediate (below). |

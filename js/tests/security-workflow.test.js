@@ -84,6 +84,31 @@ describe('security scan workflow — coverage and failure visibility', () => {
     expect(security).toMatch(/- arch: arm64\n\s+runner: ubuntu-24\.04-arm\n/);
   });
 
+  // Each architecture is its own job, so one failing (or missing) cannot cancel
+  // or hide the other's result.
+  it('runs every architecture as an independent job', () => {
+    expect(security.match(/strategy:\n\s+fail-fast: false\n/g)).toHaveLength(2);
+    expect(security).toMatch(/name: Published image \(linux\/\$\{\{ matrix\.arch \}\}\)/);
+    expect(security).toMatch(/name: Fresh rebuild \(linux\/\$\{\{ matrix\.arch \}\}\)/);
+  });
+
+  // The published image is resolved to one per-architecture digest, and that
+  // digest is what gets scanned, so a scan cannot describe the other platform.
+  it('scans the published image by its per-architecture digest in both jobs', () => {
+    expect(security.match(/\.Platform\.Architecture|\.platform\.architecture/g)).toHaveLength(2);
+    expect(security).toMatch(/--output "scan-results\/published-\$ARCH\.json" "\$REF"/);
+    expect(security).toMatch(/--output "scan-results\/published-\$ARCH\.json" "\$PUBLISHED"/);
+    expect(security.match(/Missing architecture/g)).toHaveLength(2);
+  });
+
+  // Docker's containerd image store can hold several platforms of one tag, so a
+  // scan without --platform may silently cover the host's architecture instead.
+  it('pins every image scan to the job architecture', () => {
+    const scans = [...security.matchAll(/trivy image --skip-db-update[^\n]*/g)].map(([line]) => line);
+    expect(scans.length).toBeGreaterThanOrEqual(3);
+    for (const line of scans) expect(line).toContain('--platform "linux/$ARCH"');
+  });
+
   it('suppresses nothing: no ignore file and no ignore-unfixed', () => {
     expect(security).toMatch(/TRIVY_IGNOREFILE: \/dev\/null/);
     expect(security).not.toMatch(/ignore-unfixed|IGNORE_UNFIXED|ignore-status|continue-on-error/);
