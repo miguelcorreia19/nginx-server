@@ -55,7 +55,7 @@ the copy.
   a `_acme-challenge` TXT record; it needs nothing else.
 
 An API token is preferred over the legacy global API key, which grants full
-account access. Certbot 5.6.0's plugin accepts either.
+account access. The plugin accepts either.
 
 > `example.com` is a reserved documentation domain — you cannot obtain a
 > certificate for it. Every domain and email below is a placeholder you must
@@ -165,10 +165,62 @@ lineage, and nginx-server re-copies whatever is currently exported.
 - No `NET_ADMIN` is needed here. That capability is only for
   [Fail2ban](../fail2ban/).
 
+## Sidecar image
+
+The sidecar is pinned to `certbot/dns-cloudflare:v5.10.0`. That pin is
+independent of the Certbot release inside `nginx-server` (5.6.0): in this
+example `nginx-server` runs no Certbot at all and never mounts the sidecar's
+`letsencrypt` volumes — only the two exported files cross over — so the two
+versions never meet.
+
+It was moved from `v5.6.0` in November 2026 for security reasons. Scanned with
+Trivy 0.76.2 on both `linux/amd64` and `linux/arm64` (identical results per
+version):
+
+| | `v5.6.0` (May 2026) | `v5.10.0` (Nov 2026) |
+|---|---|---|
+| CRITICAL | 5 | 0 |
+| HIGH | 34 | 5 |
+| Base | Alpine 3.23.4, OpenSSL 3.5.6 | Alpine 3.23.8, OpenSSL 3.5.9 |
+
+`v5.6.0`'s findings included components on the sidecar's own TLS path — the
+CA bundle (`certifi`, emSign roots with compromised intermediates), `urllib3`
+2.6.3 under the ACME client, the OpenSSL bundled in its `cryptography` wheel —
+as well as the Alpine base and the `uv` tool. `v5.10.0` clears all of them;
+its runtime `urllib3` is 2.8.0.
+
+Its five remaining HIGH findings (`urllib3` 2.7.0, `msgpack` 1.1.2, and
+`setuptools` 70.3.0, of which pip carries only `pkg_resources`) are in the
+copies **pip vendors inside itself** (`pip/_vendor`), not in the packages
+Certbot runs on: Certbot imports `urllib3` 2.8.0 from `site-packages`, and
+loads neither pip nor `msgpack`. Those vendored copies are in `v5.6.0` as well,
+at the same or older versions; they only became visible because pip 26.2.2
+ships an SBOM that Trivy reads. `v5.10.0` is also `latest`, so no newer image
+fixes them yet. The sidecar is not covered by the
+[security scan](../../docs/security-scanning.md), so re-check it before relying
+on it for long.
+
+Verified for `v5.10.0`, without Cloudflare or Let's Encrypt — a local ACME test
+server (Pebble) and a mock Cloudflare API on an isolated Docker network, on
+both architectures:
+
+- the unchanged `certbot-entrypoint.sh` runs on the new image: issuance, export
+  (`0644` certificate, `0600` key, renamed into place), the healthcheck gate,
+  `nginx-server` serving the wildcard certificate, the renewal loop renewing it,
+  and a restart of `nginx-server` picking the renewal up;
+- the credentials file is read from the read-only mount and its token sent on
+  every API call; certbot warns about a world-readable file and not about a
+  `0600` one, as before; the placeholder and missing-file checks still refuse
+  to start;
+- an existing `v5.6.0` lineage is reused as-is after switching the image, and
+  renewed by `v5.10.0` with the stored renewal settings.
+
+**Upgrading an existing deployment:** change the tag and
+`docker compose up -d certbot-cloudflare`. The lineage in the `letsencrypt`
+volume is kept and reused; nothing is re-issued until renewal is due.
+
 ## Notes
 
-- The sidecar image is pinned to `certbot/dns-cloudflare:v5.6.0`, the same
-  Certbot release `nginx-server` pins, so both halves agree on one version.
 - Wildcard names are accepted by `mode: custom` and rejected by the
   `letsencrypt` modes — see [SSL modes](../../docs/ssl-modes.md).
 - `example-backend` is a small `traefik/whoami` container standing in for

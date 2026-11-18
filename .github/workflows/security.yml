@@ -35,7 +35,9 @@ env:
   # Every scan: vulnerabilities in OS packages and application dependencies;
   # "comprehensive" so the Python packages Alpine installs for Certbot are
   # matched as well; and no ignore file, so a .trivyignore cannot suppress
-  # anything.
+  # anything. The policy step refuses a report of this image whose Python
+  # packages are missing (--expect-python-from certbot), so losing them
+  # fails as a scanner error instead of reading as a clean image.
   TRIVY_SCANNERS: vuln
   TRIVY_PKG_TYPES: os,library
   TRIVY_DETECTION_PRIORITY: comprehensive
@@ -130,6 +132,7 @@ jobs:
                 --nginx-advisories scan-results/nginx-advisories.html
                 --title "Published image $IMAGE" --summary "$GITHUB_STEP_SUMMARY"
                 --trivy-version scan-results/trivy-version.json
+                --expect-python-from certbot
                 --note "Scanned by digest: \`$REF\`.")
           if [ -f "scan-results/base-$ARCH.json" ]; then
             args+=(--base "scan-results/base-$ARCH.json" --note "Upstream base from build provenance: \`$BASE_TAG\`.")
@@ -260,6 +263,7 @@ jobs:
             --title "Fresh rebuild of ${GITHUB_SHA::12} (not published)" \
             --note "Built with \`docker build --pull --no-cache\` from \`$BASE\`; compared with \`$PUBLISHED\` (\`$IMAGE\`)." \
             --trivy-version scan-results/trivy-version.json \
+            --expect-python-from certbot \
             --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the scan results

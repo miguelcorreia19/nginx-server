@@ -131,3 +131,31 @@ describe('examples/cloudflare-custom-certs — exported filenames agree', () => 
     expect(compose).toMatch(/certs:\/home\/custom-certificates:ro/);
   });
 });
+
+// The sidecar's Certbot is pinned on its own, apart from the Certbot inside
+// nginx-server. That is only sound while nginx-server never mounts the
+// sidecar's Certbot state, and only useful while the pin is one exact release
+// and the README describes the release actually pinned.
+describe('examples/cloudflare-custom-certs — sidecar image pin', () => {
+  const dir = path.join(examplesDir, 'cloudflare-custom-certs');
+  const compose = fs.readFileSync(path.join(dir, 'docker-compose.yml'), 'utf8');
+  const readme = fs.readFileSync(path.join(dir, 'README.md'), 'utf8');
+  const image = (compose.match(/^ {4}image: (certbot\/dns-cloudflare:\S+)$/m) || [])[1];
+
+  it('pins the sidecar to one exact release', () => {
+    expect(image).toMatch(/^certbot\/dns-cloudflare:v\d+\.\d+\.\d+$/);
+  });
+
+  it('documents the release it pins', () => {
+    expect(readme).toContain(`\`${image}\``);
+  });
+
+  it('gives nginx-server only the exported files, never Certbot state', () => {
+    const block = (compose.match(/^ {2}nginx-server:\n((?: {4,}.*\n|\n)+)/m) || [])[1] || '';
+    const mounts = [...block.matchAll(/^ {6}- ([^:\s]+):(\/\S*)/gm)].map(([, source, target]) => ({ source, target }));
+    expect(mounts.length).toBeGreaterThan(0);
+    expect(mounts.map((m) => m.source)).not.toEqual(expect.arrayContaining(['letsencrypt']));
+    expect(mounts.map((m) => m.source)).not.toEqual(expect.arrayContaining(['letsencrypt-lib']));
+    expect(mounts).toContainEqual({ source: 'certs', target: '/home/custom-certificates:ro' });
+  });
+});

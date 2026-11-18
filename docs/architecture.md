@@ -168,31 +168,35 @@ These principles shape the optional features, most visibly Fail2ban (full detail
 - **No access-log jails by default.** nginx's **error-log** format is fixed and stable, so error-log filters work unchanged; this image's **access-log** format is customized, which would require fragile custom parsing. That cost is pushed to opt-in overrides rather than imposed on everyone.
 - **Backward compatibility.** New capabilities are added as opt-in flags whose disabled path leaves existing behavior byte-for-byte unchanged — enabling a feature is a deliberate choice, never a silent default that could surprise existing users.
 
-### Accepted exposure: transitive `py3-cryptography` findings
+<a id="accepted-exposure-transitive-py3-cryptography-findings"></a>
 
-A runtime scan of the built image (Docker Scout, September 2026) reported **no Critical findings** and **three High findings**, all against `cryptography 47.0.0` — the Python package Alpine ships as `py3-cryptography-47.0.0-r0`. It reaches the image transitively: `certbot`, `py3-acme`, `py3-josepy` and `py3-openssl` all depend on it, so it arrives with the pinned Certbot stack rather than being requested directly.
+### Known scanner findings in the released image
 
-**What was established.** The package is present at the reported version, and it is genuinely reachable — Certbot imports and uses it for ACME operations. Alpine v3.24 published no fixed build at the time of the audit, so neither rebuilding the image nor changing the base tag within the same Alpine branch removes the findings.
+**Scope.** nginx-server 5.1.0 (`linux/amd64` `sha256:c172e227…`, `linux/arm64` `sha256:e59c024f…`), scanned on 2026-11-18 with the pinned Trivy 0.76.2 and the [security scan](security-scanning.md)'s settings, then triaged by hand. Both architectures report the same findings: no CRITICAL, five HIGH, three MEDIUM and one LOW from Trivy, plus one nginx.org advisory. Every Trivy finding is in a Python package Alpine 3.24 installs for Certbot (`certbot`, `py3-acme`, `py3-josepy` and `py3-openssl` pull them in transitively). Alpine's 3.24 security database records no fix for `py3-cryptography-47.0.0-r0` or `py3-urllib3-2.7.0-r0`, so rebuilding does not clear any of them.
 
-**What was not established.** Whether this project's Certbot operations actually exercise the vulnerable code paths. That question was not answered. The scan also used a single scanner (Docker Scout) and was not corroborated with a second one.
+| Finding | Severity | Package | Assessment |
+| --- | --- | --- | --- |
+| GHSA-537c-gmf6-5ccf | HIGH | `py3-cryptography` 47.0.0-r0 | **False positive, demonstrated.** The advisory concerns the OpenSSL that PyPI wheels link statically. Alpine builds `cryptography` from source: its `_rust.abi3.so` links the system `libssl.so.3`/`libcrypto.so.3`, and the library reports OpenSSL 3.5.9 — Alpine's `libssl3`/`libcrypto3-3.5.9-r0`, which are scanned as OS packages in their own right. |
+| CVE-2026-69247 | HIGH | `cryptography` | **Vulnerable API not used.** Only PKCS#7 EnvelopedData decryption (`pkcs7_decrypt_der`/`_pem`/`_smime`) is affected; nothing in Certbot, acme, josepy, pyOpenSSL, requests, urllib3 or `js/` calls it. |
+| CVE-2026-69249 | HIGH | `cryptography` | **Vulnerable API not used.** Affects cryptography's own X.509 path builder (`cryptography.x509.verification`), which nothing in the Certbot stack uses; ACME connections are verified by OpenSSL through Python's `ssl` module. CVE-2026-69248 (MEDIUM) is in the same verifier and does not apply either. |
+| CVE-2026-97687 | HIGH | `py3-urllib3` 2.7.0-r0 | **Conditional; not applicable to supported configurations.** Only matters when requests go through an HTTPS proxy, where target-server TLS settings leak into the proxy connection. The image configures no proxy, and requests never sets urllib3's proxy TLS options (`proxy_ssl_context`, `use_forwarding_for_https`). Routing Certbot through an HTTPS proxy is outside what was assessed. |
+| CVE-2026-97689 | HIGH | `py3-urllib3` | **Reachable; exposure depends on the ACME server.** acme's `ClientNetwork` reads responses through requests into urllib3's chunked parser (`HTTPResponse.read_chunked`, verified on loopback). A crafted chunked response from the server Certbot talks to — the configured CA, over certificate-verified TLS — can exhaust the Certbot process's memory. Denial of service only, and only while Certbot runs (startup issuance and the renewal cron job), but inside the same container as nginx. |
+| CVE-2026-97688 | MEDIUM | `py3-urllib3` | **Reachable; same path and preconditions** as CVE-2026-97689: an infinite loop on a crafted chunked Deflate response. |
+| CVE-2026-59890, GHSA-xmj3-9gf7-h52w | MEDIUM, LOW | `py3-setuptools` | **Not applicable.** Building sdists on macOS file systems, and legacy wheel installation on Windows; nothing in the image builds or installs Python packages. |
+| CVE-2009-4487 | LOW | nginx (nginx.org) | nginx.org rates it "none" and lists every version as vulnerable, with no fix. The report script showed it as UNKNOWN until nginx's "minor" and "none" ratings were mapped to LOW. |
 
-**Decision.** The project currently accepts this exposure rather than migrating to a different Alpine/Certbot stack in order to clear the scanner report. The reasoning:
+**Alpine backports versus Python version matching.** Trivy judges an Alpine package and the Python distribution inside it by different evidence. The Alpine package is matched against Alpine's security database, which records fixes Alpine backports by package release: a patched `py3-urllib3-2.7.0-r1` would stop being reported. The Python view of the same files is matched by the upstream version in its `METADATA` (`urllib3 2.7.0`) against generic advisories, which know nothing of Alpine's patches, so that finding would outlive a backport. Today the two agree — Alpine records no fix for either package — but before treating a Python finding as open after an Alpine update, check Alpine's security database and the package's `APKBUILD`. The opposite error exists too: GHSA-537c-gmf6-5ccf matches the version of a build (the PyPI wheel) that is not the one installed.
 
-- Certbot 5.6 is pinned around a validated runtime contract (see [Runtime Versioning and Rebuilds](#runtime-versioning-and-rebuilds)), and the newer `py3-cryptography` lives in an Alpine branch that also carries a newer Certbot.
-- Changing branches is therefore a compatibility migration rather than a version bump, and would require the full Certbot validation described there.
-- Because applicability to this project's usage is unknown, that migration cannot currently be justified as a targeted fix.
+**Status: documented, not formally accepted.** No maintainer decision has been recorded for this triage, and none of the residual findings above should be read as an accepted risk. The one earlier decision dates from September 2026, when a Docker Scout scan reported the three `cryptography` HIGH findings with their applicability unknown: the project kept the pinned Certbot stack rather than move to another Alpine branch to clear them, because Certbot 5.6 is pinned around a validated runtime contract (see [Runtime Versioning and Rebuilds](#runtime-versioning-and-rebuilds)) and the newer `py3-cryptography` lives in an Alpine branch that also carries a newer Certbot. This triage has since settled their applicability (above); the `urllib3` findings appeared later and are covered by no decision.
 
-This is a deliberate acceptance of a known, unresolved exposure. It is **not** a claim that the findings are false positives, that they do not affect this project, or that the package is safe.
+**Revisit when any of the following becomes true:**
 
-**Revisit this decision when any of the following becomes true:**
+- Alpine 3.24 publishes fixed `py3-cryptography` or `py3-urllib3` builds — a rebuild alone then clears them.
+- The supported Alpine line or Certbot is intentionally upgraded (Alpine 3.25 was not yet released on 2026-11-18).
+- A deployment routes Certbot through an HTTPS proxy (CVE-2026-97687), or points it at an ACME server that is not trusted (CVE-2026-97689, CVE-2026-97688).
+- A scan reports new identifiers, or advisory information changes the affected APIs, severity or exploitability.
 
-- Alpine v3.24 publishes a fixed `py3-cryptography` build compatible with the pinned Certbot stack — at which point a rebuild alone resolves it.
-- The project's supported Alpine line is intentionally upgraded for other reasons.
-- Certbot is intentionally upgraded after the compatibility validation above.
-- New advisory information shows the vulnerable code paths apply to how this project uses Certbot.
-- Severity or exploitability information changes materially.
-
-The [security scan](security-scanning.md) watches the first condition: the daily scan reports these findings as HIGH findings awaiting an Alpine build, and once Alpine publishes a fixed package the weekly fresh rebuild no longer contains them and fails, asking for the image to be rebuilt and released. The other conditions still need a human. This record exists so that the next person to read a scan report finds the decision and its triggers instead of re-deriving them.
+The security scan watches the first condition: the daily scan reports these findings as HIGH findings awaiting an Alpine build, and once Alpine publishes a fixed package the weekly fresh rebuild no longer contains them and fails, asking for the image to be rebuilt and released. The other conditions still need a human. This record exists so that the next person to read a scan report finds the assessment and its triggers instead of re-deriving them.
 
 ## Certbot Architecture
 

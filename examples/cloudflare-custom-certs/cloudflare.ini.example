@@ -9,7 +9,7 @@
 # `cloudflare.ini` is gitignored. Never commit a real token.
 #
 # An API token is preferred over the legacy global API key: it can be scoped to
-# the single zone this certificate needs. Certbot 5.6.0's plugin also accepts
+# the single zone this certificate needs. The plugin also accepts
 # `dns_cloudflare_email` + `dns_cloudflare_api_key`, but that key grants full
 # access to the whole Cloudflare account.
 dns_cloudflare_api_token = replace-with-cloudflare-api-token

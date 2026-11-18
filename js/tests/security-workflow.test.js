@@ -117,6 +117,15 @@ describe('security scan workflow — coverage and failure visibility', () => {
   it('applies the documented policy script to every scanned target', () => {
     expect(security.match(/node \.github\/scripts\/security-report\.js/g)).toHaveLength(2);
   });
+
+  // Without "comprehensive", Trivy leaves out the Python packages Alpine
+  // installs for Certbot, where this image's known HIGH findings are; the
+  // expectation makes the policy step refuse such a report rather than pass it.
+  it('scans the Python packages Alpine installs, and refuses a report without them', () => {
+    expect(security).toMatch(/^ {2}TRIVY_PKG_TYPES: os,library$/m);
+    expect(security).toMatch(/^ {2}TRIVY_DETECTION_PRIORITY: comprehensive$/m);
+    expect(security.match(/^\s+--expect-python-from certbot\b/gm)).toHaveLength(2);
+  });
 });
 
 describe('Trivy is a pinned, checksum-verified release outside the compromised set', () => {

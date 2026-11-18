@@ -3,10 +3,12 @@ services:
   # challenge, then exports it into the shared `certs` volume under the exact
   # filenames nginx/config.json names. nginx-server never contacts a CA here.
   #
-  # Pinned to v5.6.0, the same Certbot release nginx-server itself pins, so the
-  # two halves of this example agree on one Certbot version.
+  # Pinned to one exact release. It is independent of the Certbot inside
+  # nginx-server: nginx-server runs no Certbot in this example and never sees
+  # this container's state, only the two exported files. Why this release, and
+  # how it was verified: README.md -> Sidecar image.
   certbot-cloudflare:
-    image: certbot/dns-cloudflare:v5.6.0
+    image: certbot/dns-cloudflare:v5.10.0
     container_name: certbot-cloudflare
     restart: unless-stopped
     # The image's entrypoint is `certbot`; this example needs a script around it.

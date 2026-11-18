@@ -16,10 +16,10 @@ The daily job answers *"is the image people pull affected by something disclosed
 ## What is scanned
 
 - **Alpine packages** (`apk`), matched against the Alpine security database.
-- **Application dependencies**: the Node packages installed from `js/package-lock.json`, and the Python packages Alpine installs for Certbot (`cryptography`, `urllib3`, `certifi`, …). Trivy normally skips language packages that an OS package installed; the workflow uses `--detection-priority comprehensive` precisely so these stay visible, because they are where the known High findings of this image live.
+- **Application dependencies**: the Node packages installed from `js/package-lock.json`, and the Python packages Alpine installs for Certbot (`cryptography`, `urllib3`, `certifi`, …). Trivy normally skips language packages that an OS package installed; the workflow uses `--detection-priority comprehensive` precisely so these stay visible, because they are where the known High findings of this image live. Losing them would not show as an error — the Python findings would simply vanish and the image would read as clean — so the report script checks the coverage itself: every Python distribution that the scan's own OS package inventory says an Alpine package installed must appear among the scanned Python packages, and for this image (`--expect-python-from certbot`) the inventory must list Certbot's. A report that fails either check is a scanner failure, not a result. The check uses no vulnerability counts or identifiers, so a clean image still passes.
 - **nginx itself**, against the [nginx.org security advisories](https://nginx.org/en/security_advisories.html). The base image installs nginx from nginx.org's own Alpine repository, which the Alpine security database does not describe, so Trivy reports nothing for it — not even for releases with published advisories. The report script therefore parses the advisory page and checks the installed nginx version against every listed vulnerable range. If the page cannot be fetched or no longer parses, the job fails as a scanner failure rather than reporting "no nginx advisories".
 
-Nothing is suppressed: the workflow sets `TRIVY_IGNOREFILE=/dev/null`, so a `.trivyignore` cannot hide a finding, and it does not use `--ignore-unfixed`. An accepted risk is recorded as a decision (see [Accepted exposure](architecture.md#accepted-exposure-transitive-py3-cryptography-findings)), not as a filter.
+Nothing is suppressed: the workflow sets `TRIVY_IGNOREFILE=/dev/null`, so a `.trivyignore` cannot hide a finding, and it does not use `--ignore-unfixed`. A triaged finding is recorded as an assessment or a decision (see [Known scanner findings](architecture.md#known-scanner-findings-in-the-released-image)), not as a filter.
 
 ## Failure policy
 
@@ -42,7 +42,7 @@ The weekly job fails in two cases:
 
 ## Reading a report
 
-Every run writes a job summary per architecture (Actions → the run → Summary). It shows which image digest, base image, Trivy version and vulnerability-database snapshot were used, the policy result, a severity table, and one row per CRITICAL/HIGH finding:
+Every run writes a job summary per architecture (Actions → the run → Summary). It shows which image digest, base image, Trivy version and vulnerability-database snapshot were used, how many Alpine-installed Python distributions were analysed, the policy result, a severity table, and one row per CRITICAL/HIGH finding:
 
 | Column | Meaning |
 | --- | --- |
@@ -89,7 +89,7 @@ The failed step says which kind of failure it is:
 | Build a candidate image | The Dockerfile no longer builds against current upstream (for example the pinned Certbot package stopped resolving) | A real maintenance signal; reproduce locally with `docker build --pull --no-cache .`. |
 | Apply the vulnerability policy — `::error` annotations naming CVEs | **Policy violation**: these findings fail the policy | Remediate (below). |
 | Apply the vulnerability policy to the candidate — *Published image needs a rebuild* | A fresh build clears CRITICAL/HIGH findings the published image still has | Rebuild and release (below). |
-| Apply the vulnerability policy — *Security report input unusable* | A report was missing or malformed, Trivy detected no OS, or the advisory page did not parse | Scanner failure. The image was **not** evaluated; never read this as "clean". |
+| Apply the vulnerability policy — *Security report input unusable* | A report was missing or malformed, Trivy detected no OS, the advisory page did not parse, or the scan left out Python packages that Alpine packages installed (the message names them) | Scanner failure. The image was **not** evaluated; never read this as "clean". For missing Python packages, check that `TRIVY_DETECTION_PRIORITY: comprehensive` and `TRIVY_PKG_TYPES: os,library` are still in effect, and whether a Trivy update changed them. |
 | Upload to GitHub code scanning | SARIF upload was refused | The summary and artifacts are still complete; check code scanning is available and the job still has `security-events: write`. |
 
 ## Remediation
@@ -97,7 +97,7 @@ The failed step says which kind of failure it is:
 1. **Alpine package with a fix** — start a `rebuild` run. If the candidate clears the finding, cut a patch release through the normal release procedure (tests, multi-platform build of the tagged commit, publish `X.Y.Z` and `latest` together). If the candidate still has it, the fixed build is not yet available to this Alpine branch, or the version is held by the base image (nginx and its modules are pinned in its `/etc/apk/world`) and needs a base-image bump instead.
 2. **nginx advisory** — move both `FROM` lines and the Dockerfile header contract to the fixed nginx release (the build-startup assertions enforce that they agree), update `docs/architecture.md`, and validate as for any base-image change.
 3. **Project npm dependency** — update `js/package-lock.json`, run the suite, release.
-4. **HIGH fixed only upstream in an Alpine-installed package** — triage reachability and record the decision next to the existing [accepted exposure](architecture.md#accepted-exposure-transitive-py3-cryptography-findings); the daily scan will start failing once Alpine ships the fix.
+4. **HIGH fixed only upstream in an Alpine-installed package** — triage reachability and record the outcome in [Known scanner findings](architecture.md#known-scanner-findings-in-the-released-image); the weekly rebuild will start failing once Alpine ships the fix. Check Alpine's security database first: a fix Alpine backports keeps the upstream version, so the Python-level finding can persist after it.
 5. **CRITICAL without any fix** — requires a decision (mitigate, change the affected component, or accept and document). The scan keeps failing until the finding is gone; there is deliberately no suppression switch.
 
 Do not hand-edit a published version tag to remediate: publish a new version.
@@ -130,6 +130,10 @@ Every other action in the workflows is pinned to a full commit SHA with its rele
 
 ## Limitations
 
-- Scanners match versions against advisory databases; none of the results says whether a vulnerable code path is reachable in this image.
-- The nginx check depends on the nginx.org advisory page layout. A layout change makes the job fail loudly instead of passing silently, and then needs a parser update.
+- Scanners match versions against advisory databases; none of the results says whether a vulnerable code path is reachable in this image. The triage of the current findings is in [Known scanner findings](architecture.md#known-scanner-findings-in-the-released-image).
+- Alpine packages are matched against Alpine's own security database, which knows about Alpine's backported fixes; the Python packages inside them are matched by upstream version against generic advisories, which do not. A Python finding can therefore outlive an Alpine backport, or describe a different build (GHSA-537c-gmf6-5ccf describes PyPI wheels, not Alpine's build).
+- Code is only matched if Trivy can see what it is. Python packages are found through their `dist-info`/`egg-info` metadata; code vendored inside another package without its own metadata (as pip vendors its dependencies) is invisible unless the package ships an SBOM that lists it.
+- The Python coverage check covers what Alpine packages install, because that is what this image contains. Python packages installed some other way are reported when Trivy finds them, but nothing requires them to be found.
+- The nginx check depends on the nginx.org advisory page layout. A layout change makes the job fail loudly instead of passing silently, and then needs a parser update. nginx.org's "minor" and "none" ratings are reported as LOW. A rating the script does not know is reported as UNKNOWN, which never fails the policy, so a new nginx.org severity label needs a mapping before it can.
 - The upstream-base comparison of the daily job relies on the build provenance attached to the published image; an image published without provenance is scanned without that comparison.
+- Only the nginx-server image is monitored. Images the examples pull — such as the Certbot sidecar of [`examples/cloudflare-custom-certs`](../examples/cloudflare-custom-certs/) — are not scanned by this workflow; that sidecar's pin was assessed by hand (see its README).

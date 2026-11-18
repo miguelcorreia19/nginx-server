@@ -8,7 +8,7 @@ const { spawnSync } = require('child_process');
 
 const script = path.join(__dirname, '..', '..', '.github', 'scripts', 'security-report.js');
 const {
-  InputError, parseTrivyReport, parseNginxAdvisories, advisoryAffects, advisoryFixedVersion, evaluate,
+  InputError, parseTrivyReport, pythonCoverage, parseNginxAdvisories, advisoryAffects, advisoryFixedVersion, evaluate,
 } = require(script);
 
 const vuln = (id, pkg, severity, installed, fixed, extra = {}) => ({
@@ -16,7 +16,17 @@ const vuln = (id, pkg, severity, installed, fixed, extra = {}) => ({
   FixedVersion: fixed, DataSource: { ID: 'alpine', Name: 'Alpine Secdb' }, Title: `${id} title`, ...extra,
 });
 
-function report({ osVulns = [], libVulns = [], packages = [] } = {}) {
+const CRYPTOGRAPHY_METADATA = 'usr/lib/python3.14/site-packages/cryptography-47.0.0.dist-info/METADATA';
+const CERTBOT_METADATA = 'usr/lib/python3.14/site-packages/certbot-5.6.0.dist-info/METADATA';
+const pythonPackage = (Name, Version, FilePath) => ({ Name, Version, FilePath });
+
+// Shaped like Trivy's own output: under --detection-priority comprehensive the
+// Python result lists every distribution an apk package installed, at the
+// metadata path that package's file list names.
+function report({
+  osVulns = [], libVulns = [], packages = [],
+  pythonPackages = [pythonPackage('cryptography', '47.0.0', CRYPTOGRAPHY_METADATA)],
+} = {}) {
   return {
     SchemaVersion: 2,
     ArtifactName: 'nginx-server:test',
@@ -26,21 +36,33 @@ function report({ osVulns = [], libVulns = [], packages = [] } = {}) {
         Target: 'nginx-server:test (alpine 3.24.4)', Class: 'os-pkgs', Type: 'alpine',
         Packages: [
           { Name: 'nginx', Version: '1.31.9-r1', InstalledFiles: ['usr/sbin/nginx'] },
-          {
-            Name: 'py3-cryptography', Version: '47.0.0-r0',
-            InstalledFiles: ['usr/lib/python3.14/site-packages/cryptography-47.0.0.dist-info/METADATA'],
-          },
+          { Name: 'py3-cryptography', Version: '47.0.0-r0', InstalledFiles: [CRYPTOGRAPHY_METADATA] },
           ...packages,
         ],
         Vulnerabilities: osVulns,
       },
-      { Target: 'Python', Class: 'lang-pkgs', Type: 'python-pkg', Vulnerabilities: libVulns },
+      { Target: 'Python', Class: 'lang-pkgs', Type: 'python-pkg', Packages: pythonPackages, Vulnerabilities: libVulns },
     ],
   };
 }
 
+// This image as the pinned Certbot stack installs it: certbot's own
+// distribution next to the transitive py3-cryptography one.
+const certbotImage = (options = {}) => report({
+  packages: [{ Name: 'certbot', Version: '5.6.0-r0', InstalledFiles: ['usr/bin/certbot', CERTBOT_METADATA] }],
+  pythonPackages: [
+    pythonPackage('cryptography', '47.0.0', CRYPTOGRAPHY_METADATA),
+    pythonPackage('certbot', '5.6.0', CERTBOT_METADATA),
+  ],
+  ...options,
+});
+
+// What Trivy writes when it skips the Python packages (for instance without
+// --detection-priority comprehensive): no Python result at all.
+const withoutPythonResult = (r) => ({ ...r, Results: r.Results.filter((x) => x.Type !== 'python-pkg') });
+
 const appliedCryptographyFinding = (severity) => vuln('CVE-2026-1', 'cryptography', severity, '47.0.0', '50.0.0', {
-  PkgPath: 'usr/lib/python3.14/site-packages/cryptography-47.0.0.dist-info/METADATA',
+  PkgPath: CRYPTOGRAPHY_METADATA,
   DataSource: { ID: 'ghsa', Name: 'GitHub Security Advisory pip' },
 });
 
@@ -53,6 +75,9 @@ const advisoriesHtml = [
   advisoryItem('Future issue', '<b>major</b>', 'CVE-2027-1', '1.31.10+', '1.31.0-1.31.9'),
   advisoryItem('Windows only', 'low', 'CVE-2010-1', '0.8.33+', 'nginx/Windows 0.7.52-0.8.32'),
   advisoryItem('Old issue', 'medium', 'CVE-2009-1', 'none', 'all'),
+  advisoryItem('Minor issue', 'minor', 'CVE-2026-125283', '1.31.10+', '0.9.6-1.31.9'),
+  advisoryItem('Not sanitized', 'none', 'CVE-2009-4487', 'none', 'all'),
+  advisoryItem('Unrated issue', 'grave', 'CVE-2026-9', '1.31.10+', '1.31.0-1.31.9'),
   ...Array.from({ length: 6 }, (_, i) => advisoryItem(`Filler ${i}`, 'low', `CVE-2000-${i}`, '1.0.0+', '0.1.0-0.9.9')),
 ].map((li) => `${li}\n`).join('');
 
@@ -187,12 +212,59 @@ describe('security report — nginx.org advisories', () => {
     expect(result.violations[0]).toMatchObject({ severity: 'HIGH', fixed: '1.31.10', evidence: 'vendor advisory (nginx.org)' });
   });
 
+  // nginx.org rates below "medium" with "low", "minor" or "none"; all three are
+  // ratings, so none of them is reported as UNKNOWN, and none fails the policy.
+  it('reports nginx "minor" and "none" advisories as LOW, keeping nginx\'s wording', () => {
+    const findings = Object.fromEntries(evaluate({ report: report(), nginxAdvisories: advisories }).findings
+      .filter((f) => f.kind === 'nginx.org').map((f) => [f.id, f]));
+    expect(findings['CVE-2026-125283']).toMatchObject({ severity: 'LOW', violation: false, title: 'Minor issue (nginx severity: minor)' });
+    expect(findings['CVE-2009-4487']).toMatchObject({ severity: 'LOW', violation: false, title: 'Not sanitized (nginx severity: none)' });
+  });
+
+  it('still reports a severity label it does not know as UNKNOWN', () => {
+    const result = evaluate({ report: report(), nginxAdvisories: advisories });
+    expect(result.findings.find((f) => f.id === 'CVE-2026-9').severity).toBe('UNKNOWN');
+  });
+
   it('refuses a page it cannot parse instead of reporting no advisories', () => {
     expect(() => parseNginxAdvisories('<html>moved</html>')).toThrow(InputError);
   });
 
   it('refuses a version range it does not understand', () => {
     expect(() => advisoryAffects({ title: 't', vulnerable: ['1.2.x'] }, '1.31.9')).toThrow(/unrecognised version range/);
+  });
+});
+
+describe('security report — Python dependency coverage', () => {
+  it('accepts a report that analysed every Python distribution an Alpine package installed', () => {
+    expect(pythonCoverage(certbotImage(), 'r.json', ['certbot'])).toBe(2);
+  });
+
+  it('refuses a report with no Python result although Alpine installed Python packages', () => {
+    expect(() => pythonCoverage(withoutPythonResult(report()), 'r.json'))
+      .toThrow(InputError);
+    expect(() => pythonCoverage(withoutPythonResult(report()), 'r.json'))
+      .toThrow(/analysed 0 of the 1 Python distributions installed by Alpine packages; missing: .*cryptography-47\.0\.0\.dist-info\/METADATA \(py3-cryptography\)/);
+  });
+
+  it('refuses a report that analysed only some of them, naming what is missing', () => {
+    const partial = certbotImage({ pythonPackages: [pythonPackage('cryptography', '47.0.0', CRYPTOGRAPHY_METADATA)] });
+    expect(() => pythonCoverage(partial, 'r.json')).toThrow(/analysed 1 of the 2 .*; missing: [^,]*certbot-5\.6\.0\.dist-info\/METADATA \(certbot\)\. /);
+  });
+
+  // Coverage is judged from the scan's own OS inventory, so a report whose
+  // inventory names no Python at all would otherwise pass vacuously.
+  it('refuses a report of this image whose inventory shows no Python installed by certbot', () => {
+    expect(() => pythonCoverage(report(), 'r.json', ['certbot'])).toThrow(/no Python distribution installed by "certbot"/);
+    const noFileLists = certbotImage();
+    for (const p of noFileLists.Results[0].Packages) delete p.InstalledFiles;
+    expect(() => pythonCoverage(noFileLists, 'r.json', ['certbot'])).toThrow(InputError);
+  });
+
+  it('expects nothing of an image that installs no Python, such as the upstream base', () => {
+    const base = withoutPythonResult(report());
+    base.Results[0].Packages = base.Results[0].Packages.filter((p) => p.Name === 'nginx');
+    expect(pythonCoverage(base, 'base.json')).toBe(0);
   });
 });
 
@@ -250,6 +322,37 @@ describe('security report — input validation and exit status', () => {
   it('exits 2 when the scanner metadata has no vulnerability database', () => {
     const res = run('--report', write('v2.json', report()), '--trivy-version', write('noversion.json', { Version: '0.76.2' }));
     expect(res.status).toBe(2);
+  });
+
+  // The difference this guard exists for: zero findings in a complete scan is a
+  // pass; the same zero because the Python packages were never analysed is not.
+  it('passes a complete scan with no findings and says what it covered', () => {
+    const summary = path.join(dir, 'covered.md');
+    const res = run('--report', write('covered.json', certbotImage()), '--expect-python-from', 'certbot', '--summary', summary);
+    expect(res.status).toBe(0);
+    expect(fs.readFileSync(summary, 'utf8')).toMatch('Python dependencies: all 2 distributions installed by Alpine packages were analysed.');
+  });
+
+  it('exits 2, not 0, when the scan left out the Python packages', () => {
+    const res = run('--report', write('nopython.json', withoutPythonResult(certbotImage())), '--expect-python-from', 'certbot');
+    expect(res.status).toBe(2);
+    expect(res.stdout).toMatch(/^::error title=Security report input unusable::.*analysed 0 of the 2 Python distributions/m);
+    expect(res.stdout).not.toMatch(/Policy: pass/);
+  });
+
+  it('applies the expectation to the published image in a rebuild comparison, but not to the base', () => {
+    const base = write('base-nopython.json', (() => {
+      const b = withoutPythonResult(report());
+      b.Results[0].Packages = b.Results[0].Packages.filter((p) => p.Name === 'nginx');
+      return b;
+    })());
+    const ok = run('--report', write('cand.json', certbotImage()), '--base', base,
+      '--published', write('pub.json', certbotImage()), '--expect-python-from', 'certbot');
+    expect(ok.status).toBe(0);
+    const bad = run('--report', write('cand2.json', certbotImage()), '--base', base,
+      '--published', write('pub2.json', withoutPythonResult(certbotImage())), '--expect-python-from', 'certbot');
+    expect(bad.status).toBe(2);
+    expect(bad.stdout).toMatch(/pub2\.json: Trivy analysed 0 of the 2/);
   });
 
   it('exits 2 when the nginx advisory page cannot be parsed', () => {

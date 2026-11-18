@@ -10,12 +10,17 @@
 // build, so it reports no nginx findings at all.
 //
 // Exit status: 0 within policy, 1 policy violation, 2 unusable input. Unusable
-// input is a scanner failure and is never reported as "no findings".
+// input — including a scan that left out the image's Python packages — is a
+// scanner failure and is never reported as "no findings".
 
 const fs = require('fs');
 
 const SEVERITIES = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'UNKNOWN'];
-const NGINX_SEVERITY = { major: 'HIGH', medium: 'MEDIUM', low: 'LOW' };
+// nginx.org rates advisories major, medium, low, minor or none. "minor" and
+// "none" are ratings below medium, not missing ones, so they map to LOW, as
+// Trivy itself maps Ubuntu "negligible" and Debian "unimportant"; UNKNOWN stays
+// for a label this table does not know. The title keeps nginx's own word.
+const NGINX_SEVERITY = { major: 'HIGH', medium: 'MEDIUM', low: 'LOW', minor: 'LOW', none: 'LOW' };
 const NGINX_ADVISORIES_URL = 'https://nginx.org/en/security_advisories.html';
 
 class InputError extends Error {}
@@ -47,6 +52,37 @@ function parseTrivyReport(text, name) {
 const osPackages = (report) => report.Results
   .filter((r) => r.Class === 'os-pkgs')
   .flatMap((r) => r.Packages || []);
+
+// A Python distribution's metadata file, as an apk package's file list names it.
+const PYTHON_METADATA = /(?:^|\/)site-packages\/.+\.(?:dist-info\/METADATA|egg-info\/PKG-INFO|egg-info)$/;
+
+// Trivy reports a Python package that an Alpine package installed only under
+// --detection-priority comprehensive; without it, or if Trivy stops finding
+// them, the Python results simply vanish and the report reads as clean. The
+// OS inventory in the same report still lists every apk-installed
+// distribution's metadata file, so each one must reappear as a Python package.
+// `expectFrom` names apk packages this image is known to install Python code
+// with, so that a report whose inventory shows none cannot pass vacuously.
+function pythonCoverage(report, name, expectFrom = []) {
+  const installed = osPackages(report).flatMap((p) => (p.InstalledFiles || [])
+    .filter((file) => PYTHON_METADATA.test(file)).map((file) => ({ apk: p.Name, file })));
+  for (const apk of expectFrom) {
+    if (!installed.some((d) => d.apk === apk)) {
+      throw new InputError(`${name}: the OS package inventory lists no Python distribution installed by "${apk}", `
+        + 'which this image is expected to contain, so the scan cannot show that its Python dependencies were analysed');
+    }
+  }
+  const analysed = new Set(report.Results.filter((r) => r.Type === 'python-pkg')
+    .flatMap((r) => r.Packages || []).map((p) => p.FilePath));
+  const missing = installed.filter((d) => !analysed.has(d.file));
+  if (missing.length) {
+    const shown = missing.slice(0, 5).map((d) => `${d.file} (${d.apk})`).join(', ');
+    throw new InputError(`${name}: Trivy analysed ${installed.length - missing.length} of the ${installed.length} `
+      + `Python distributions installed by Alpine packages; missing: ${shown}${missing.length > 5 ? ', …' : ''}. `
+      + 'The Python dependencies were not fully scanned (is --detection-priority comprehensive in effect?)');
+  }
+  return installed.length;
+}
 
 function compareVersions(a, b) {
   const x = a.split('.').map(Number);
@@ -292,16 +328,18 @@ function annotations(result, { arch }) {
 }
 
 function parseArgs(argv) {
-  const opts = { notes: [] };
+  const opts = { notes: [], expectPythonFrom: [] };
   for (let i = 0; i < argv.length; i += 2) {
     const [flag, value] = [argv[i], argv[i + 1]];
     if (value === undefined) throw new InputError(`missing value for ${flag}`);
     const name = {
       '--report': 'report', '--base': 'base', '--published': 'published', '--nginx-advisories': 'nginxAdvisories',
       '--trivy-version': 'trivyVersion', '--arch': 'arch', '--title': 'title', '--summary': 'summary', '--note': 'note',
+      '--expect-python-from': 'expectPythonFrom',
     }[flag];
     if (!name) throw new InputError(`unknown option ${flag}`);
     if (name === 'note') opts.notes.push(value);
+    else if (name === 'expectPythonFrom') opts.expectPythonFrom.push(value);
     else opts[name] = value;
   }
   for (const required of ['report', 'arch', 'title']) {
@@ -329,10 +367,19 @@ function main(argv) {
     const opts = parseArgs(argv);
     if (opts.trivyVersion) opts.notes.push(scannerNote(opts.trivyVersion));
     const report = parseTrivyReport(readFile(opts.report), opts.report);
+    const base = opts.base ? parseTrivyReport(readFile(opts.base), opts.base) : null;
+    const published = opts.published ? parseTrivyReport(readFile(opts.published), opts.published) : null;
+    // The expectation describes this project's image, not the upstream base.
+    const covered = pythonCoverage(report, opts.report, opts.expectPythonFrom);
+    if (base) pythonCoverage(base, opts.base);
+    if (published) pythonCoverage(published, opts.published, opts.expectPythonFrom);
+    opts.notes.push(covered
+      ? `Python dependencies: all ${covered} distributions installed by Alpine packages were analysed.`
+      : 'Python dependencies: the OS package inventory lists none installed by Alpine packages.');
     const result = evaluate({
       report,
-      base: opts.base ? parseTrivyReport(readFile(opts.base), opts.base) : null,
-      published: opts.published ? parseTrivyReport(readFile(opts.published), opts.published) : null,
+      base,
+      published,
       nginxAdvisories: opts.nginxAdvisories ? parseNginxAdvisories(readFile(opts.nginxAdvisories)) : null,
     });
     const markdown = render(result, { ...opts, report });
@@ -356,6 +403,7 @@ if (require.main === module) {
 module.exports = {
   InputError,
   parseTrivyReport,
+  pythonCoverage,
   parseNginxAdvisories,
   advisoryAffects,
   advisoryFixedVersion,

@@ -2,8 +2,15 @@
 
 ## [Unreleased]
 
+### Security
+
+- **`examples/cloudflare-custom-certs`: the Certbot sidecar moves from `certbot/dns-cloudflare:v5.6.0` to `v5.10.0`.** Scanned with Trivy 0.76.2 on `linux/amd64` and `linux/arm64` (identical per version), `v5.6.0` has 5 CRITICAL and 34 HIGH findings, among them its CA bundle (`certifi` with the compromised emSign roots), the `urllib3` 2.6.3 under the ACME client and the OpenSSL bundled in its `cryptography` wheel; `v5.10.0` has none of those and 0 CRITICAL / 5 HIGH, all five in the copies pip vendors inside itself (`urllib3` 2.7.0, `msgpack` 1.1.2, `setuptools` 70.3.0), which Certbot never imports — they are in `v5.6.0` too, and only became visible through the SBOM pip 26.2.2 ships. Verified against a local ACME test server and a mock Cloudflare API on an isolated network, on both architectures: the unchanged sidecar script issues, exports with the same modes, gates `nginx-server` through the healthcheck, renews, and reuses and renews a lineage created by `v5.6.0`. The sidecar's pin is now documented as independent of the Certbot inside `nginx-server`, which this example never runs. The `nginx-server` image is unchanged.
+
 ### Internal
 
+- The security report refuses a scan that left out the Python packages Alpine installs for Certbot. Without `--detection-priority comprehensive` (or after a scanner regression) Trivy omits them, and the five known HIGH findings vanished from an otherwise passing report. Every Python distribution the scan's own OS inventory says an Alpine package installed must now appear among the scanned Python packages, and the workflow's `--expect-python-from certbot` requires Certbot's to be listed, so an incomplete scan exits as a scanner failure (status 2) instead of reading as a clean image. No vulnerability counts or identifiers are involved; the summary states how many distributions were analysed.
+- nginx.org's `minor` and `none` advisory ratings are reported as LOW instead of UNKNOWN (CVE-2009-4487, rated "none", was the one UNKNOWN finding of 5.1.0). Neither rating fails the policy, before or after.
+- `docs/architecture.md` replaces the September 2026 Docker Scout record with the triage of the 5.1.0 findings (one demonstrated false positive, unused `cryptography` APIs, the conditional and the reachable `urllib3` paths), recorded as documented rather than accepted risk; `docs/security-scanning.md` documents the coverage check and the scanner's limitations.
 - The weekly fresh-rebuild check now resolves the published image to its per-architecture digest once and pulls, scans and inspects that digest, as the daily check already did. It used to scan the `latest` tag from the local Docker daemon, and Trivy's daemon source ignores `--platform` when the daemon holds several platforms of one tag, so the comparison could silently describe the other architecture. Regression tests cover the per-architecture digests and the independent per-architecture jobs.
 
 ## [5.1.0] — 2026-11-18
