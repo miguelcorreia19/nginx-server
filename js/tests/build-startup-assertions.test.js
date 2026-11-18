@@ -13,7 +13,7 @@ const dockerfile  = fs.readFileSync(path.join(root, 'Dockerfile'), 'utf8');
 // Split the Dockerfile at the runtime stage boundary (second FROM, no AS).
 // The builder stage is used only to produce node_modules; the runtime stage
 // is what actually runs in production.
-const runtimeStageMatch = dockerfile.search(/^FROM nginx:1\.31\.4-alpine3\.24\s*$/m);
+const runtimeStageMatch = dockerfile.search(/^FROM nginx:1\.31\.9-alpine3\.24\s*$/m);
 const runtimeStage = runtimeStageMatch >= 0 ? dockerfile.slice(runtimeStageMatch) : dockerfile;
 
 // Strip comment lines so assertions on package names are not tripped by
@@ -63,7 +63,7 @@ describe('Dockerfile — build-time dependency install', () => {
 
 describe('Dockerfile — multi-stage build isolates build tools from runtime', () => {
   it('has a builder stage (node-builder) for npm ci', () => {
-    expect(dockerfile).toMatch(/FROM nginx:1\.31\.4-alpine3\.24 AS node-builder/);
+    expect(dockerfile).toMatch(/FROM nginx:1\.31\.9-alpine3\.24 AS node-builder/);
   });
 
   it('copies pre-built node_modules from the builder stage', () => {
@@ -108,7 +108,7 @@ describe('Dockerfile — required runtime packages are installed', () => {
 // not merely a dependency change.
 describe('Dockerfile — runtime version contract', () => {
   it('pins the base image to an exact nginx and Alpine version', () => {
-    expect(dockerfile).toMatch(/FROM nginx:1\.31\.4-alpine3\.24/);
+    expect(dockerfile).toMatch(/FROM nginx:1\.31\.9-alpine3\.24/);
   });
 
   it('leaves no version-floating base tag', () => {

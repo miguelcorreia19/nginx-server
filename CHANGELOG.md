@@ -10,6 +10,10 @@
 
 - `tests/integration/dynamic-upstream-dns.sh`, a Docker integration test (also a CI job) that builds the image and proves the re-resolution end to end: nginx starts with the backend absent, the backend is recreated on a different IP while another container takes over its old address, and traffic converges on the replacement within a bound sized for the one-second validity — and stays there — with no nginx reload or restart. It also checks that two sites proxying the same service are refused under one upstream name and accepted under site-scoped names.
 
+### Security
+
+- **Upgraded the base image from `nginx:1.31.4-alpine3.24` to `nginx:1.31.9-alpine3.24`.** 1.31.4 is affected by every nginx advisory fixed up to and including 1.31.9 — among them HTTP/2 flow-control memory corruption (CVE-2026-123007) and a second HTTP/2 use-after-free (CVE-2026-123633), the TLS 1.3 request-body infinite loop (CVE-2026-118899) and the resolver use-after-free (CVE-2026-123634) — and 1.31.9 is the first release listed as not vulnerable to any of them ([nginx security advisories](https://nginx.org/en/security_advisories.html)). Only the base tag moves: Alpine stays on 3.24 and Certbot stays pinned at `certbot=5.6.0-r0` (still published in the 3.24 community repo), so the `Identifiers:` parsing contract and the rest of the runtime stack are unchanged, and no HTTP/2, TLS, HSTS, request-body or security-header policy was touched. Verified directly from the built image — `nginx -V` reports `nginx/1.31.9` with `--with-http_v2_module`, and `nginx -t`, a live HTTP/2 handshake and `tests/integration/dynamic-upstream-dns.sh` all pass against it.
+
 ## [4.0.0] — 2026-09-03
 
 ### Added

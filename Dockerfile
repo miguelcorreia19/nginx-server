@@ -1,6 +1,6 @@
 # Runtime version contract — one explicit, tested stack rather than an
 # undefined range of nginx/Alpine/Certbot versions:
-#   nginx    1.31.4
+#   nginx    1.31.9
 #   Alpine   3.24
 #   certbot  5.6.0-r0
 #
@@ -26,14 +26,14 @@
 # ---- Build stage: install Node dependencies --------------------------------
 # npm is only needed here; the binary is intentionally absent from the
 # runtime image below.
-FROM nginx:1.31.4-alpine3.24 AS node-builder
+FROM nginx:1.31.9-alpine3.24 AS node-builder
 
 RUN apk add --no-cache nodejs npm
 COPY js/package*.json /home/scripts/js/
 RUN cd /home/scripts/js && npm ci --omit=dev
 
 # ---- Runtime image ---------------------------------------------------------
-FROM nginx:1.31.4-alpine3.24
+FROM nginx:1.31.9-alpine3.24
 
 LABEL maintainer="Miguel Correia <miguelcorreia19@hotmail.com>"
 
@@ -54,7 +54,7 @@ ENV CUSTOM_NGINX_CONFIG_FILES_PATH=/home/nginx/configs
 # packages to the newest builds in this Alpine line, which is how a rebuild
 # collects base-image security fixes without changing the base reference — it
 # does this identically whether that reference is a tag or a digest. It cannot
-# move nginx off 1.31.4 — the base image records exact version constraints for
+# move nginx off 1.31.9 — the base image records exact version constraints for
 # nginx and its modules in /etc/apk/world, and this Alpine branch currently
 # carries no newer nginx either.
 #

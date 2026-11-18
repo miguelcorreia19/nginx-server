@@ -8,7 +8,7 @@ For user-facing usage, see the [README](../README.md) and the guides under [`doc
 
 `nginx-server` is an Alpine-based Docker image that wraps **nginx** with a small **Node.js configuration layer**. At container start, the Node layer reads a mounted `config.json`, validates it, generates the appropriate nginx server-block and SSL configuration for each site, validates the assembled config with `nginx -t`, and then hands off to nginx as the foreground process. Two background helpers run alongside nginx: a file watcher that reloads nginx on config changes, and (optionally) Fail2ban.
 
-The image targets one explicit, tested runtime stack rather than a floating base tag: **nginx 1.31.4** on **Alpine 3.24**, with **Certbot 5.6.0-r0**. That constrains the versions without making the build bit-for-bit reproducible — see [Runtime Versioning and Rebuilds](#runtime-versioning-and-rebuilds). The Certbot pin is the part that is load-bearing for the application rather than housekeeping — startup parses `certbot certificates` output, whose domain-list field is labelled `Identifiers:` in Certbot 5.6 (earlier releases printed `Domains:`). The parser targets that one supported format and fails loudly on output it does not recognise, rather than guessing across versions.
+The image targets one explicit, tested runtime stack rather than a floating base tag: **nginx 1.31.9** on **Alpine 3.24**, with **Certbot 5.6.0-r0**. That constrains the versions without making the build bit-for-bit reproducible — see [Runtime Versioning and Rebuilds](#runtime-versioning-and-rebuilds). The Certbot pin is the part that is load-bearing for the application rather than housekeeping — startup parses `certbot certificates` output, whose domain-list field is labelled `Identifiers:` in Certbot 5.6 (earlier releases printed `Domains:`). The parser targets that one supported format and fails loudly on output it does not recognise, rather than guessing across versions.
 
 The pieces:
 
@@ -86,13 +86,13 @@ Out of scope for this reset, deliberately: `/etc/nginx/conf/<id>.conf` mode frag
 
 ## Runtime Versioning and Rebuilds
 
-The image constrains its runtime stack to one tested line — **nginx 1.31.4** on **Alpine 3.24**, with **Certbot 5.6.0-r0** — without claiming bit-for-bit reproducibility. The distinction matters, because the two are easily conflated and this project deliberately chose only the first.
+The image constrains its runtime stack to one tested line — **nginx 1.31.9** on **Alpine 3.24**, with **Certbot 5.6.0-r0** — without claiming bit-for-bit reproducibility. The distinction matters, because the two are easily conflated and this project deliberately chose only the first.
 
 ### What is pinned, and what is not
 
 | Layer | How it is fixed | Can it move on a rebuild? |
 | --- | --- | --- |
-| nginx | the `nginx:1.31.4-alpine3.24` base tag; the base image also records `nginx=1.31.4-r1` and its modules in `/etc/apk/world` | Not off the 1.31.4 line — those world constraints hold it, and Alpine 3.24 currently carries no newer nginx either |
+| nginx | the `nginx:1.31.9-alpine3.24` base tag; the base image also records `nginx=1.31.9-r1` and its modules in `/etc/apk/world` | Not off the 1.31.9 line — those world constraints hold it, and Alpine 3.24 currently carries no newer nginx either |
 | Alpine | the `alpine3.24` half of the same tag | Stays on the 3.24 branch; the patch level within that branch can move |
 | Certbot | `certbot=5.6.0-r0` in the `apk add` line | No — exact pin, and the build fails rather than loosening if it stops resolving |
 | Everything else — Node, OpenSSL, Fail2ban, inotify-tools, iptables, bash, python3 and the transitive `py3-*` packages, plus BusyBox and the rest of the base layer | installed by name, no version | Yes, to whatever Alpine 3.24 currently publishes |
@@ -105,7 +105,7 @@ That remediation is evidence for retaining `apk upgrade --available`, and for no
 
 Version movement between rebuilds comes from two mechanisms that are easy to conflate but that operate independently:
 
-1. **Base-image resolution.** `nginx:1.31.4-alpine3.24` is a tag, so a future build can resolve it to a different image digest than the last build did.
+1. **Base-image resolution.** `nginx:1.31.9-alpine3.24` is a tag, so a future build can resolve it to a different image digest than the last build did.
 2. **APK repository resolution.** `apk upgrade --available`, and every `apk add` that names a package without a version, consult the Alpine repositories *at build time*. What they install is whatever those repositories publish that day.
 
 The second does not depend on the first. Pinning `FROM` to a digest fixes the starting filesystem, but the `apk upgrade --no-cache --available` and `apk add` steps still reach `dl-cdn.alpinelinux.org` and still install what is current there. **A digest alone therefore would not make this build reproducible** — the packages would keep moving underneath it.
@@ -114,7 +114,7 @@ Genuine reproducibility would mean controlling more than the `FROM` reference: a
 
 ### The base image is referenced by tag on purpose
 
-`nginx:1.31.4-alpine3.24` is a **mutable tag, not a digest**, and the project chooses to leave it that way.
+`nginx:1.31.9-alpine3.24` is a **mutable tag, not a digest**, and the project chooses to leave it that way.
 
 What that choice decides is narrower than it first looks: only whether a rebuild starts from the image the tag pointed at last time, or from whatever the nginx maintainers have since published under the same name for this nginx/Alpine line. It decides nothing about package versions — that is mechanism 2 above, and it applies either way.
 
