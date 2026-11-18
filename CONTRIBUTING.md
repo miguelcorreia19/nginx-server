@@ -93,3 +93,7 @@ The test suite covers:
 - Every proxying example using a dynamically resolved upstream with a site-scoped name and a one-second validity, and no global `resolver` in the base nginx files
 
 Please run both the Jest suite and the shell syntax checks before opening a pull request.
+
+## Security scanning
+
+`.github/workflows/security.yml` scans the published image daily and rebuilds the Dockerfile weekly without publishing it; it does not run on pushes or pull requests. Its failure policy, how to run it by hand and how to act on a failure are in [docs/security-scanning.md](docs/security-scanning.md). When touching the workflow, keep third-party actions pinned to full commit SHAs and follow that guide's procedure for changing the Trivy version — `js/tests/security-workflow.test.js` checks both.

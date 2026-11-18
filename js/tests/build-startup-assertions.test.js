@@ -10,11 +10,43 @@ const entrypoint = fs.readFileSync(path.join(root, 'entrypoint.sh'), 'utf8');
 const entrypointJs = fs.readFileSync(path.join(root, 'js', 'entrypoint.js'), 'utf8');
 const dockerfile  = fs.readFileSync(path.join(root, 'Dockerfile'), 'utf8');
 
-// Split the Dockerfile at the runtime stage boundary (second FROM, no AS).
-// The builder stage is used only to produce node_modules; the runtime stage
-// is what actually runs in production.
-const runtimeStageMatch = dockerfile.search(/^FROM nginx:1\.31\.9-alpine3\.24\s*$/m);
-const runtimeStage = runtimeStageMatch >= 0 ? dockerfile.slice(runtimeStageMatch) : dockerfile;
+// Stages are identified by their FROM lines, never by a particular base tag, so
+// bumping the nginx/Alpine version cannot change which text is treated as the
+// builder or the runtime stage. The version itself is asserted separately, in
+// "runtime version contract" below.
+const FROM_LINE = /^FROM[ \t]+(?:--platform=\S+[ \t]+)?(\S+)(?:[ \t]+AS[ \t]+(\S+))?[ \t]*$/gim;
+
+function dockerfileStages(text) {
+  const froms = [...text.matchAll(FROM_LINE)];
+  return froms.map((m, i) => ({
+    image: m[1],
+    name: m[2] ? m[2].toLowerCase() : null,
+    body: text.slice(m.index, i + 1 < froms.length ? froms[i + 1].index : text.length),
+  }));
+}
+
+// node-builder only produces node_modules; the runtime image is the final stage,
+// which is what `docker build` produces when no --target is given. When either
+// cannot be identified this throws instead of falling back to the whole file,
+// which would run the runtime-only assertions against text that is not the
+// runtime stage.
+function identifyStages(text) {
+  const stages = dockerfileStages(text);
+  const found = stages.map((s) => `${s.image}${s.name ? ` AS ${s.name}` : ''}`).join(', ') || 'none';
+  const builder = stages.find((s) => s.name === 'node-builder');
+  const runtime = stages[stages.length - 1];
+  if (!builder) {
+    throw new Error(`Dockerfile: no "FROM <image> AS node-builder" stage found (stages: ${found})`);
+  }
+  if (runtime === builder) {
+    throw new Error(`Dockerfile: no runtime stage after node-builder; the final stage must be the runtime image (stages: ${found})`);
+  }
+  return { stages, builder, runtime };
+}
+
+const { builder: builderStageInfo, runtime: runtimeStageInfo } = identifyStages(dockerfile);
+const runtimeStage = runtimeStageInfo.body;
+const builderStage = builderStageInfo.body;
 
 // Strip comment lines so assertions on package names are not tripped by
 // documentation comments that mention removed packages (e.g. "git: not needed").
@@ -63,7 +95,22 @@ describe('Dockerfile — build-time dependency install', () => {
 
 describe('Dockerfile — multi-stage build isolates build tools from runtime', () => {
   it('has a builder stage (node-builder) for npm ci', () => {
-    expect(dockerfile).toMatch(/FROM nginx:1\.31\.9-alpine3\.24 AS node-builder/);
+    expect(builderStage).toMatch(/^RUN[^\n]*\bnpm ci --omit=dev\b/m);
+  });
+
+  it('installs npm in the builder stage', () => {
+    expect(builderStage).toMatch(/^RUN apk add[^\n]*\bnpm\b/m);
+  });
+
+  it('builds the runtime stage from the base image, not from node-builder', () => {
+    expect(runtimeStageInfo.name).not.toBe('node-builder');
+    expect(runtimeStageInfo.image.toLowerCase()).not.toBe('node-builder');
+  });
+
+  // node_modules is installed in one stage and executed in the other, so both
+  // must share the same Alpine branch and Node build.
+  it('uses the same base image for the builder and runtime stages', () => {
+    expect(builderStageInfo.image).toBe(runtimeStageInfo.image);
   });
 
   it('copies pre-built node_modules from the builder stage', () => {
@@ -73,6 +120,53 @@ describe('Dockerfile — multi-stage build isolates build tools from runtime', (
   it('does not install npm in the runtime stage (build-only tool)', () => {
     // npm may appear in the builder stage — check only the runtime stage
     expect(runtimeStage).not.toMatch(/apk add[^\n]*\bnpm\b/);
+  });
+});
+
+describe('Dockerfile stage identification does not depend on the base-image version', () => {
+  const withBase = (text, tag) => text.replace(/^(FROM[ \t]+)nginx:\S+/gim, `$1${tag}`);
+  const afterFrom = (body) => body.slice(body.indexOf('\n'));
+  const current = identifyStages(dockerfile);
+
+  it.each(['nginx:1.31.10-alpine3.24', 'nginx:1.32.0-alpine3.25', 'nginx:2.0.0-alpine4.1'])(
+    'identifies the same builder and runtime stages with base %s',
+    (tag) => {
+      const bumped = identifyStages(withBase(dockerfile, tag));
+      expect(bumped.stages.map((s) => s.name)).toEqual(current.stages.map((s) => s.name));
+      expect(bumped.builder.image).toBe(tag);
+      expect(bumped.runtime.image).toBe(tag);
+      expect(afterFrom(bumped.builder.body)).toBe(afterFrom(current.builder.body));
+      expect(afterFrom(bumped.runtime.body)).toBe(afterFrom(current.runtime.body));
+    },
+  );
+
+  it('ignores FROM lines that are only mentioned in comments', () => {
+    const text = [
+      '# FROM nginx:alpine AS node-builder',
+      'FROM nginx:1.31.9-alpine3.24 AS node-builder',
+      'RUN npm ci --omit=dev',
+      '#FROM nginx:alpine',
+      'FROM nginx:1.31.9-alpine3.24',
+      'COPY --from=node-builder /a /a',
+      '',
+    ].join('\n');
+    const { stages, runtime } = identifyStages(text);
+    expect(stages).toHaveLength(2);
+    expect(runtime.body).toMatch(/^FROM nginx:1\.31\.9-alpine3\.24\nCOPY --from=node-builder/);
+  });
+
+  it('fails instead of falling back to the whole file when there is no runtime stage', () => {
+    const builderOnly = 'FROM nginx:1.31.9-alpine3.24 AS node-builder\nRUN npm ci --omit=dev\n';
+    expect(() => identifyStages(builderOnly)).toThrow(/no runtime stage after node-builder/);
+  });
+
+  it('fails when there is no node-builder stage', () => {
+    expect(() => identifyStages('FROM nginx:1.31.9-alpine3.24\nRUN true\n'))
+      .toThrow(/no "FROM <image> AS node-builder" stage/);
+  });
+
+  it('fails when the Dockerfile has no FROM line at all', () => {
+    expect(() => identifyStages('RUN true\n')).toThrow(/stages: none/);
   });
 });
 
@@ -107,8 +201,18 @@ describe('Dockerfile — required runtime packages are installed', () => {
 // and targets the 5.6 format, so an unnoticed Certbot bump is a startup risk,
 // not merely a dependency change.
 describe('Dockerfile — runtime version contract', () => {
+  const PINNED_BASE = /^nginx:(\d+\.\d+\.\d+)-alpine(\d+\.\d+)$/;
+
   it('pins the base image to an exact nginx and Alpine version', () => {
-    expect(dockerfile).toMatch(/FROM nginx:1\.31\.9-alpine3\.24/);
+    expect(builderStageInfo.image).toMatch(PINNED_BASE);
+    expect(runtimeStageInfo.image).toMatch(PINNED_BASE);
+  });
+
+  it('states the pinned nginx and Alpine versions in the Dockerfile header contract', () => {
+    const [, nginxVersion, alpineVersion] = runtimeStageInfo.image.match(PINNED_BASE);
+    const quote = (v) => v.replace(/\./g, '\\.');
+    expect(dockerfile).toMatch(new RegExp(`^#\\s+nginx\\s+${quote(nginxVersion)}\\s*$`, 'm'));
+    expect(dockerfile).toMatch(new RegExp(`^#\\s+Alpine\\s+${quote(alpineVersion)}\\s*$`, 'm'));
   });
 
   it('leaves no version-floating base tag', () => {

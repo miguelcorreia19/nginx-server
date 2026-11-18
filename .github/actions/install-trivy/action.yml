@@ -1,0 +1,30 @@
+name: Install Trivy
+description: >-
+  Installs one pinned Trivy release after checking its SHA-256. Read
+  docs/security-scanning.md -> Updating the scanner before changing the version.
+
+runs:
+  using: composite
+  steps:
+    - name: Download and verify Trivy
+      shell: bash
+      env:
+        TRIVY_VERSION: 0.76.2
+        # SHA-256 of trivy_<version>_Linux-64bit.tar.gz and _Linux-ARM64.tar.gz,
+        # recorded after verifying the releases' sigstore bundles.
+        TRIVY_SHA256_X64: bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf
+        TRIVY_SHA256_ARM64: ab9d51f86e6a5fb936f605faff6b593ac51bc378fff4d3e8b9d58358b9c367c3
+      run: |
+        case "$RUNNER_ARCH" in
+          X64) asset=Linux-64bit; sha256=$TRIVY_SHA256_X64 ;;
+          ARM64) asset=Linux-ARM64; sha256=$TRIVY_SHA256_ARM64 ;;
+          *) echo "::error::No pinned Trivy build for runner architecture $RUNNER_ARCH"; exit 1 ;;
+        esac
+        archive="$RUNNER_TEMP/trivy_${TRIVY_VERSION}_${asset}.tar.gz"
+        curl -fsSL --retry 3 -o "$archive" \
+          "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_${asset}.tar.gz"
+        echo "${sha256}  ${archive}" | sha256sum --check --strict
+        mkdir -p "$RUNNER_TEMP/trivy-bin"
+        tar -xzf "$archive" -C "$RUNNER_TEMP/trivy-bin" trivy
+        echo "$RUNNER_TEMP/trivy-bin" >> "$GITHUB_PATH"
+        "$RUNNER_TEMP/trivy-bin/trivy" --version

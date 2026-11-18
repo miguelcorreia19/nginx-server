@@ -192,7 +192,7 @@ This is a deliberate acceptance of a known, unresolved exposure. It is **not** a
 - New advisory information shows the vulnerable code paths apply to how this project uses Certbot.
 - Severity or exploitability information changes materially.
 
-There is no automated watch for these conditions. This record exists so that the next person to read a scan report finds the decision and its triggers instead of re-deriving them.
+The [security scan](security-scanning.md) watches the first condition: the daily scan reports these findings as HIGH findings awaiting an Alpine build, and once Alpine publishes a fixed package the weekly fresh rebuild no longer contains them and fails, asking for the image to be rebuilt and released. The other conditions still need a human. This record exists so that the next person to read a scan report finds the decision and its triggers instead of re-deriving them.
 
 ## Certbot Architecture
 
@@ -273,7 +273,8 @@ docs/      # user + technical documentation (this guide lives here)
 - **`js/`** — `entrypoint.js` (the startup driver), one handler package per mode (`letsencrypt/`, `dev/`, `custom/`, `http/`, `fail2ban/`) each with an `index.js` and `templates/`, shared `utils.js` / `validate.js` / `preflight.js` / `reconcile.js`, and the `tests/` suite. The `letsencrypt/` package also holds `certbot_renew.js` and `manage_certs.js`.
 - **`nginx/`** — the base config files copied into the image (`nginx.conf`, `proxy.conf`, `http-common.conf`) and the default vhosts (`nginx.vh.default.80.conf`, `nginx.vh.default.443.conf`); these are the files users can override by mounting replacements.
 - **`examples/`** — one directory per scenario (`dev`, `letsencrypt`, `custom-certs`, `custom-configs`, `fail2ban`), each a self-contained Compose setup.
-- **`docs/`** — the topic guides (`configuration`, `ssl-modes`, `letsencrypt`, `troubleshooting`, `fail2ban`, and this `architecture` guide).
+- **`docs/`** — the topic guides (`configuration`, `ssl-modes`, `letsencrypt`, `troubleshooting`, `fail2ban`, `security-scanning`, and this `architecture` guide).
+- **`.github/`** — the CI workflows (`test.yml` for the test suite, `security.yml` for vulnerability monitoring) and the helpers the security scan uses.
 - **Repository root** — the shell scripts (`entrypoint.sh`, `reload.sh`, `certbot_renew.sh`, `fail2ban.sh`), the `Dockerfile`, `README.md`, `CHANGELOG.md`, and `CONTRIBUTING.md`.
 
 ## Design Principles

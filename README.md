@@ -121,6 +121,7 @@ In-depth topic guides live under [`docs/`](docs/):
 | [docs/letsencrypt.md](docs/letsencrypt.md) | Let's Encrypt operational guide — prerequisites, staging workflow, automatic renewal, rate limits, and certificate backup. |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Troubleshooting & operations — the healthcheck, log locations and examples, and step-by-step fixes for startup, certificate, reload, and renewal problems. |
 | [docs/fail2ban.md](docs/fail2ban.md) | Optional Fail2ban protection — configuration, operational commands, viewing/lifting bans, logs, reverse-proxy / real-IP handling, advanced customization, FAQ, and security philosophy. |
+| [docs/security-scanning.md](docs/security-scanning.md) | Automated vulnerability monitoring of the published image — what is scanned and when, the failure policy, reading reports, and what to do when a scan fails. |
 
 Runnable end-to-end examples live under [`examples/`](examples/) — see the [Examples](#examples) table. Contributor docs are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -189,7 +190,7 @@ services:
 
 `nginx-server` favors secure, conservative defaults: every Node shell-out carrying a user- or operator-supplied value — domain names, certificate names and paths, and the configurable backup / certificate / nginx-override directories — uses `execFile` with an argument array, so those values reach the binary as literal arguments and are never re-parsed by a shell (the remaining shell calls are fixed command strings), `config.json` is validated before any config is generated, self-signed certificates are generated only in `development` mode (a failed Let's Encrypt certificate is never backed by a self-signed one — the site is simply not served), and the `NET_ADMIN` capability is needed only when Fail2ban is enabled.
 
-📖 The full **security model** — together with the process model, startup flow, certbot and healthcheck internals, and design rationale — is documented in **[docs/architecture.md](docs/architecture.md)**.
+📖 The full **security model** — together with the process model, startup flow, certbot and healthcheck internals, and design rationale — is documented in **[docs/architecture.md](docs/architecture.md)**. The published image is scanned for vulnerabilities daily, for both architectures — see **[docs/security-scanning.md](docs/security-scanning.md)**.
 
 ---
 
